@@ -24,7 +24,7 @@ from pyrogram.types import Message
 from core.sender import send_file
 from core.userclient import SessionNotConfigured, get_user_client
 from core.utils import (JOB_SEMAPHORE, ThrottledEditor, cleanup_dir,
-                        make_job_dir, owner_only, progress_text)
+                        make_job_dir, owner_only, progress_text, react)
 
 LINK_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/"
@@ -91,6 +91,7 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
 
 
 async def _run_links(bot: Client, message: Message, links: list[str]):
+    await react(message, "👀")
     owner = message.from_user.id
     cancel = _cancel_flags.setdefault(owner, asyncio.Event())
     cancel.clear()
@@ -126,6 +127,8 @@ async def _run_links(bot: Client, message: Message, links: list[str]):
             if i < len(links):
                 await asyncio.sleep(3)  # be gentle: FloodWait insurance
     await status.edit_text(f"Done. {done} succeeded, {failed} failed.")
+    if done and not failed:
+        await react(message, "👍")
 
 
 @Client.on_message(filters.private & owner_only & filters.regex(r"t\.me/"))

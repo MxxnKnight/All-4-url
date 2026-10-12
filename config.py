@@ -46,9 +46,13 @@ OWNER_ID = _int("OWNER_ID")
 # keep it only in the host's env vars, never in the repo.
 SESSION_STRING = (os.environ.get("SESSION_STRING") or "").strip()
 
-# --- File-to-link (required for that feature) ------------------------------
-# Private channel the bot copies files into so it can stream them back.
-# The bot must be an admin of the channel. Ids look like -1001234567890.
+# --- File-to-link -----------------------------------------------------------
+# BASE_URL (below) is the only thing file-to-link strictly needs: by
+# default the links point back at the file message in the owner's PM.
+# STORAGE_CHANNEL_ID is an OPTIONAL override: if set, files are copied
+# into that private channel first (bot must be an admin, ids look like
+# -1001234567890) and the links point at the stored copy, so they keep
+# working even if the original PM message is deleted.
 STORAGE_CHANNEL_ID = _int_or_none("STORAGE_CHANNEL_ID")
 
 # Public URL of this deployment, e.g. https://my-app.koyeb.app

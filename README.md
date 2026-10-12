@@ -5,13 +5,19 @@
 > set in `OWNER_ID` — everyone else is silently ignored. Do not deploy it
 > as a public service.
 
-One bot, three jobs:
+One bot, four jobs:
 
 1. **URL uploader** — send a link, get the file back in the chat.
 2. **File-to-link** — send a file, get an expiring download link and a
    streaming link.
 3. **Restricted downloader** — send a `t.me` link to a post you can see but
    can't forward/save, get an unrestricted copy.
+4. **MediaInfo** — full metadata for any file, extracted from just the
+   first few MB and published as a Telegraph page.
+
+`/start` opens a small button menu in the chat — sections for each
+feature, reactions (👀 working / 👍 done / 👎 failed) on your link
+messages, and a 📊 MediaInfo button under uploaded files.
 
 ---
 
@@ -60,17 +66,30 @@ to your account: put it only in the `SESSION_STRING` env var on the host.
 The account must be a **member** of any private chat you want to pull
 from — the bot cannot join chats for it.
 
-### 3. Storage channel (only for file-to-link)
+### 3. File-to-link: just BASE_URL (storage channel optional)
+
+File-to-link works **in the bot PM, with no channel**: send a file to
+the bot and the reply's links point back at that very message — when a
+link is opened, the bot streams the file out of your chat. Two rules
+follow from that design:
+
+- `BASE_URL` (your deployment's public URL) is the one setting the
+  feature needs.
+- **Don't delete the file message** — the links read from it, so they
+  break when it goes away.
+
+If you want links that survive deleting the original, enable the
+optional permanent mode:
 
 1. Create a private channel, e.g. `All-4-URL storage`.
 2. Add the bot to it and make it an **admin** (it needs to post).
 3. Get the channel's id: forward one of its messages to an id-helper bot,
    or open the channel in Telegram Web — the id looks like `-100…`.
-4. Set `STORAGE_CHANNEL_ID` to it.
+4. Set `STORAGE_CHANNEL_ID` to it. Files are then copied into the
+   channel first and the links point at the stored copy.
 
-Files are copied into this channel and streamed back out of it — the
-host's disk never stores them, which matters because free hosts wipe
-their disks on every restart.
+Either way the host's disk never stores files, which matters because
+free hosts wipe their disks on every restart.
 
 ### 4. Deploy on Koyeb (recommended, free)
 
@@ -80,10 +99,11 @@ their disks on every restart.
 3. Port: `8080`. Health check path: `/health`.
 4. Environment variables (from `.env.example`): `API_ID`, `API_HASH`,
    `BOT_TOKEN`, `OWNER_ID`, plus the optional `SESSION_STRING`,
-   `STORAGE_CHANNEL_ID`, `TERABOX_NDUS`.
+   `STORAGE_CHANNEL_ID` (permanent file-to-link), `TERABOX_NDUS`.
 5. Deploy. When it's live, copy the `https://….koyeb.app` address and set
    it as `BASE_URL`, then redeploy once — file-to-link needs it to build
-   its links.
+   its links, and the image needs the `mediainfo` package (already in
+   the Dockerfile) for /mediainfo.
 
 Koyeb free gives ~512 MB RAM, 100 GB outbound traffic and — crucially —
 **no sleep**. The bot is tuned for exactly that (max 2 jobs at once,
@@ -135,6 +155,27 @@ cookie error, repeat the steps.
 
 ---
 
+## MediaInfo
+
+Send media and ask for its metadata in any of three ways:
+
+1. Reply to a media message with `/mediainfo`.
+2. Send a file with the caption `/mediainfo`.
+3. Tap **📊 MediaInfo** under a file-to-link reply or an uploaded file.
+
+The bot does **not** download the whole file: it streams only the
+first ~12 MB (containers keep their metadata at the head) and, for
+MP4/MOV/MKV files where the head says nothing, the last ~4 MB too
+(the `moov` atom often lives at the end) — never more than ~16 MB in
+total. It runs the **MediaInfo** CLI over that probe (ffprobe is the
+fallback), replies with a short summary (format, duration, video /
+audio / subtitle lines), and publishes the **complete** report — every
+field of every track — as a **Telegraph** page behind the
+*📊 Full MediaInfo ↗* button. If Telegraph is unreachable, the full
+report arrives as a `mediainfo.txt` document instead.
+
+---
+
 ## Usage
 
 | Send this | Get this |
@@ -144,7 +185,9 @@ cookie error, repeat the steps.
 | An Instagram photo/carousel link | All the photos |
 | A Terabox share link | A file picker (if several files), then the file |
 | Any direct file link | The file |
-| A file (video/document/photo/audio) | Download + stream links, valid `LINK_EXPIRY_HOURS` (default 72 h) |
+| A file (video/document/photo/audio) | Download + stream link buttons pointing back at your message, valid `LINK_EXPIRY_HOURS` (default 72 h) — don't delete the message |
+| A file with caption `/mediainfo`, or a reply with `/mediainfo` | A metadata summary + a Telegraph page with the full MediaInfo report (partial probe — no full download) |
+| `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo) |
 | A `t.me/…` post link | An unrestricted re-upload of that post (albums included) |
 | `/batch` then one message with many t.me links (or links right in the `/batch` message) | Each post re-uploaded in order, 3 s apart |
 | `/cancel` | Stops a running batch after the current item |
@@ -183,7 +226,11 @@ both at once). No code changes are needed.
 | Bot online but never replies | Your id isn't `OWNER_ID`, or `OWNER_ID` is wrong |
 | "SESSION_STRING is not set" | Restricted feature needs the session (Setup §2) |
 | Restricted post fails "message does not exist" | The user account isn't a member of that chat |
-| File sent, bot says "not configured" | `STORAGE_CHANNEL_ID` missing or bot isn't a channel admin |
+| File sent, bot asks for BASE_URL | `BASE_URL` isn't set — it's the only thing PM file-to-link needs |
+| File-to-link links 404 after working before | The original file message was deleted (PM mode) — or, in channel mode, the stored copy was |
+| Channel mode copy fails | `STORAGE_CHANNEL_ID` wrong or the bot isn't a channel admin |
 | Links in file-to-link point nowhere | `BASE_URL` isn't the public Koyeb URL |
+| /mediainfo finds no streams on an MP4 | Metadata sits in a tail `moov` — the probe already retries with the tail; if it still fails, the file is likely truncated/corrupt |
+| /mediainfo summary works but report is a .txt file | Telegraph was unreachable at that moment; the full report is the attachment |
 | Everything got slow / OOM | Someone raised `MAX_JOBS`, or giant files — keep it at 2 |
 | Terabox: jsToken / cookie error | `ndus` cookie expired — redo the cookie steps |

@@ -32,7 +32,7 @@ from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
 from core.sender import send_files
 from core.utils import (JOB_SEMAPHORE, ThrottledEditor, cleanup_dir,
                         human_bytes, is_owner_id, list_files, make_job_dir,
-                        owner_only, progress_text)
+                        owner_only, progress_text, react, react_to)
 
 URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -61,13 +61,15 @@ def _extract_url(message: Message) -> str | None:
 # ---------------------------------------------------------------- Terabox UI
 
 async def _terabox_flow(client: Client, message: Message, url: str,
-                        status: Message, editor: ThrottledEditor):
+                        status: Message, editor: ThrottledEditor) -> bool:
+    """Returns True when a file picker was shown (job not finished yet)."""
     files = await terabox.list_files(url)
     if len(files) == 1:
         await _terabox_download(client, message, url, 0, files[0], status, editor)
-        return
+        return False
     job_id = _next_job_id()
-    PENDING[job_id] = {"type": "terabox", "url": url, "chat_id": message.chat.id}
+    PENDING[job_id] = {"type": "terabox", "url": url, "chat_id": message.chat.id,
+                       "origin_chat": message.chat.id, "origin_msg": message.id}
     buttons = [
         [InlineKeyboardButton(
             f"{f['name'][:40]} · {human_bytes(f['size'])}",
@@ -77,6 +79,7 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     await status.edit_text(
         "This Terabox share has several files — pick one:",
         reply_markup=InlineKeyboardMarkup(buttons))
+    return True
 
 
 async def _terabox_download(client, message, url, index, info, status, editor):
@@ -93,7 +96,7 @@ async def _terabox_download(client, message, url, index, info, status, editor):
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
                              caption=f"Terabox · {info['name'] if info else ''}",
-                             status_msg=status)
+                             status_msg=status, mediainfo_button=True)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -103,8 +106,10 @@ async def _terabox_download(client, message, url, index, info, status, editor):
 
 async def _ytdlp_flow(client: Client, message: Message, url: str,
                       status: Message, editor: ThrottledEditor,
-                      ask_format: bool = True):
-    """extract_info first; ask which format when there is a real choice."""
+                      ask_format: bool = True) -> bool:
+    """extract_info first; ask which format when there is a real choice.
+
+    Returns True when a format picker was shown (job not finished yet)."""
     info = await extract_info(url)
     title = info.get("title") or "Download"
     formats = best_formats(info) if info.get("formats") else []
@@ -113,7 +118,9 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
     if ask_format and len(heights) >= 2:
         job_id = _next_job_id()
         PENDING[job_id] = {"type": "ytdlp", "url": url,
-                           "chat_id": message.chat.id, "title": title}
+                           "chat_id": message.chat.id, "title": title,
+                           "origin_chat": message.chat.id,
+                           "origin_msg": message.id}
         buttons = [[InlineKeyboardButton(
             "⭐ Best quality", callback_data=f"fmt:{job_id}:best")]]
         for fmt in formats[:5]:
@@ -126,9 +133,10 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
         await status.edit_text(
             f"**{title[:120]}**\nPick a quality:",
             reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        return True
 
     await _ytdlp_download(client, message, url, title, status, editor)
+    return False
 
 
 async def _ytdlp_download(client, message, url, title, status, editor,
@@ -145,7 +153,7 @@ async def _ytdlp_download(client, message, url, title, status, editor,
                                    audio_only=audio_only, progress_cb=progress)
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, paths,
-                             caption=title[:200], status_msg=status)
+                             caption=title[:200], status_msg=status, mediainfo_button=True)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -160,7 +168,7 @@ async def _gallery_flow(client, message, url, status):
             await status.edit_text("Fetching with gallery-dl…")
             paths = await gallery_engine.download(url, job_dir)
             await send_files(client, message.chat.id, paths,
-                             caption=url, status_msg=status)
+                             caption=url, status_msg=status, mediainfo_button=True)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -180,7 +188,7 @@ async def _direct_flow(client, message, url, info, status, editor):
                                        filename=info.get("filename"))
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
-                             caption=info.get("filename", ""), status_msg=status)
+                             caption=info.get("filename", ""), status_msg=status, mediainfo_button=True)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -198,7 +206,7 @@ async def _scrape_flow(client, message, url, status, editor):
             path = await scrape.download(url, job_dir, progress_cb=progress)
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
-                             caption=url, status_msg=status)
+                             caption=url, status_msg=status, mediainfo_button=True)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -222,7 +230,7 @@ async def _instagram_carousel(client, message, url, status) -> bool:
                 paths.append(await download_file(
                     img_url, job_dir, filename=f"instagram_{i + 1}.jpg"))
             await send_files(client, message.chat.id, paths,
-                             caption=url, status_msg=status)
+                             caption=url, status_msg=status, mediainfo_button=True)
             await status.delete()
             return True
         finally:
@@ -232,24 +240,38 @@ async def _instagram_carousel(client, message, url, status) -> bool:
 # ---------------------------------------------------------------- entry point
 
 @Client.on_message(filters.private & owner_only & filters.text
-                   & ~filters.command(["start", "help", "batch", "cancel"]))
+                   & ~filters.command(["start", "help", "batch", "cancel",
+                                       "mediainfo"]))
 async def url_handler(client: Client, message: Message):
     url = _extract_url(message)
     if not url:
         return
+    await react(message, "👀")
     status = await message.reply_text("Working on it…")
     editor = ThrottledEditor(status)
-    errors: list[str] = []
+    outcome = await _dispatch(client, message, url, status, editor)
+    if outcome == "done":
+        await react(message, "👍")
+    elif outcome == "failed":
+        await react(message, "👎")
+    # "pending" = a picker is on screen; the reaction comes from the
+    # button callback when the job actually finishes.
 
+
+async def _dispatch(client: Client, message: Message, url: str,
+                    status: Message, editor: ThrottledEditor) -> str:
+    """Run the resolver chain. Returns "done" | "pending" | "failed"."""
+    errors: list[str] = []
     try:
         # 1) Terabox gets its own extractor, always first for its domains.
         if terabox.is_terabox_url(url):
             try:
-                await _terabox_flow(client, message, url, status, editor)
-                return
+                picker = await _terabox_flow(client, message, url,
+                                             status, editor)
+                return "pending" if picker else "done"
             except Exception as exc:
                 await status.edit_text(f"Terabox failed: {exc}")
-                return
+                return "failed"
 
         is_post = "instagram.com/p/" in url
         is_reel = "instagram.com/reel" in url
@@ -257,10 +279,10 @@ async def url_handler(client: Client, message: Message):
         # 2) Instagram photo posts are images, not videos.
         if is_post:
             if await _instagram_carousel(client, message, url, status):
-                return
+                return "done"
             try:
                 await _gallery_flow(client, message, url, status)
-                return
+                return "done"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
 
@@ -270,15 +292,15 @@ async def url_handler(client: Client, message: Message):
             try:
                 await _direct_flow(client, message, url, direct_info,
                                    status, editor)
-                return
+                return "done"
             except Exception as exc:
                 errors.append(f"direct: {exc}")
 
         # 4) yt-dlp — reels and every other video/audio site.
         try:
-            await _ytdlp_flow(client, message, url, status, editor,
-                              ask_format=not is_reel)
-            return
+            picker = await _ytdlp_flow(client, message, url, status, editor,
+                                        ask_format=not is_reel)
+            return "pending" if picker else "done"
         except Exception as exc:
             errors.append(f"yt-dlp: {exc}")
 
@@ -286,14 +308,14 @@ async def url_handler(client: Client, message: Message):
         if not is_post:
             try:
                 await _gallery_flow(client, message, url, status)
-                return
+                return "done"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
 
         # 6) Last resort: scrape the page's meta tags.
         try:
             await _scrape_flow(client, message, url, status, editor)
-            return
+            return "done"
         except Exception as exc:
             errors.append(f"scrape: {exc}")
 
@@ -302,11 +324,13 @@ async def url_handler(client: Client, message: Message):
             + "\n".join(f"• {e}" for e in errors)
             + "\n\nIf it's Instagram/a login-walled site, it may need a "
               "cookies.txt — see the README.")
+        return "failed"
     except Exception as exc:  # never leave a stuck status message
         try:
             await status.edit_text(f"Something went wrong: {exc}")
         except Exception:
             pass
+        return "failed"
 
 
 # ---------------------------------------------------------------- callbacks
@@ -345,7 +369,11 @@ async def format_callback(client: Client, query: CallbackQuery):
                 status, editor,
                 format_id=None if choice in ("best", "audio") else choice,
                 audio_only=choice == "audio")
+        if job.get("origin_chat") and job.get("origin_msg"):
+            await react_to(client, job["origin_chat"], job["origin_msg"], "👍")
     except Exception as exc:
+        if job.get("origin_chat") and job.get("origin_msg"):
+            await react_to(client, job["origin_chat"], job["origin_msg"], "👎")
         try:
             await status.edit_text(f"Download failed: {exc}")
         except Exception:

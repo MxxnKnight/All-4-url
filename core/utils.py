@@ -29,6 +29,38 @@ def is_owner_id(user_id) -> bool:
     return bool(user_id and config.OWNER_ID and user_id == config.OWNER_ID)
 
 
+async def react(message, emoji: str) -> None:
+    """React to a message with an emoji — pure decoration, never fatal.
+
+    WzGram 3.1.5 has Message.react(emoji) (verified: it delegates to
+    Client.send_reaction). If that shortcut is unavailable or fails, we
+    fall back to the raw client call, and any remaining failure is
+    swallowed: a missing reaction must never break an actual transfer.
+    """
+    try:
+        await message.react(emoji)
+        return
+    except Exception:
+        pass
+    try:
+        client = getattr(message, "_client", None)
+        chat = getattr(message, "chat", None)
+        if client is not None and chat is not None:
+            await client.send_reaction(chat_id=chat.id,
+                                       message_id=message.id, emoji=emoji)
+    except Exception:
+        pass
+
+
+async def react_to(client, chat_id: int, message_id: int, emoji: str) -> None:
+    """react() when all we have is a client + ids (button callbacks)."""
+    try:
+        await client.send_reaction(chat_id=chat_id, message_id=message_id,
+                                   emoji=emoji)
+    except Exception:
+        pass
+
+
 def human_bytes(size) -> str:
     if not size:
         return "0 B"

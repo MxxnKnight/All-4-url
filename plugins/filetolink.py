@@ -1,14 +1,24 @@
-"""File-to-link: send a file, get expiring download + stream links.
+"""File-to-link: send/forward a file to the bot, get expiring links.
 
-The file is copied into the owner's private storage channel (Telegram
-itself is the file host — the free Koyeb disk is ephemeral and tiny).
-The links point at our own web server, which streams the bytes back
-out of that channel message. Tokens are HMAC-signed and carry their
-own expiry, so no database is needed.
+Default (PM) mode needs no setup beyond BASE_URL: the links simply point
+back at the message the owner sent in this chat — the bot re-reads the
+file from that very message when a link is opened, so nothing is copied
+anywhere. The catch follows naturally: delete that message and the
+links die with it.
+
+If STORAGE_CHANNEL_ID is set, the bot instead copies the file into that
+private channel first and the links point at the stored copy, which
+survives the original message being deleted.
+
+Either way the links are served by our own web server (core/webserver),
+which streams the bytes out of the referenced message with
+`stream_media`. Tokens are HMAC-signed and carry their own expiry, so
+no database is needed.
 """
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
+                            Message)
 
 import config
 from core.linktoken import make_token
@@ -33,38 +43,50 @@ def _file_info(message: Message):
 
 @Client.on_message(filters.private & owner_only & MEDIA_FILTER)
 async def file_to_link(client: Client, message: Message):
-    if not config.STORAGE_CHANNEL_ID:
-        await message.reply_text(
-            "File-to-link is not configured yet.\n\n"
-            "1. Create a private channel (any name, e.g. 'All-4-URL storage')\n"
-            "2. Add this bot to it as an **admin**\n"
-            "3. Forward any message from the channel to @userinfobot-style "
-            "id bots or use a channel-id helper to get its -100… id\n"
-            "4. Set STORAGE_CHANNEL_ID to that id and restart the bot\n\n"
-            "Full steps are in the README.")
-        return
     if not config.BASE_URL:
         await message.reply_text(
-            "STORAGE_CHANNEL_ID is set, but BASE_URL is not. BASE_URL must "
-            "be this bot's public web address (e.g. your "
-            "https://….koyeb.app URL) so the links can point anywhere. "
-            "Set it and restart the bot.")
-        return
-
-    status = await message.reply_text("Storing the file…")
-    try:
-        stored = await message.copy(config.STORAGE_CHANNEL_ID)
-    except Exception as exc:
-        await status.edit_text(
-            f"Could not copy the file into the storage channel: {exc}\n"
-            "Is the bot an admin of STORAGE_CHANNEL_ID?")
+            "File-to-link needs one thing: BASE_URL must be this bot's "
+            "public web address (e.g. your https://….koyeb.app URL), so "
+            "the download/stream links have somewhere to point. Set it "
+            "and restart the bot — no channel or other setup is needed.")
         return
 
     name, size, mime = _file_info(message)
-    token = make_token(config.STORAGE_CHANNEL_ID, stored.id,
-                       name or "file", size, mime)
+
+    if config.STORAGE_CHANNEL_ID:
+        # Optional permanent mode: park a copy in the storage channel
+        # and point the links at that copy.
+        status = await message.reply_text("Storing the file…")
+        try:
+            stored = await message.copy(config.STORAGE_CHANNEL_ID)
+        except Exception as exc:
+            await status.edit_text(
+                f"Could not copy the file into the storage channel: {exc}\n"
+                "Is the bot an admin of STORAGE_CHANNEL_ID?")
+            return
+        token_chat, token_msg = config.STORAGE_CHANNEL_ID, stored.id
+        note = "Stored permanently in your storage channel."
+    else:
+        # Default PM mode: the links read the file from *this* message.
+        status = await message.reply_text("Making your links…")
+        token_chat, token_msg = message.chat.id, message.id
+        note = ("Links read the file from this chat — don't delete that "
+                "message or the links break.")
+
+    token = make_token(token_chat, token_msg, name or "file", size, mime)
+    download_url = f"{config.BASE_URL}/d/{token}"
+    stream_url = f"{config.BASE_URL}/stream/{token}"
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬇️ Download", url=download_url),
+         InlineKeyboardButton("▶️ Stream", url=stream_url)],
+        [InlineKeyboardButton(
+            "📊 MediaInfo",
+            callback_data=f"mi:{token_chat}:{token_msg}")],
+    ])
     await status.edit_text(
         f"**{name}** ({human_bytes(size)})\n\n"
-        f"⬇️ Download: {config.BASE_URL}/d/{token}\n"
-        f"▶️ Stream: {config.BASE_URL}/stream/{token}\n\n"
-        f"Links expire in {config.LINK_EXPIRY_HOURS} hours.")
+        f"⬇️ Download: {download_url}\n"
+        f"▶️ Stream: {stream_url}\n\n"
+        f"{note}\n"
+        f"Links expire in {config.LINK_EXPIRY_HOURS} hours.",
+        reply_markup=markup)

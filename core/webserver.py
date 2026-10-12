@@ -1,9 +1,10 @@
 """Tiny aiohttp server that serves file-to-link downloads/streams.
 
 It runs next to the bot in the same process. A request carries a signed
-token (see core/linktoken.py); we look the stored message up in the
-storage channel and stream its bytes out chunk by chunk with the bot
-client's `stream_media`, so nothing is ever written to disk.
+token (see core/linktoken.py); we look up the message the token points
+at (the owner's PM message by default, or a storage-channel copy when
+that mode is enabled) and stream its bytes out chunk by chunk with the
+bot client's `stream_media`, so nothing is ever written to disk.
 
 Range support: HTTP clients (video players especially) ask for byte
 ranges. `stream_media` accepts an `offset` counted in *chunks* of its
