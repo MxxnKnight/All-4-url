@@ -1,0 +1,39 @@
+# Koyeb deployment (recommended host).
+# In the Koyeb dashboard you can equally create the service by hand:
+#   Create Web Service -> GitHub -> MxxnKnight/All-4-url -> Dockerfile,
+#   then set the env vars from .env.example. This file documents the shape.
+app:
+  name: all-4-url
+services:
+  - name: bot
+    type: web
+    instance_type: nano          # the free instance is enough
+    build:
+      type: dockerfile
+      dockerfile: Dockerfile
+    routes:
+      - path: /
+        port: 8080
+    ports:
+      - port: 8080
+        protocol: http
+    health_checks:
+      - path: /health
+        port: 8080
+        protocol: http
+    env:
+      - key: PORT
+        value: "8080"            # Koyeb injects this too; kept explicit
+      # Fill the rest in the Koyeb dashboard (Environment variables):
+      # API_ID, API_HASH, BOT_TOKEN, OWNER_ID,
+      # SESSION_STRING (optional, restricted downloader),
+      # STORAGE_CHANNEL_ID + BASE_URL (file-to-link),
+      # TERABOX_NDUS (optional, Terabox links)
+      - key: API_ID
+        value: ""
+      - key: API_HASH
+        value: ""
+      - key: BOT_TOKEN
+        value: ""
+      - key: OWNER_ID
+        value: ""

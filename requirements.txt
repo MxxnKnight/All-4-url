@@ -1,0 +1,15 @@
+# MTProto library: WzGram, an actively maintained Pyrogram fork.
+# (Original Pyrogram is discontinued — do not use `pyrogram` from PyPI.)
+# The code only ever does `from pyrogram import ...`, and WzGram installs
+# itself under that module name. To swap to Kurigram instead, replace the
+# wzgram line below with:  kurigram
+# (and delete wzgram — the two provide the same module and conflict).
+wzgram==3.1.5
+
+uvloop
+yt-dlp[default,curl-cffi]
+gallery-dl
+aiohttp
+curl-cffi
+python-dotenv
+Pillow

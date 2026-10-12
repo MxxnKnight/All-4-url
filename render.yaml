@@ -1,0 +1,30 @@
+# Render alternative — NOTE: Render's free tier sleeps after ~15 minutes
+# of inactivity and cold-starts in 30-60s, which makes a Telegram bot
+# feel dead half the time. Koyeb free (no sleep) is the recommended host;
+# this file exists only so the repo also deploys on Render if needed.
+services:
+  - type: web
+    name: all-4-url
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: SESSION_STRING
+        sync: false
+      - key: STORAGE_CHANNEL_ID
+        sync: false
+      - key: BASE_URL
+        sync: false
+      - key: TERABOX_NDUS
+        sync: false
