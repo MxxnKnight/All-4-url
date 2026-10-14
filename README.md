@@ -188,7 +188,7 @@ report arrives as a `mediainfo.txt` document instead.
 | A file (video/document/photo/audio) | Download + stream link buttons pointing back at your message, valid `LINK_EXPIRY_HOURS` (default 72 h) — don't delete the message |
 | A file with caption `/mediainfo`, or a reply with `/mediainfo` | A metadata summary + a Telegraph page with the full MediaInfo report (partial probe — no full download) |
 | `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo) |
-| A `t.me/…` post link | An unrestricted re-upload of that post (albums included) |
+| A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
 | `/batch` then one message with many t.me links (or links right in the `/batch` message) | Each post re-uploaded in order, 3 s apart |
 | `/cancel` | Stops a running batch after the current item |
 | `/help` | Short in-bot help |

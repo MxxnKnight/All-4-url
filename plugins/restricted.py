@@ -21,7 +21,7 @@ from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import Message
 
-from core.sender import send_file
+from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
 from core.utils import (JOB_SEMAPHORE, ThrottledEditor, cleanup_dir,
                         make_job_dir, owner_only, progress_text, react)
@@ -62,31 +62,44 @@ async def _fetch_messages(user: Client, chat_id, message_id: int):
 
 async def _process_one(bot: Client, user: Client, owner_chat: int,
                        chat_id, message_id: int, status: Message) -> None:
+    """Download every item, then re-upload together.
+
+    Photos go back out as one Telegram album (media group) when the
+    source was an album, instead of arriving as separate messages.
+    """
     editor = ThrottledEditor(status)
     messages = await _fetch_messages(user, chat_id, message_id)
-    for msg in messages:
-        media = (msg.video or msg.document or msg.photo or msg.audio
-                 or msg.voice or msg.animation or msg.sticker)
-        if media is None:
-            text = msg.text or msg.caption
-            if text:
-                await bot.send_message(owner_chat, text)
-            continue
-        job_dir = make_job_dir()
-        started = time.time()
+    job_dirs: list[str] = []
+    paths: list[str] = []
+    caption = ""
+    try:
+        for msg in messages:
+            media = (msg.video or msg.document or msg.photo or msg.audio
+                     or msg.voice or msg.animation or msg.sticker)
+            if media is None:
+                text = msg.text or msg.caption
+                if text:
+                    await bot.send_message(owner_chat, text)
+                continue
+            if not caption:
+                caption = msg.caption or ""
+            job_dir = make_job_dir()
+            job_dirs.append(job_dir)
+            started = time.time()
 
-        async def progress(done, total, _s=started):
-            await editor.edit(progress_text("Downloading (user account)…",
-                                            done, total, _s))
-        try:
+            async def progress(done, total, _s=started):
+                await editor.edit(progress_text("Downloading (user account)…",
+                                                done, total, _s))
             path = await user.download_media(msg, file_name=job_dir + "/",
                                              progress=progress)
-            if not path:
-                continue
+            if path:
+                paths.append(path)
+        if paths:
             await editor.edit("Re-uploading…", force=True)
-            await send_file(bot, owner_chat, path,
-                            caption=msg.caption or "", status_msg=status)
-        finally:
+            await send_files(bot, owner_chat, paths, caption=caption,
+                             status_msg=status, mediainfo_button=True)
+    finally:
+        for job_dir in job_dirs:
             cleanup_dir(job_dir)
 
 
