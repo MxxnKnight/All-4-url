@@ -15,7 +15,6 @@ Plus /batch for many links and /cancel to stop one.
 
 import asyncio
 import re
-import time
 
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
@@ -23,8 +22,8 @@ from pyrogram.types import Message
 
 from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
-from core.utils import (JOB_SEMAPHORE, ThrottledEditor, cleanup_dir,
-                        make_job_dir, owner_only, progress_text, react)
+from core.utils import (JOB_SEMAPHORE, cleanup_dir, make_job_dir,
+                        owner_only, react)
 
 LINK_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/"
@@ -61,14 +60,30 @@ async def _fetch_messages(user: Client, chat_id, message_id: int):
 
 
 async def _process_one(bot: Client, user: Client, owner_chat: int,
-                       chat_id, message_id: int, status: Message) -> None:
+                       chat_id, message_id: int, seen: set) -> str:
     """Download every item, then re-upload together.
 
     Photos go back out as one Telegram album (media group) when the
     source was an album, instead of arriving as separate messages.
+
+    `seen` holds media_group_ids and (chat, message_id) keys already
+    handled in this batch, so two links into the same album (or the
+    same message twice) don't re-send it. Returns "done" or "skipped".
     """
-    editor = ThrottledEditor(status)
     messages = await _fetch_messages(user, chat_id, message_id)
+    first = messages[0]
+    group_id = getattr(first, "media_group_id", None)
+    keys = {(str(chat_id), m.id) for m in messages}
+    if group_id and group_id in seen:
+        return "skipped"  # this album was already handled in this batch
+    if keys & seen:
+        return "skipped"  # exact same message(s) already handled
+    if group_id:
+        seen.add(group_id)
+    seen.update(keys)
+
+    # No progress chatter here by design: downloads and re-uploads run
+    # quietly, only the batch status line (one edit per link) moves.
     job_dirs: list[str] = []
     paths: list[str] = []
     caption = ""
@@ -85,19 +100,12 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
                 caption = msg.caption or ""
             job_dir = make_job_dir()
             job_dirs.append(job_dir)
-            started = time.time()
-
-            async def progress(done, total, _s=started):
-                await editor.edit(progress_text("Downloading (user account)…",
-                                                done, total, _s))
-            path = await user.download_media(msg, file_name=job_dir + "/",
-                                             progress=progress)
+            path = await user.download_media(msg, file_name=job_dir + "/")
             if path:
                 paths.append(path)
         if paths:
-            await editor.edit("Re-uploading…", force=True)
-            await send_files(bot, owner_chat, paths, caption=caption,
-                             status_msg=status, mediainfo_button=True)
+            await send_files(bot, owner_chat, paths, caption=caption)
+        return "done"
     finally:
         for job_dir in job_dirs:
             cleanup_dir(job_dir)
@@ -115,12 +123,14 @@ async def _run_links(bot: Client, message: Message, links: list[str]):
         return
 
     status = await message.reply_text(f"Starting {len(links)} link(s)…")
-    done = failed = 0
+    done = failed = skipped = 0
+    seen: set = set()  # albums / messages already handled in this batch
     async with JOB_SEMAPHORE:
         for i, link in enumerate(links, 1):
             if cancel.is_set():
                 await status.edit_text(
-                    f"Batch cancelled. {done} done, {failed} failed.")
+                    f"Batch cancelled. {done} done, {failed} failed, "
+                    f"{skipped} skipped.")
                 return
             parsed = parse_link(link)
             if not parsed:
@@ -128,9 +138,12 @@ async def _run_links(bot: Client, message: Message, links: list[str]):
                 continue
             await status.edit_text(f"{i}/{len(links)} — fetching…")
             try:
-                await _process_one(bot, user, message.chat.id,
-                                   parsed[0], parsed[1], status)
-                done += 1
+                outcome = await _process_one(bot, user, message.chat.id,
+                                             parsed[0], parsed[1], seen)
+                if outcome == "skipped":
+                    skipped += 1
+                else:
+                    done += 1
             except FloodWait as exc:
                 await asyncio.sleep(int(getattr(exc, "value", 10)) + 1)
                 failed += 1
@@ -139,7 +152,10 @@ async def _run_links(bot: Client, message: Message, links: list[str]):
                 await message.reply_text(f"Failed: {link}\n{exc}")
             if i < len(links):
                 await asyncio.sleep(3)  # be gentle: FloodWait insurance
-    await status.edit_text(f"Done. {done} succeeded, {failed} failed.")
+    summary = f"Done. {done} succeeded, {failed} failed."
+    if skipped:
+        summary += f" {skipped} skipped (already in this batch)."
+    await status.edit_text(summary)
     if done and not failed:
         await react(message, "👍")
 

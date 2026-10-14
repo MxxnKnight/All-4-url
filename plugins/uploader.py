@@ -96,7 +96,7 @@ async def _terabox_download(client, message, url, index, info, status, editor):
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
                              caption=f"Terabox · {info['name'] if info else ''}",
-                             status_msg=status, mediainfo_button=True)
+                             status_msg=status)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -153,7 +153,7 @@ async def _ytdlp_download(client, message, url, title, status, editor,
                                    audio_only=audio_only, progress_cb=progress)
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, paths,
-                             caption=title[:200], status_msg=status, mediainfo_button=True)
+                             caption=title[:200], status_msg=status)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -168,7 +168,7 @@ async def _gallery_flow(client, message, url, status):
             await status.edit_text("Fetching with gallery-dl…")
             paths = await gallery_engine.download(url, job_dir)
             await send_files(client, message.chat.id, paths,
-                             caption=url, status_msg=status, mediainfo_button=True)
+                             caption=url, status_msg=status)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -188,7 +188,7 @@ async def _direct_flow(client, message, url, info, status, editor):
                                        filename=info.get("filename"))
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
-                             caption=info.get("filename", ""), status_msg=status, mediainfo_button=True)
+                             caption=info.get("filename", ""), status_msg=status)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -206,7 +206,7 @@ async def _scrape_flow(client, message, url, status, editor):
             path = await scrape.download(url, job_dir, progress_cb=progress)
             await editor.edit("Uploading…", force=True)
             await send_files(client, message.chat.id, [path],
-                             caption=url, status_msg=status, mediainfo_button=True)
+                             caption=url, status_msg=status)
             await status.delete()
         finally:
             cleanup_dir(job_dir)
@@ -230,7 +230,7 @@ async def _instagram_carousel(client, message, url, status) -> bool:
                 paths.append(await download_file(
                     img_url, job_dir, filename=f"instagram_{i + 1}.jpg"))
             await send_files(client, message.chat.id, paths,
-                             caption=url, status_msg=status, mediainfo_button=True)
+                             caption=url, status_msg=status)
             await status.delete()
             return True
         finally:
