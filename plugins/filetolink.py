@@ -22,7 +22,7 @@ from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
 
 import config
 from core.linktoken import make_token
-from core.utils import human_bytes, owner_only
+from core.utils import human_bytes, owner_only, react
 
 MEDIA_FILTER = (filters.video | filters.document | filters.photo
                 | filters.audio | filters.voice | filters.animation)
@@ -52,6 +52,7 @@ async def file_to_link(client: Client, message: Message):
         return
 
     name, size, mime = _file_info(message)
+    await react(message, "👀")
 
     if config.STORAGE_CHANNEL_ID:
         # Optional permanent mode: park a copy in the storage channel
@@ -60,6 +61,7 @@ async def file_to_link(client: Client, message: Message):
         try:
             stored = await message.copy(config.STORAGE_CHANNEL_ID)
         except Exception as exc:
+            await react(message, "👎")
             await status.edit_text(
                 f"Could not copy the file into the storage channel: {exc}\n"
                 "Is the bot an admin of STORAGE_CHANNEL_ID?")
@@ -90,3 +92,4 @@ async def file_to_link(client: Client, message: Message):
         f"{note}\n"
         f"Links expire in {config.LINK_EXPIRY_HOURS} hours.",
         reply_markup=markup)
+    await react(message, "👍")

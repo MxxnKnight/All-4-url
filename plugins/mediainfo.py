@@ -19,7 +19,8 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 from core import telegraph
 from core.mediainfo import ProbeError, format_summary, probe_message
-from core.utils import cleanup_dir, is_owner_id, make_job_dir, owner_only
+from core.utils import (cleanup_dir, is_owner_id, make_job_dir, owner_only,
+                        react)
 
 MEDIA_FILTER = (filters.video | filters.document | filters.audio
                 | filters.animation | filters.voice)
@@ -34,8 +35,13 @@ caption_mediainfo = filters.create(_caption_is_mediainfo, "CaptionMediaInfo")
 
 
 async def _probe_and_report(client: Client, chat_id: int, media_message,
-                            status: Message | None = None) -> None:
-    """Probe `media_message` and deliver summary + Telegraph link."""
+                            status: Message | None = None,
+                            react_msg: Message | None = None) -> None:
+    """Probe `media_message` and deliver summary + Telegraph link.
+
+    `react_msg` is the user's message to emoji-react on (Destiny-style:
+    👀 while working is set by the caller, 👍/👎 here on outcome).
+    """
     if status is None:
         status = await client.send_message(
             chat_id, "🔍 Probing — downloading just the first bits…")
@@ -46,13 +52,18 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
         except Exception:
             pass
 
+    async def _fail(text: str) -> None:
+        if react_msg is not None:
+            await react(react_msg, "👎")
+        await status.edit_text(text)
+
     try:
         result = await probe_message(client, media_message)
     except ProbeError as exc:
-        await status.edit_text(f"📊 MediaInfo failed: {exc}")
+        await _fail(f"📊 MediaInfo failed: {exc}")
         return
     except Exception as exc:
-        await status.edit_text(f"📊 MediaInfo failed unexpectedly: {exc}")
+        await _fail(f"📊 MediaInfo failed unexpectedly: {exc}")
         return
 
     summary = format_summary(result)
@@ -73,11 +84,15 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
                                        caption="Full MediaInfo report")
         finally:
             cleanup_dir(job_dir)
+        if react_msg is not None:
+            await react(react_msg, "👍")
         return
 
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("📊 Full MediaInfo ↗", url=url)]])
     await status.edit_text(summary, reply_markup=markup)
+    if react_msg is not None:
+        await react(react_msg, "👍")
 
 
 @Client.on_message(filters.private & owner_only
@@ -91,14 +106,18 @@ async def mediainfo_cmd(client: Client, message: Message):
             "You can also send a file with the caption /mediainfo, or tap "
             "the 📊 MediaInfo button under a result.")
         return
-    await _probe_and_report(client, message.chat.id, target)
+    await react(message, "👀")
+    await _probe_and_report(client, message.chat.id, target,
+                            react_msg=message)
 
 
 @Client.on_message(filters.private & owner_only & MEDIA_FILTER
                    & caption_mediainfo, group=-1)
 async def mediainfo_caption(client: Client, message: Message):
     try:
-        await _probe_and_report(client, message.chat.id, message)
+        await react(message, "👀")
+        await _probe_and_report(client, message.chat.id, message,
+                                react_msg=message)
     finally:
         # This message was a MediaInfo request, not a file-to-link upload:
         # stop the group-0 filetolink handler from also processing it.
@@ -129,4 +148,5 @@ async def mediainfo_callback(client: Client, query: CallbackQuery):
                            show_alert=True)
         return
     chat = query.message.chat.id if query.message else chat_id
-    await _probe_and_report(client, chat, target)
+    await react(target, "👀")
+    await _probe_and_report(client, chat, target, react_msg=target)
