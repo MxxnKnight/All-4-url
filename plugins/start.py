@@ -57,6 +57,13 @@ Send many links at once with /batch (one link per line); /cancel stops
 a batch after the current item. Two links from the same album only send
 it once — duplicates in a batch are skipped.
 
+Range batching: send exactly two links to the *same chat* — the first
+and the last message — and the bot walks *everything between them*
+(e.g. t.me/channel/1 + t.me/channel/7 grabs 1, 2, 3, 4, 5, 6, 7).
+Deleted messages in the range are counted silently, not spammed.
+Three or more links (or links to different chats) run as an explicit
+list instead. Ranges are capped at 100 messages per batch.
+
 Batch extras: with 2+ links you first get a content-type filter menu
 (toggle text / photos / videos / … on or off), then a delay menu —
 pick how many seconds to wait between items before the batch starts.
@@ -71,10 +78,12 @@ audio/subtitle tracks — without downloading the whole file: I probe
 only the first few MB (plus the tail for MP4/MOV/MKV) and publish the
 complete report as a Telegraph page.
 
-Three ways to ask:
+Four ways to ask:
 1. Reply to any media message with /mediainfo
 2. Send a file with the caption `/mediainfo`
-3. Tap the 📊 MediaInfo button under a file-to-link or uploader result"""
+3. `/mediainfo` with a direct file link (or reply to a message holding
+   one) — only the first bits of the link are fetched
+4. Tap the 📊 MediaInfo button under a file-to-link or uploader result"""
 
 SECTION_TEXTS = {
     "menu:uploader": SECTION_UPLOADER,

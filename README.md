@@ -186,11 +186,11 @@ report arrives as a `mediainfo.txt` document instead.
 | A Terabox share link | A file picker (if several files), then the file |
 | Any direct file link | The file |
 | A file (video/document/photo/audio) | Download + stream link buttons pointing back at your message, valid `LINK_EXPIRY_HOURS` (default 72 h) — don't delete the message |
-| A file with caption `/mediainfo`, or a reply with `/mediainfo` | A metadata summary + a sectioned Telegraph page (📌 file, 🗒 General, 🎞 Video, 🔊 Audio, 🔠 Subtitles) with the full MediaInfo report (partial probe — no full download) |
+| A file with caption `/mediainfo`, a reply with `/mediainfo`, or `/mediainfo <link>` (direct file URL) | A metadata summary + a sectioned Telegraph page (📌 file, 🗒 General, 🎞 Video, 🔊 Audio, 🔠 Subtitles) with the full MediaInfo report (partial probe — only the first bits are fetched, never the whole file) |
 | 📈 **Usage** button in `/start` | Uptime, downloaded / uploaded / served bandwidth (this month + all time), outbound vs the 100 GB free allowance, and per-feature job counts |
 | `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
-| `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs |
+| `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch) |
 | `/cancel` | Stops a running batch after the current item |
 | `/help` | Short in-bot help |
 

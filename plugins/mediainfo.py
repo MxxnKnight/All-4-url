@@ -1,9 +1,11 @@
 """ /mediainfo — full metadata for a file, from a partial probe only.
 
-Three ways to trigger it:
+Ways to trigger it:
   1. Reply to any media message with /mediainfo
   2. Send a file with the caption `/mediainfo`
-  3. Tap the 📊 MediaInfo button under a file-to-link / uploader result
+  3. `/mediainfo <link>` — or reply to a message containing a link —
+     probes a direct file URL (only the first bits are fetched)
+  4. Tap the 📊 MediaInfo button under a file-to-link / uploader result
      (callback data `mi:<chat_id>:<message_id>`)
 
 The probe streams just the first bits of the file (see core/mediainfo),
@@ -12,6 +14,7 @@ published as a Telegraph page; the chat gets a short summary.
 """
 
 import os
+import re
 
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
@@ -19,7 +22,9 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 from core import stats, telegraph
 from core.mediainfo import (ProbeError, format_summary, probe_message,
-                            report_sections)
+                            probe_url, report_sections)
+
+URL_RE = re.compile(r"https?://[^\s]+")
 from core.utils import (cleanup_dir, is_owner_id, make_job_dir, owner_only,
                         react)
 
@@ -35,21 +40,22 @@ async def _caption_is_mediainfo(_, __, message: Message) -> bool:
 caption_mediainfo = filters.create(_caption_is_mediainfo, "CaptionMediaInfo")
 
 
-async def _probe_and_report(client: Client, chat_id: int, media_message,
+async def _probe_and_report(client: Client, chat_id: int, probe,
                             status: Message | None = None,
-                            react_msg: Message | None = None) -> None:
-    """Probe `media_message` and deliver summary + Telegraph link.
+                            react_msg: Message | None = None,
+                            probing_text: str = "🔍 Probing — reading just "
+                            "the first bits…") -> None:
+    """Run `probe` (a no-arg async callable returning MediaInfoResult)
+    and deliver summary + Telegraph link.
 
     `react_msg` is the user's message to emoji-react on (Destiny-style:
     👀 while working is set by the caller, 👍/👎 here on outcome).
     """
     if status is None:
-        status = await client.send_message(
-            chat_id, "🔍 Probing — downloading just the first bits…")
+        status = await client.send_message(chat_id, probing_text)
     else:
         try:
-            await status.edit_text(
-                "🔍 Probing — downloading just the first bits…")
+            await status.edit_text(probing_text)
         except Exception:
             pass
 
@@ -60,7 +66,7 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
         await status.edit_text(text)
 
     try:
-        result = await probe_message(client, media_message)
+        result = await probe()
     except ProbeError as exc:
         await _fail(f"📊 MediaInfo failed: {exc}")
         return
@@ -107,18 +113,51 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
 
 @Client.on_message(filters.private & owner_only
                    & filters.command("mediainfo"))
+def _first_url(text: str | None) -> str | None:
+    match = URL_RE.search(text or "")
+    return match.group(0).rstrip(").,>\"'") if match else None
+
+
 async def mediainfo_cmd(client: Client, message: Message):
+    parts = (message.text or "").split(None, 1)
     target = message.reply_to_message
-    if target is None or not (target.document or target.video or target.audio
-                              or target.animation or target.voice):
-        await message.reply_text(
-            "Reply to a media message with /mediainfo and I'll probe it.\n"
-            "You can also send a file with the caption /mediainfo, or tap "
-            "the 📊 MediaInfo button under a result.")
+
+    # 1) /mediainfo <link> — probe a direct file URL.
+    link = _first_url(parts[1] if len(parts) > 1 else "")
+    if link:
+        await react(message, "👀")
+        await _probe_and_report(
+            client, message.chat.id, lambda: probe_url(link),
+            react_msg=message,
+            probing_text="🔍 Probing the link — fetching just the first bits…")
         return
-    await react(message, "👀")
-    await _probe_and_report(client, message.chat.id, target,
-                            react_msg=message)
+
+    # 2) Reply to a message holding a link.
+    if target is not None:
+        link = _first_url(getattr(target, "text", None)
+                          or getattr(target, "caption", None))
+        if link:
+            await react(message, "👀")
+            await _probe_and_report(
+                client, message.chat.id, lambda: probe_url(link),
+                react_msg=message,
+                probing_text="🔍 Probing the link — fetching just the first bits…")
+            return
+
+    # 3) Reply to a media message — the classic path.
+    if target is not None and (target.document or target.video or target.audio
+                               or target.animation or target.voice):
+        await react(message, "👀")
+        await _probe_and_report(
+            client, message.chat.id,
+            lambda: probe_message(client, target), react_msg=message)
+        return
+
+    await message.reply_text(
+        "Reply to a media message with /mediainfo and I'll probe it.\n"
+        "You can also send a file with the caption /mediainfo, use "
+        "/mediainfo with a direct file link, or tap the 📊 MediaInfo "
+        "button under a result.")
 
 
 @Client.on_message(filters.private & owner_only & MEDIA_FILTER
@@ -126,7 +165,8 @@ async def mediainfo_cmd(client: Client, message: Message):
 async def mediainfo_caption(client: Client, message: Message):
     try:
         await react(message, "👀")
-        await _probe_and_report(client, message.chat.id, message,
+        await _probe_and_report(client, message.chat.id,
+                                lambda: probe_message(client, message),
                                 react_msg=message)
     finally:
         # This message was a MediaInfo request, not a file-to-link upload:
@@ -159,4 +199,6 @@ async def mediainfo_callback(client: Client, query: CallbackQuery):
         return
     chat = query.message.chat.id if query.message else chat_id
     await react(target, "👀")
-    await _probe_and_report(client, chat, target, react_msg=target)
+    await _probe_and_report(client, chat,
+                            lambda: probe_message(client, target),
+                            react_msg=target)

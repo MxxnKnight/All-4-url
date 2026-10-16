@@ -10,10 +10,12 @@ Supported link shapes:
   https://t.me/c/<internal_id>/<msg_id>          (private chats)
   https://t.me/<channel>/<topic_id>/<msg_id>     (forum topics)
 
-Single link: processed immediately. Two or more links: the bot first
-shows a content-type filter menu (tick on/off), then a delay menu
-(Destiny-style), and only then starts the batch. /cancel stops a
-running batch.
+Single link: processed immediately. Two links to the *same chat* are a
+range: the bot walks every message between them (first…last). Three or
+more links, or links to different chats, are processed as an explicit
+list. Either way the bot first shows a content-type filter menu (tick
+on/off), then a delay menu (Destiny-style), and only then starts the
+batch. /cancel stops a running batch.
 """
 
 import asyncio
@@ -25,6 +27,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
+import config
 from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
 from core import stats
@@ -77,6 +80,43 @@ def parse_link(url: str):
     return username, message_id
 
 
+class MessageMissing(ValueError):
+    """A ranged-batch message that doesn't exist (deleted, most likely)."""
+
+
+def _expand_links(links: list[str]) -> tuple[list[str], str | None, bool]:
+    """Expand a 2-link same-chat batch into the full message range.
+
+    t.me/channel/1 + t.me/channel/7 becomes the 7 links for messages
+    1…7, so the batch walks everything between (and including) them.
+    Returns (links, range_label, is_range). Anything else — 1 link,
+    3+ links, different chats — comes back unchanged.
+
+    Raises ValueError when the range is bigger than BATCH_RANGE_LIMIT.
+    """
+    if len(links) != 2:
+        return links, None, False
+    first, second = parse_link(links[0]), parse_link(links[1])
+    if not first or not second or str(first[0]) != str(second[0]):
+        return links, None, False
+    lo, hi = sorted((first[1], second[1]))
+    if lo == hi:
+        return links, None, False
+    count = hi - lo + 1
+    if count > config.BATCH_RANGE_LIMIT:
+        raise ValueError(
+            f"That range is {count} messages — the limit is "
+            f"{config.BATCH_RANGE_LIMIT} per batch. Send a smaller range.")
+    chat = first[0]
+    if isinstance(chat, int):
+        internal = str(chat)[4:] if str(chat).startswith("-100") else str(chat)
+        expanded = [f"https://t.me/c/{internal}/{i}"
+                    for i in range(lo, hi + 1)]
+    else:
+        expanded = [f"https://t.me/{chat}/{i}" for i in range(lo, hi + 1)]
+    return expanded, f"messages {lo}–{hi}", True
+
+
 def _media_kind(msg) -> str:
     """Classify a fetched message into a FILTER_TYPES key.
 
@@ -108,8 +148,8 @@ async def _fetch_messages(user: Client, chat_id, message_id: int):
     """The message, or the whole media group it belongs to."""
     message = await user.get_messages(chat_id, message_id)
     if message is None or getattr(message, "empty", False):
-        raise ValueError("that message does not exist (or the account "
-                         "cannot see that chat)")
+        raise MessageMissing("that message does not exist (or the account "
+                             "cannot see that chat)")
     if getattr(message, "media_group_id", None):
         try:
             return await user.get_media_group(chat_id, message_id)
@@ -196,12 +236,15 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
 
 async def _run_links(bot: Client, message: Message, links: list[str],
                      filters: dict | None = None, delay: int = 3,
-                     status_msg: Message | None = None):
+                     status_msg: Message | None = None,
+                     quiet_missing: bool = False):
     """Run a batch of links.
 
     `message` is the owner's links message (reactions + failure replies
     go here). `status_msg`, when given, is an existing message (the
-    batch menu) that becomes the progress display.
+    batch menu) that becomes the progress display. `quiet_missing`
+    (range batches) counts deleted messages silently instead of
+    spamming one failure reply per missing message.
     """
     await react(message, "👀")
     owner = message.from_user.id
@@ -218,14 +261,15 @@ async def _run_links(bot: Client, message: Message, links: list[str],
     else:
         status = status_msg
         await status.edit_text(f"Starting {len(links)} link(s)…")
-    done = failed = skipped = filtered = 0
+    done = failed = skipped = filtered = missing = 0
     seen: set = set()  # albums / messages already handled in this batch
     async with JOB_SEMAPHORE:
         for i, link in enumerate(links, 1):
             if cancel.is_set():
                 await status.edit_text(
                     f"Batch cancelled. {done} done, {failed} failed, "
-                    f"{skipped} skipped, {filtered} filtered out.")
+                    f"{skipped} skipped, {filtered} filtered out, "
+                    f"{missing} missing.")
                 return
             parsed = parse_link(link)
             if not parsed:
@@ -245,6 +289,12 @@ async def _run_links(bot: Client, message: Message, links: list[str],
             except FloodWait as exc:
                 await asyncio.sleep(int(getattr(exc, "value", 10)) + 1)
                 failed += 1
+            except MessageMissing as exc:
+                if quiet_missing:
+                    missing += 1  # deleted message inside a range: normal
+                else:
+                    failed += 1
+                    await message.reply_text(f"Failed: {link}\n{exc}")
             except Exception as exc:
                 failed += 1
                 await message.reply_text(f"Failed: {link}\n{exc}")
@@ -255,6 +305,8 @@ async def _run_links(bot: Client, message: Message, links: list[str],
         summary += f" {skipped} skipped (already in this batch)."
     if filtered:
         summary += f" {filtered} filtered out."
+    if missing:
+        summary += f" {missing} missing (deleted)."
     await status.edit_text(summary)
     stats.record_job("restricted", ok=done > 0 and failed == 0)
     if done and not failed:
@@ -313,20 +365,36 @@ def _get_batch(query: CallbackQuery):
 
 
 async def _start_batch_menu(client: Client, message: Message, links: list[str]):
-    """Two or more links: filter menu first, delay menu second."""
+    """Two or more links: filter menu first, delay menu second.
+
+    Exactly two links to the same chat expand into the full message
+    range between them (t.me/channel/1 + t.me/channel/7 walks 1…7).
+    """
+    try:
+        links, range_label, is_range = _expand_links(links)
+    except ValueError as exc:
+        await react(message, "👎")
+        await message.reply_text(str(exc))
+        return
     bid = _next_batch_id()
+    if range_label:
+        menu_text = (f"Batch: {range_label} ({len(links)} items) — "
+                     f"choose what to keep:")
+    else:
+        menu_text = (f"Batch of {len(links)} link(s) — choose what to keep:")
     BATCH_SESSIONS[bid] = {
         "id": bid,
         "links": links,
+        "menu_text": menu_text,
+        "range_mode": is_range,
         "origin_chat": message.chat.id,
         "origin_msg": message.id,
         "filters": {key: True for key, _ in FILTER_TYPES},
         "created": time.time(),
     }
     await react(message, "👀")
-    await message.reply_text(
-        f"Batch of {len(links)} link(s) — choose what to keep:",
-        reply_markup=_filter_menu(BATCH_SESSIONS[bid]))
+    await message.reply_text(menu_text,
+                             reply_markup=_filter_menu(BATCH_SESSIONS[bid]))
 
 
 @Client.on_callback_query(filters.regex(r"^(bf|bd|bx):"))
@@ -362,7 +430,7 @@ async def batch_menu_callback(client: Client, query: CallbackQuery):
         if action == "back":
             await query.answer()
             await query.message.edit_text(
-                f"Batch of {len(batch['links'])} link(s) — choose what to keep:",
+                batch["menu_text"],
                 reply_markup=_filter_menu(batch))
             return
         # toggle a content type
@@ -388,7 +456,8 @@ async def batch_menu_callback(client: Client, query: CallbackQuery):
             user_msg = query.message
         await _run_links(client, user_msg, batch["links"],
                          filters=batch["filters"], delay=delay,
-                         status_msg=query.message)
+                         status_msg=query.message,
+                         quiet_missing=batch["range_mode"])
 
 
 @Client.on_message(filters.private & owner_only & filters.regex(r"t\.me/"))

@@ -86,6 +86,9 @@ MAX_JOBS = max(1, _int("MAX_JOBS", 2))
 # limited to 2 GB anyway; keep a little headroom below that.
 MAX_FILE_SIZE = _int("MAX_FILE_SIZE", 2_000_000_000)
 
+# Biggest message range a single /batch may expand (first-link..last-link).
+BATCH_RANGE_LIMIT = max(2, _int("BATCH_RANGE_LIMIT", 100))
+
 
 def cookies_path() -> str | None:
     """Path to a usable cookies.txt, or None if the owner never set one up."""

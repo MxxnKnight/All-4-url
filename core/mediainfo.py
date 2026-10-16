@@ -3,10 +3,11 @@
 Downloading a whole 2 GB file just to describe it would be madness on a
 free-tier box, and usually unnecessary: container headers and stream
 metadata live at the start of the file (and, for MP4/MOV, sometimes in a
-`moov` atom at the very end). So we stream at most HEAD_CHUNKS chunks
-(~1 MiB each in this library's stream_media), run the MediaInfo CLI over
-that head (ffprobe as fallback), and — for MP4/MOV/MKV files whose head
-yielded no stream info — retry once with the last chunks appended.
+`moov` atom at the very end). So we fetch at most HEAD_CHUNKS chunks
+(~1 MiB each), run the MediaInfo CLI over that head (ffprobe as
+fallback), and — for MP4/MOV files whose head yielded no stream info —
+fetch the tail once and analyse ftyp+moov extracted from it (naive
+head+tail gluing doesn't parse, so the moov box is located properly).
 Total data touched is capped at ~16 MiB no matter how big the file is.
 """
 
@@ -15,15 +16,81 @@ import math
 import mimetypes
 import os
 import shutil
+import struct
 import subprocess
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
+
+import aiohttp
 
 from core.utils import human_bytes, human_time, make_job_dir, cleanup_dir, run_blocking
 
 CHUNK_SIZE = 1024 * 1024  # stream_media counts limit/offset in ~1 MiB chunks
 HEAD_CHUNKS = 12
 TAIL_CHUNKS = 4
-TAIL_EXTS = {".mp4", ".mov", ".m4v", ".mkv"}
+#: Containers whose metadata can live at the very end of the file
+#: (MP4/MOV `moov` atom). MKV keeps its track info at the start, so a
+#: tail fetch can never help it.
+TAIL_EXTS = {".mp4", ".mov", ".m4v"}
+
+
+def _find_box(data: bytes, box_type: bytes) -> tuple[int, int] | None:
+    """(offset, size) of the first plausible `box_type` box in `data`.
+
+    "Plausible" = the 4 size bytes before the type form a box that fits
+    inside `data`. Filters out type names occurring inside media bytes.
+    """
+    pos = 0
+    while True:
+        pos = data.find(box_type, pos)
+        if pos < 4:
+            return None
+        size = struct.unpack(">I", data[pos - 4:pos])[0]
+        if 8 <= size <= len(data) - (pos - 4):
+            return pos - 4, size
+        pos += 4
+
+
+def _moov_probe(head_start: bytes, tail: bytes) -> bytes | None:
+    """Build a parseable probe for moov-at-end MP4/MOV files.
+
+    Returns ftyp (from the head) + the moov box (from the tail), which
+    is all ffprobe/mediainfo need for codec/dimension/duration info.
+    Naive head+tail gluing does NOT work — the parser chokes on the
+    mid-file junk — so we extract just the moov box. None when either
+    piece can't be found.
+    """
+    if len(head_start) < 8:
+        return None
+    ftyp_size = struct.unpack(">I", head_start[0:4])[0]
+    if head_start[4:8] != b"ftyp" or not 8 <= ftyp_size <= len(head_start):
+        return None
+    found = _find_box(tail, b"moov")
+    if not found:
+        return None
+    moov_off, moov_size = found
+    return head_start[:ftyp_size] + tail[moov_off:moov_off + moov_size]
+
+
+def _analyse_moov_tail(head_path: str, tail: bytes, job_dir: str,
+                       ext: str):
+    """Analyse a moov-at-end file from head file + tail bytes.
+
+    Returns the _analyse() tuple, or None when no moov box is found.
+    Sync — call it through run_blocking.
+    """
+    try:
+        with open(head_path, "rb") as handle:
+            head_start = handle.read(4096)
+    except OSError:
+        return None
+    probe = _moov_probe(head_start, tail)
+    if not probe:
+        return None
+    tail_path = os.path.join(job_dir, "probe_tail" + ext)
+    with open(tail_path, "wb") as handle:
+        handle.write(probe)
+    return _analyse(tail_path)
 
 
 class ProbeError(Exception):
@@ -314,21 +381,20 @@ async def probe_message(client, message) -> MediaInfoResult:
         if (not has_streams and ext in TAIL_EXTS and file_size > written):
             total_chunks = math.ceil(file_size / CHUNK_SIZE)
             offset = max(0, total_chunks - TAIL_CHUNKS)
-            tail_path = os.path.join(job_dir, "probe_tail" + ext)
-            shutil.copyfile(head_path, tail_path)
+            tail_parts: list[bytes] = []
             tail_written = 0
             cap = TAIL_CHUNKS * CHUNK_SIZE
-            with open(tail_path, "ab") as handle:
-                async for chunk in client.stream_media(
-                        message, limit=TAIL_CHUNKS, offset=offset):
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-                    tail_written += len(chunk)
-                    if tail_written >= cap:
-                        break
+            async for chunk in client.stream_media(
+                    message, limit=TAIL_CHUNKS, offset=offset):
+                if not chunk:
+                    continue
+                tail_parts.append(chunk)
+                tail_written += len(chunk)
+                if tail_written >= cap:
+                    break
             probed += tail_written
-            alt = await run_blocking(_analyse, tail_path)
+            alt = await run_blocking(_analyse_moov_tail, head_path,
+                                     b"".join(tail_parts), job_dir, ext)
             if alt and (best is None or alt[2] > best[2]):
                 best = alt
 
@@ -373,6 +439,131 @@ def report_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
     if title is not None:
         sections.append((title, "\n".join(body).strip()))
     return " ".join(header_lines), sections
+
+
+async def probe_url(url: str) -> MediaInfoResult:
+    """Probe a direct file URL by downloading only its first bits.
+
+    Mirrors probe_message's strategy for links: fetch the head (up to
+    ~12 MiB, via a Range request so polite servers send just that),
+    analyse it, and — for MP4/MOV/MKV with no stream info yet — fetch
+    the tail once via Range. Never downloads the whole file.
+    """
+    from core.extractors.direct import (BROWSER_UA, filename_from,
+                                        is_playlist_url)
+
+    url = (url or "").strip().rstrip(").,>\"'")
+    if not url.lower().startswith(("http://", "https://")):
+        raise ProbeError("that doesn't look like a download link")
+    if is_playlist_url(url):
+        raise ProbeError(
+            "that's a stream playlist (.m3u8/.mpd) — send it as a plain "
+            "link and I'll download the video first, then probe that")
+
+    timeout = aiohttp.ClientTimeout(total=180, connect=30, sock_read=60)
+    job_dir = make_job_dir()
+    try:
+        file_name, file_size = "file", 0
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                async with session.head(
+                        url, allow_redirects=True,
+                        headers={"User-Agent": BROWSER_UA}) as resp:
+                    if resp.status >= 400:
+                        raise ProbeError(f"the link answered HTTP {resp.status}")
+                    file_size = int(resp.headers.get("Content-Length") or 0)
+                    file_name = filename_from(url, resp.headers)
+            except ProbeError:
+                raise
+            except Exception:
+                file_name = filename_from(url)
+
+            ext = (os.path.splitext(file_name)[1].lower()
+                   or os.path.splitext(urlparse(url).path)[1].lower()
+                   or ".bin")
+            head_path = os.path.join(job_dir, "probe_url" + ext)
+
+            cap = HEAD_CHUNKS * CHUNK_SIZE
+            written = 0
+            get_headers = {"User-Agent": BROWSER_UA,
+                           "Range": f"bytes=0-{cap - 1}"}
+            async with session.get(
+                    url, allow_redirects=True,
+                    headers=get_headers) as resp:
+                if resp.status >= 400:
+                    raise ProbeError(f"the link answered HTTP {resp.status}")
+                with open(head_path, "wb") as handle:
+                    async for chunk in resp.content.iter_chunked(256 * 1024):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        written += len(chunk)
+                        if written >= cap or (file_size
+                                              and written >= file_size):
+                            break
+            if written == 0:
+                raise ProbeError("the link returned no data")
+            probed = written
+
+            best = await run_blocking(_analyse, head_path)
+            has_streams = bool(best and (best[1].get("video")
+                                         or best[1].get("audio")))
+
+            # moov-at-end rescue, same idea as probe_message.
+            if (not has_streams and ext in TAIL_EXTS and file_size > written):
+                tail_start = max(0, file_size - TAIL_CHUNKS * CHUNK_SIZE)
+                need = file_size - tail_start
+                tail_headers = {"User-Agent": BROWSER_UA,
+                                "Range": f"bytes={tail_start}-"}
+                tail_parts: list[bytes] = []
+                try:
+                    async with session.get(
+                            url, allow_redirects=True,
+                            headers=tail_headers) as tresp:
+                        if tresp.status in (200, 206):
+                            # 206: body already starts at tail_start.
+                            # 200 (Range ignored): skip to tail_start.
+                            skip = 0 if tresp.status == 206 else tail_start
+                            tail_written = 0
+                            async for chunk in tresp.content.iter_chunked(
+                                    256 * 1024):
+                                if not chunk:
+                                    continue
+                                if skip >= len(chunk):
+                                    skip -= len(chunk)
+                                    continue
+                                if skip:
+                                    chunk = chunk[skip:]
+                                    skip = 0
+                                take = min(len(chunk), need - tail_written)
+                                tail_parts.append(chunk[:take])
+                                tail_written += take
+                                if tail_written >= need:
+                                    break
+                            probed += tail_written
+                except Exception:
+                    pass  # the head analysis still stands
+                if tail_parts:
+                    alt = await run_blocking(
+                        _analyse_moov_tail, head_path,
+                        b"".join(tail_parts), job_dir, ext)
+                    if alt and (best is None or alt[2] > best[2]):
+                        best = alt
+
+        if best is None:
+            raise ProbeError(
+                "neither mediainfo nor ffprobe could read any metadata "
+                "from the start of this link — it may not be a media file, "
+                "or the server refused the request")
+        text, summary, _score_value, tool = best
+        header = (f"MediaInfo for {file_name} "
+                  f"({human_bytes(file_size)}, probed {human_bytes(probed)} "
+                  f"via {tool})\n\n")
+        return MediaInfoResult(
+            file_name=file_name, file_size=file_size, probed_bytes=probed,
+            text=header + text, summary=summary, tool=tool)
+    finally:
+        cleanup_dir(job_dir)
 
 
 def format_summary(result: MediaInfoResult) -> str:
