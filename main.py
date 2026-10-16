@@ -23,10 +23,29 @@ except Exception:  # uvloop unavailable (e.g. Windows dev) — asyncio is fine
     pass
 
 from pyrogram import Client, idle
+from pyrogram.types import BotCommand
 
 import config
 from core import webserver
 from core.userclient import stop_user_client
+
+#: The commands menu (Telegram's "/" popup). Registered with Telegram
+#: on every startup, so the menu is always there with no BotFather setup.
+BOT_COMMANDS = [
+    BotCommand("start", "Show the main menu"),
+    BotCommand("help", "How each feature works"),
+    BotCommand("batch", "Batch t.me links — or a first..last range"),
+    BotCommand("cancel", "Stop the current batch"),
+    BotCommand("mediainfo", "File metadata: reply, file, or link"),
+]
+
+
+async def _register_commands(app: Client) -> None:
+    try:
+        if await app.set_bot_commands(BOT_COMMANDS):
+            log.info("bot commands registered")
+    except Exception as exc:
+        log.warning("could not register bot commands: %s", exc)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +84,7 @@ async def run() -> None:
     await app.start()
     me = await app.get_me()
     log.info("bot started as @%s (owner id %s)", me.username, config.OWNER_ID)
+    await _register_commands(app)
     try:
         await idle()
     finally:
