@@ -189,7 +189,7 @@ report arrives as a `mediainfo.txt` document instead.
 | A file with caption `/mediainfo`, or a reply with `/mediainfo` | A metadata summary + a Telegraph page with the full MediaInfo report (partial probe — no full download) |
 | `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
-| `/batch` then one message with many t.me links (or links right in the `/batch` message) | Each post re-uploaded in order, 3 s apart |
+| `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs |
 | `/cancel` | Stops a running batch after the current item |
 | `/help` | Short in-bot help |
 

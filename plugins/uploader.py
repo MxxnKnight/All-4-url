@@ -25,7 +25,8 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 import config
 from core.extractors import gallery_engine, scrape, terabox
-from core.extractors.direct import check_direct, download_file
+from core.extractors.direct import (check_direct, download_file,
+                                     is_playlist_url)
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
@@ -203,9 +204,22 @@ async def _scrape_flow(client, message, url, status, editor):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
         try:
-            path = await scrape.download(url, job_dir, progress_cb=progress)
+            media_url = await scrape.find_media_url(url)
+            if is_playlist_url(media_url):
+                # The page embeds a stream manifest, not a file — let
+                # yt-dlp fetch the real segments instead of saving the
+                # playlist text.
+                await status.edit_text(
+                    "Found a stream playlist — downloading the video…")
+                paths = await download(media_url, job_dir,
+                                       progress_cb=progress)
+            else:
+                path = await download_file(media_url, job_dir,
+                                           progress_cb=progress,
+                                           headers={"Referer": url})
+                paths = [path]
             await editor.edit("Uploading…", force=True)
-            await send_files(client, message.chat.id, [path],
+            await send_files(client, message.chat.id, paths,
                              caption=url, status_msg=status)
             await status.delete()
         finally:

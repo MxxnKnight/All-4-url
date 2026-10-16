@@ -3,6 +3,11 @@
 A HEAD request tells us: if the response is not an HTML page, or the
 server offers an attachment filename, we can stream the bytes straight
 down with aiohttp instead of asking yt-dlp to understand a web page.
+
+Playlists (.m3u8 HLS / .mpd DASH) are deliberately NOT files: they are
+stream manifests, and downloading one would just save a few KB of text.
+They return None here so the chain hands them to yt-dlp, which fetches
+the actual video segments.
 """
 
 import os
@@ -23,6 +28,14 @@ FILE_EXTS = {
     ".png", ".webp", ".gif", ".apk", ".iso", ".bin",
 }
 
+#: Stream playlists — never "direct files", always handed to yt-dlp.
+PLAYLIST_EXTS = {".m3u8", ".mpd"}
+
+
+def is_playlist_url(url: str) -> bool:
+    """True for HLS (.m3u8) / DASH (.mpd) manifest URLs."""
+    return os.path.splitext(urlparse(url).path)[1].lower() in PLAYLIST_EXTS
+
 
 def filename_from(url: str, headers=None, fallback: str = "file") -> str:
     if headers:
@@ -36,6 +49,8 @@ def filename_from(url: str, headers=None, fallback: str = "file") -> str:
 
 async def check_direct(url: str) -> dict | None:
     """Return {filename, size, mime} if `url` looks like a raw file."""
+    if is_playlist_url(url):
+        return None  # a stream manifest — yt-dlp's job, not ours
     ext = os.path.splitext(urlparse(url).path)[1].lower()
     timeout = aiohttp.ClientTimeout(total=20)
     try:
