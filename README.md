@@ -204,13 +204,15 @@ both at once). No code changes are needed.
 
 ## Limits & honest caveats
 
-- **2 GB** is Telegram's ceiling for bot uploads. Bigger results will
-  fail at the upload step.
+- **2 GB** is Telegram's ceiling for bot uploads. Anything bigger is
+  refused up front with a clear message instead of dying mid-download
+  (`MAX_FILE_SIZE` env, default 2 GB); the same guard also refuses a
+  download that wouldn't fit the server's free disk space.
 - **Koyeb's 100 GB/month** outbound counts every upload *and* every
   file-to-link download. Heavy Terabox/large-file use eats it fast.
-- **Range/seek:** file-to-link streams answer from the start of the file
-  (the library's `stream_media` offsets are chunk-based, not byte-based),
-  so players can play but generally can't seek. Download links are exact.
+- **Range/seek:** file-to-link streams answer HTTP Range requests with
+  byte-exact 206 responses, so players can seek. RAM stays flat (256 KiB
+  slices) no matter the file size — built for the free tier.
 - **Terabox is fragile**: its unofficial share flow changes occasionally
   and cookies expire; when it breaks, the extractor in
   `core/extractors/terabox.py` is the one file to re-check.

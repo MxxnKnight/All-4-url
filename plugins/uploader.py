@@ -31,9 +31,10 @@ from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
 from core.sender import send_files
-from core.utils import (JOB_SEMAPHORE, ThrottledEditor, cleanup_dir,
-                        human_bytes, is_owner_id, list_files, make_job_dir,
-                        owner_only, progress_text, react, react_to)
+from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
+                        check_size, cleanup_dir, human_bytes, is_owner_id,
+                        list_files, make_job_dir, owner_only, progress_text,
+                        react, react_to)
 
 URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -66,6 +67,7 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     """Returns True when a file picker was shown (job not finished yet)."""
     files = await terabox.list_files(url)
     if len(files) == 1:
+        check_size(files[0].get("size") or 0, files[0].get("name") or "file")
         await _terabox_download(client, message, url, 0, files[0], status, editor)
         return False
     job_id = _next_job_id()
@@ -120,6 +122,7 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
         job_id = _next_job_id()
         PENDING[job_id] = {"type": "ytdlp", "url": url,
                            "chat_id": message.chat.id, "title": title,
+                           "formats": formats,
                            "origin_chat": message.chat.id,
                            "origin_msg": message.id}
         buttons = [[InlineKeyboardButton(
@@ -136,6 +139,10 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
             reply_markup=InlineKeyboardMarkup(buttons))
         return True
 
+    if formats:
+        # No picker (reels / single format): still refuse a giant file
+        # before spending the download on it.
+        check_size(formats[0].get("filesize") or 0, title)
     await _ytdlp_download(client, message, url, title, status, editor)
     return False
 
@@ -283,6 +290,9 @@ async def _dispatch(client: Client, message: Message, url: str,
                 picker = await _terabox_flow(client, message, url,
                                              status, editor)
                 return "pending" if picker else "done"
+            except SizeBlocked as exc:
+                await status.edit_text(f"❌ {exc}")
+                return "failed"
             except Exception as exc:
                 await status.edit_text(f"Terabox failed: {exc}")
                 return "failed"
@@ -304,6 +314,12 @@ async def _dispatch(client: Client, message: Message, url: str,
         direct_info = await check_direct(url)
         if direct_info:
             try:
+                check_size(direct_info.get("size") or 0,
+                           direct_info.get("filename") or "file")
+            except SizeBlocked as exc:
+                await status.edit_text(f"❌ {exc}")
+                return "failed"
+            try:
                 await _direct_flow(client, message, url, direct_info,
                                    status, editor)
                 return "done"
@@ -315,6 +331,9 @@ async def _dispatch(client: Client, message: Message, url: str,
             picker = await _ytdlp_flow(client, message, url, status, editor,
                                         ask_format=not is_reel)
             return "pending" if picker else "done"
+        except SizeBlocked as exc:
+            await status.edit_text(f"❌ {exc}")
+            return "failed"
         except Exception as exc:
             errors.append(f"yt-dlp: {exc}")
 
@@ -347,6 +366,24 @@ async def _dispatch(client: Client, message: Message, url: str,
         return "failed"
 
 
+def _check_picked_format(job: dict, choice: str) -> None:
+    """Refuse a quality-button tap when that format is too big.
+
+    Raises SizeBlocked; the callback's except turns it into a
+    "Download failed: …" message on the status line.
+    """
+    formats = job.get("formats") or []
+    if not formats or choice == "audio":
+        return  # audio-only size is unknown until the mp3 exists
+    if choice == "best":
+        picked = formats[0]
+    else:
+        picked = next((f for f in formats if f["format_id"] == choice), None)
+    if picked:
+        check_size(picked.get("filesize") or 0,
+                   job.get("title") or "file")
+
+
 # ---------------------------------------------------------------- callbacks
 
 @Client.on_callback_query(filters.regex(r"^(fmt|tera):"))
@@ -374,10 +411,13 @@ async def format_callback(client: Client, query: CallbackQuery):
             index = int(parts[2])
             files = await terabox.list_files(job["url"])
             info = files[index] if index < len(files) else None
+            if info:
+                check_size(info.get("size") or 0, info.get("name") or "file")
             await _terabox_download(client, fake_message, job["url"], index,
                                     info, status, editor)
         else:
             choice = parts[2]
+            _check_picked_format(job, choice)
             await _ytdlp_download(
                 client, fake_message, job["url"], job.get("title", "Download"),
                 status, editor,

@@ -61,6 +61,38 @@ async def react_to(client, chat_id: int, message_id: int, emoji: str) -> None:
         pass
 
 
+class SizeBlocked(Exception):
+    """Raised when a file is refused by the size guard (too big for the
+    Telegram limit or for the free-tier host's disk)."""
+
+
+#: Keep this much disk free after a download, so the host never fills up.
+_DISK_HEADROOM = 256 * 1024 * 1024
+
+
+def check_size(size: int | None, name: str = "file") -> None:
+    """Raise SizeBlocked if `size` bytes cannot be downloaded here.
+
+    `size` of 0/None means "unknown" — nothing to check, the download
+    streams in chunks so RAM is never the problem, only disk.
+    """
+    size = int(size or 0)
+    if size <= 0:
+        return
+    if size > config.MAX_FILE_SIZE:
+        raise SizeBlocked(
+            f"{name} is {human_bytes(size)} — over the "
+            f"{human_bytes(config.MAX_FILE_SIZE)} limit.")
+    try:
+        free = shutil.disk_usage(config.BASE_DIR).free
+    except Exception:
+        return  # can't measure; let the download try
+    if size + _DISK_HEADROOM > free:
+        raise SizeBlocked(
+            f"Not enough space on the server for {human_bytes(size)} "
+            f"right now — try a smaller file.")
+
+
 def human_bytes(size) -> str:
     if not size:
         return "0 B"

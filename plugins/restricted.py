@@ -27,8 +27,9 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
-from core.utils import (JOB_SEMAPHORE, cleanup_dir, is_owner_id,
-                        make_job_dir, owner_only, react, react_to)
+from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size,
+                        cleanup_dir, is_owner_id, make_job_dir, owner_only,
+                        react, react_to)
 
 LINK_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/"
@@ -150,6 +151,7 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
     paths: list[str] = []
     caption = ""
     handled_any = False
+    blocked_msg = ""
     try:
         for msg in messages:
             kind = _media_kind(msg)
@@ -163,6 +165,13 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
                     await bot.send_message(owner_chat, text)
                     handled_any = True
                 continue
+            try:
+                check_size(getattr(media, "file_size", 0) or 0,
+                           getattr(media, "file_name", None) or "file")
+            except SizeBlocked as exc:
+                if not blocked_msg:
+                    blocked_msg = str(exc)
+                continue  # too big for this host — skip the item
             handled_any = True
             if not caption:
                 caption = msg.caption or ""
@@ -173,7 +182,11 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
                 paths.append(path)
         if paths:
             await send_files(bot, owner_chat, paths, caption=caption)
-        return "done" if handled_any else "filtered"
+        if handled_any:
+            return "done"
+        if blocked_msg:
+            raise SizeBlocked(blocked_msg)
+        return "filtered"
     finally:
         for job_dir in job_dirs:
             cleanup_dir(job_dir)

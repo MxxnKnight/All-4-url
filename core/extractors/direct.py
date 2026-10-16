@@ -37,14 +37,29 @@ def is_playlist_url(url: str) -> bool:
     return os.path.splitext(urlparse(url).path)[1].lower() in PLAYLIST_EXTS
 
 
+#: Longest filename we will write (filesystems cap at 255 bytes).
+_MAX_NAME_LEN = 200
+
+
+def safe_filename(name: str, fallback: str = "file") -> str:
+    """Tidy a filename: no path tricks, no control chars, bounded length."""
+    name = os.path.basename((name or "").strip()) or fallback
+    name = "".join(c for c in name if c.isprintable() or c in (" ",))
+    name = name.strip() or fallback
+    if len(name) > _MAX_NAME_LEN:
+        root, ext = os.path.splitext(name)
+        name = root[:_MAX_NAME_LEN - len(ext)] + ext
+    return name
+
+
 def filename_from(url: str, headers=None, fallback: str = "file") -> str:
     if headers:
         disposition = headers.get("Content-Disposition", "")
         match = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", disposition)
         if match:
-            return unquote(match.group(1)).strip()
+            return safe_filename(unquote(match.group(1)), fallback)
     name = unquote(os.path.basename(urlparse(url).path)) or fallback
-    return name
+    return safe_filename(name, fallback)
 
 
 async def check_direct(url: str) -> dict | None:
