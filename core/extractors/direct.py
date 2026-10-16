@@ -16,6 +16,8 @@ from urllib.parse import unquote, urlparse
 
 import aiohttp
 
+from core import stats
+
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -116,4 +118,5 @@ async def download_file(url: str, dest_dir: str, progress_cb=None,
                     done += len(chunk)
                     if progress_cb:
                         await progress_cb(done, total)
+            stats.record_paths("downloaded", [path])
             return path

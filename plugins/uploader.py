@@ -25,6 +25,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 import config
 from core.extractors import gallery_engine, scrape, terabox
+from core import stats
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
@@ -273,8 +274,10 @@ async def url_handler(client: Client, message: Message):
     outcome = await _dispatch(client, message, url, status, editor)
     if outcome == "done":
         await react(message, "👍")
+        stats.record_job("uploader", ok=True)
     elif outcome == "failed":
         await react(message, "👎")
+        stats.record_job("uploader", ok=False)
     # "pending" = a picker is on screen; the reaction comes from the
     # button callback when the job actually finishes.
 
@@ -425,9 +428,11 @@ async def format_callback(client: Client, query: CallbackQuery):
                 audio_only=choice == "audio")
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👍")
+        stats.record_job("uploader", ok=True)
     except Exception as exc:
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👎")
+        stats.record_job("uploader", ok=False)
         try:
             await status.edit_text(f"Download failed: {exc}")
         except Exception:

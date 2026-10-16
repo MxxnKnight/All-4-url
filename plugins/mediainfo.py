@@ -17,8 +17,9 @@ from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
-from core import telegraph
-from core.mediainfo import ProbeError, format_summary, probe_message
+from core import stats, telegraph
+from core.mediainfo import (ProbeError, format_summary, probe_message,
+                            report_sections)
 from core.utils import (cleanup_dir, is_owner_id, make_job_dir, owner_only,
                         react)
 
@@ -55,6 +56,7 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
     async def _fail(text: str) -> None:
         if react_msg is not None:
             await react(react_msg, "👎")
+        stats.record_job("mediainfo", ok=False)
         await status.edit_text(text)
 
     try:
@@ -68,8 +70,14 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
 
     summary = format_summary(result)
     try:
-        url = await telegraph.create_page(
-            f"MediaInfo — {result.file_name}", result.text)
+        header, sections = report_sections(result.text)
+        if sections:
+            url = await telegraph.create_mediainfo_page(
+                f"MediaInfo — {result.file_name}",
+                result.file_name, header, sections)
+        else:  # shouldn't happen, but never lose the report
+            url = await telegraph.create_page(
+                f"MediaInfo — {result.file_name}", result.text)
     except Exception:
         # Telegraph is a nicety, not a dependency: fall back to a file.
         job_dir = make_job_dir()
@@ -84,6 +92,7 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
                                        caption="Full MediaInfo report")
         finally:
             cleanup_dir(job_dir)
+        stats.record_job("mediainfo", ok=True)
         if react_msg is not None:
             await react(react_msg, "👍")
         return
@@ -91,6 +100,7 @@ async def _probe_and_report(client: Client, chat_id: int, media_message,
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton("📊 Full MediaInfo ↗", url=url)]])
     await status.edit_text(summary, reply_markup=markup)
+    stats.record_job("mediainfo", ok=True)
     if react_msg is not None:
         await react(react_msg, "👍")
 

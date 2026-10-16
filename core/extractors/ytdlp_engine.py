@@ -9,6 +9,7 @@ import asyncio
 import os
 
 import config
+from core import stats
 from core.utils import list_files
 
 
@@ -161,4 +162,5 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
     new_files = [p for p in list_files(dest_dir) if p not in before]
     if not new_files:
         raise YtdlpError("yt-dlp finished but produced no file")
+    stats.record_paths("downloaded", new_files)
     return new_files

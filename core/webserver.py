@@ -23,6 +23,7 @@ from urllib.parse import quote
 from aiohttp import web
 
 import config
+from core import stats
 from core.linktoken import TokenError, parse_token
 
 log = logging.getLogger("all4url.web")
@@ -127,6 +128,7 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
 
     response = web.StreamResponse(status=status_code, headers=headers)
     await response.prepare(request)
+    served = 0
     if request.method != "HEAD":
         first = True
         try:
@@ -144,6 +146,7 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
                 # Telegram chunk in the HTTP buffer at once.
                 for i in range(0, len(chunk), HTTP_SLICE):
                     await response.write(chunk[i:i + HTTP_SLICE])
+                    served += min(HTTP_SLICE, len(chunk) - i)
                 if remaining is not None and remaining <= 0:
                     break
         except (ConnectionResetError, asyncio.CancelledError):
@@ -154,6 +157,7 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
         await response.write_eof()
     except Exception:
         pass
+    stats.record("served", served)
     return response
 
 

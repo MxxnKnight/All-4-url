@@ -8,6 +8,7 @@ import time
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             InputMediaPhoto)
 
+from core import stats
 from core.utils import ThrottledEditor, guess_kind, progress_text, run_blocking
 
 
@@ -170,4 +171,5 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     if mediainfo_button and len(sent_all) == 1:
         await _attach_mediainfo_button(sent_all[0])
+    stats.record_paths("uploaded", paths)
     return sent_all

@@ -3,6 +3,7 @@
 *.session-journal
 cookies.txt
 downloads/
+data/
 __pycache__/
 *.pyc
 .venv/

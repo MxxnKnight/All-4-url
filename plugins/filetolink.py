@@ -21,6 +21,7 @@ from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             Message)
 
 import config
+from core import stats
 from core.linktoken import make_token
 from core.utils import human_bytes, owner_only, react
 
@@ -62,6 +63,7 @@ async def file_to_link(client: Client, message: Message):
             stored = await message.copy(config.STORAGE_CHANNEL_ID)
         except Exception as exc:
             await react(message, "👎")
+            stats.record_job("file-to-link", ok=False)
             await status.edit_text(
                 f"Could not copy the file into the storage channel: {exc}\n"
                 "Is the bot an admin of STORAGE_CHANNEL_ID?")
@@ -93,3 +95,4 @@ async def file_to_link(client: Client, message: Message):
         f"Links expire in {config.LINK_EXPIRY_HOURS} hours.",
         reply_markup=markup)
     await react(message, "👍")
+    stats.record_job("file-to-link", ok=True)

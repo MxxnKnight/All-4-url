@@ -1,15 +1,21 @@
 """ /start and /help — a button menu into per-section help.
 
-The menu is the bot's home screen: four inline buttons, each editing
-the message to that feature's help text, with a Back button returning
-here. Owner-only, like every handler in this bot.
+The menu is the bot's home screen: four feature buttons plus a Usage
+button showing bandwidth and job stats. Each button edits the message
+to that section's text, with a Back button returning here. Owner-only,
+like every handler in this bot.
 """
 
 from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
-from core.utils import is_owner_id, owner_only
+from core import stats
+from core.utils import human_bytes, is_owner_id, owner_only
+
+#: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
+#: everything the box sends out: Telegram uploads + file-to-link serves.
+FREE_OUTBOUND_BYTES = 100 * 1024 ** 3
 
 HOME_TEXT = """**All-4-URL** — your personal downloader bot.
 
@@ -81,12 +87,64 @@ HELP = "\n\n".join([HOME_TEXT, SECTION_UPLOADER, SECTION_FILETOLINK,
                     SECTION_RESTRICTED, SECTION_MEDIAINFO])
 
 
+def _uptime_text(seconds: float) -> str:
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, _ = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _usage_text() -> str:
+    snap = stats.snapshot()
+    month, total = snap["month"], snap["total"]
+    outbound = month["uploaded"] + month["served"]
+    pct = min(100.0, outbound / FREE_OUTBOUND_BYTES * 100)
+
+    lines = [f"📊 **Usage** — {snap['month_key']}",
+             "",
+             f"⏱ Uptime: {_uptime_text(snap['uptime'])}",
+             "",
+             "**This month**",
+             f"📥 Downloaded: {human_bytes(month['downloaded'])}",
+             f"📤 Uploaded to Telegram: {human_bytes(month['uploaded'])}",
+             f"🌐 Served via links: {human_bytes(month['served'])}",
+             f"📡 Outbound: {human_bytes(outbound)} "
+             f"({pct:.0f}% of the 100 GB free allowance)",
+             "",
+             "**All time**",
+             f"📥 {human_bytes(total['downloaded'])} down · "
+             f"📤 {human_bytes(total['uploaded'])} up · "
+             f"🌐 {human_bytes(total['served'])} served"]
+    jobs = total["jobs"]
+    if jobs:
+        bits = []
+        for name in ("uploader", "restricted", "file-to-link", "mediainfo"):
+            entry = jobs.get(name)
+            if entry:
+                bit = f"{name} {entry['ok']}✓"
+                if entry["failed"]:
+                    bit += f" ({entry['failed']} failed)"
+                bits.append(bit)
+        if bits:
+            lines += ["", "📦 Jobs: " + " · ".join(bits)]
+    return "\n".join(lines)
+
+
 def _home_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 URL Uploader", callback_data="menu:uploader"),
          InlineKeyboardButton("🔗 File-to-Link", callback_data="menu:filetolink")],
         [InlineKeyboardButton("🔒 Restricted", callback_data="menu:restricted"),
          InlineKeyboardButton("📊 MediaInfo", callback_data="menu:mediainfo")],
+        [InlineKeyboardButton("📈 Usage", callback_data="menu:usage")],
     ])
 
 
@@ -111,6 +169,9 @@ async def menu_callback(_client: Client, query: CallbackQuery):
         if query.data == "menu:home":
             await query.message.edit_text(HOME_TEXT,
                                           reply_markup=_home_markup())
+        elif query.data == "menu:usage":
+            await query.message.edit_text(_usage_text(),
+                                          reply_markup=_back_markup())
         else:
             text = SECTION_TEXTS.get(query.data or "")
             if text:

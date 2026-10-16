@@ -348,6 +348,33 @@ async def probe_message(client, message) -> MediaInfoResult:
         cleanup_dir(job_dir)
 
 
+def report_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split a probe report into (header, [(section_title, body), ...]).
+
+    Sections are the `===== Kind =====` blocks built by
+    _report_from_tracks; everything before the first block is the
+    header line. Used to build a sectioned Telegraph page.
+    """
+    header_lines: list[str] = []
+    sections: list[tuple[str, str]] = []
+    title: str | None = None
+    body: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("===== ") and line.endswith(" ====="):
+            if title is not None:
+                sections.append((title, "\n".join(body).strip()))
+            title = line[len("===== "):-len(" =====")]
+            body = []
+        elif title is None:
+            if line.strip():
+                header_lines.append(line.strip())
+        else:
+            body.append(line)
+    if title is not None:
+        sections.append((title, "\n".join(body).strip()))
+    return " ".join(header_lines), sections
+
+
 def format_summary(result: MediaInfoResult) -> str:
     """Compact in-chat summary (markdown) for a probe result."""
     summary = result.summary or {}

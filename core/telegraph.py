@@ -80,3 +80,53 @@ async def create_page(title: str, text: str) -> str:
             "return_content": False,
         })
     return f"https://telegra.ph/{result['path']}"
+
+
+#: Section emojis for a MediaInfo report page.
+SECTION_EMOJI = {
+    "General": "🗒",
+    "Video": "🎞",
+    "Audio": "🔊",
+    "Text": "🔠",
+    "Menu": "🗃",
+}
+
+
+def mediainfo_nodes(file_name: str, meta: str,
+                    sections: list[tuple[str, str]]) -> list[dict]:
+    """Telegraph node list for a sectioned MediaInfo report.
+
+    A 📌 filename header, a small meta line, then one emoji-headed
+    section per track (General / Video / Audio / Subtitle / …), each
+    body kept monospaced in <pre> blocks.
+    """
+    nodes: list[dict] = [
+        {"tag": "h4", "children": [f"📌 {file_name}"]},
+    ]
+    if meta:
+        nodes.append({"tag": "p", "children": [meta]})
+    for title, body in sections:
+        base, _, suffix = title.partition(" #")
+        emoji = SECTION_EMOJI.get(base, "📦")
+        label = "Subtitle" if base == "Text" else base
+        if suffix:
+            label += f" #{suffix}"
+        nodes.append({"tag": "h4", "children": [f"{emoji} {label}"]})
+        for chunk in chunk_text(body or "—"):
+            nodes.append({"tag": "pre", "children": [chunk]})
+    return nodes
+
+
+async def create_mediainfo_page(title: str, file_name: str, meta: str,
+                                sections: list[tuple[str, str]]) -> str:
+    """Publish a sectioned MediaInfo report; returns its public URL."""
+    async with aiohttp.ClientSession() as session:
+        token = await _get_token(session)
+        result = await _api(session, "createPage", {
+            "access_token": token,
+            "title": (title or "MediaInfo")[:256],
+            "author_name": AUTHOR_NAME,
+            "content": mediainfo_nodes(file_name, meta, sections),
+            "return_content": False,
+        })
+    return f"https://telegra.ph/{result['path']}"

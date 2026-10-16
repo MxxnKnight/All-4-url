@@ -11,6 +11,7 @@ import os
 import sys
 
 import config
+from core import stats
 from core.utils import list_files
 
 
@@ -47,4 +48,5 @@ async def download(url: str, dest_dir: str) -> list[str]:
         raise GalleryError(hint)
     if not new_files:
         raise GalleryError("gallery-dl found nothing to download")
+    stats.record_paths("downloaded", new_files)
     return new_files

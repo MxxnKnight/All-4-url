@@ -27,6 +27,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
+from core import stats
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size,
                         cleanup_dir, is_owner_id, make_job_dir, owner_only,
                         react, react_to)
@@ -180,6 +181,7 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
             path = await user.download_media(msg, file_name=job_dir + "/")
             if path:
                 paths.append(path)
+                stats.record_paths("downloaded", [path])
         if paths:
             await send_files(bot, owner_chat, paths, caption=caption)
         if handled_any:
@@ -254,6 +256,7 @@ async def _run_links(bot: Client, message: Message, links: list[str],
     if filtered:
         summary += f" {filtered} filtered out."
     await status.edit_text(summary)
+    stats.record_job("restricted", ok=done > 0 and failed == 0)
     if done and not failed:
         await react(message, "👍")
 
