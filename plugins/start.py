@@ -10,8 +10,9 @@ from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
+import config
 from core import stats
-from core.utils import human_bytes, is_owner_id, owner_only
+from core.utils import human_bytes, is_admin_id, admin_only, owner_only
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
 #: everything the box sends out: Telegram uploads + file-to-link serves.
@@ -22,7 +23,10 @@ HOME_TEXT = """**All-4-URL** — your personal downloader bot.
 Send me a link or a file and I'll handle it. Pick a section below for
 details on each feature.
 
-This bot only answers its owner. Nothing is public."""
+This bot only answers its owner and sudo users. Strangers get nothing.
+
+**Sudo users** (owner only): `/addsudo <id>` or reply `/addsudo`, `/delsudo <id>`,
+`/sudos`. Permanent sudo users go in the SUDO_USERS env var."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
@@ -162,16 +166,81 @@ def _back_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ Back", callback_data="menu:home")]])
 
 
-@Client.on_message(filters.private & owner_only
+@Client.on_message(filters.private & admin_only
                    & filters.command(["start", "help"]))
 async def start_cmd(_client: Client, message: Message):
     await message.reply_text(HOME_TEXT, reply_markup=_home_markup())
 
 
+@Client.on_message(filters.private & owner_only
+                   & filters.command("addsudo"))
+async def addsudo_cmd(_client: Client, message: Message):
+    """Owner only: /addsudo <user_id> — or reply to their message."""
+    from core import sudo
+    target_id = None
+    parts = (message.text or "").split()
+    if len(parts) > 1 and parts[1].lstrip("-").isdigit():
+        target_id = int(parts[1])
+    elif (message.reply_to_message and message.reply_to_message.from_user):
+        target_id = message.reply_to_message.from_user.id
+    if not target_id:
+        await message.reply_text(
+            "Usage: /addsudo <user_id> — or reply to their message with /addsudo.\n"
+            "Get the id from @userinfobot.")
+        return
+    if sudo.is_owner(target_id):
+        await message.reply_text("That's the owner already — no need.")
+        return
+    if sudo.is_admin(target_id):
+        await message.reply_text(f"{target_id} is already a sudo user.")
+        return
+    sudo.add_sudo(target_id)
+    await message.reply_text(
+        f"✅ {target_id} is now a sudo user — full bot access.\n"
+        "Note: this lasts until the next redeploy/restart. For a permanent "
+        "sudo user, add their id to the SUDO_USERS env var instead.")
+
+
+@Client.on_message(filters.private & owner_only
+                   & filters.command("delsudo"))
+async def delsudo_cmd(_client: Client, message: Message):
+    """Owner only: /delsudo <user_id>."""
+    from core import sudo
+    parts = (message.text or "").split()
+    target_id = int(parts[1]) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else None
+    if not target_id:
+        await message.reply_text("Usage: /delsudo <user_id>")
+        return
+    env_ids, _ = sudo.list_sudo()
+    if target_id in env_ids:
+        await message.reply_text(
+            f"{target_id} comes from the SUDO_USERS env var — remove them "
+            "there and redeploy; /delsudo only removes /addsudo users.")
+        return
+    if sudo.remove_sudo(target_id):
+        await message.reply_text(f"Removed {target_id} from sudo users.")
+    else:
+        await message.reply_text(f"{target_id} is not a sudo user.")
+
+
+@Client.on_message(filters.private & owner_only
+                   & filters.command("sudos"))
+async def sudos_cmd(_client: Client, message: Message):
+    """Owner only: list sudo users."""
+    from core import sudo
+    env_ids, runtime_ids = sudo.list_sudo()
+    lines = [f"👑 Owner: {config.OWNER_ID}"]
+    lines.append("🔧 Env SUDO_USERS: " +
+                 (", ".join(str(i) for i in sorted(env_ids)) or "—"))
+    lines.append("⏳ Added via /addsudo: " +
+                 (", ".join(str(i) for i in sorted(runtime_ids)) or "—"))
+    await message.reply_text("\n".join(lines))
+
+
 @Client.on_callback_query(filters.regex(r"^menu:"))
 async def menu_callback(_client: Client, query: CallbackQuery):
-    if not is_owner_id(query.from_user.id if query.from_user else None):
-        await query.answer("Not for you.", show_alert=True)
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
         return
     await query.answer()
     try:

@@ -32,7 +32,7 @@ from core.sender import send_files
 from core.userclient import SessionNotConfigured, get_user_client
 from core import stats
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size,
-                        cleanup_dir, is_owner_id, make_job_dir, owner_only,
+                        cleanup_dir, is_admin_id, make_job_dir, admin_only,
                         react, react_to)
 
 LINK_RE = re.compile(
@@ -399,8 +399,8 @@ async def _start_batch_menu(client: Client, message: Message, links: list[str]):
 
 @Client.on_callback_query(filters.regex(r"^(bf|bd|bx):"))
 async def batch_menu_callback(client: Client, query: CallbackQuery):
-    if not is_owner_id(query.from_user.id if query.from_user else None):
-        await query.answer("Not for you.", show_alert=True)
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
         return
     batch, parts = _get_batch(query)
     if batch is None:
@@ -460,7 +460,7 @@ async def batch_menu_callback(client: Client, query: CallbackQuery):
                          quiet_missing=batch["range_mode"])
 
 
-@Client.on_message(filters.private & owner_only & filters.regex(r"t\.me/"))
+@Client.on_message(filters.private & admin_only & filters.regex(r"t\.me/"))
 async def restricted_handler(client: Client, message: Message):
     links = [m.group(0) for m in LINK_RE.finditer(message.text or "")]
     # The uploader plugin also sees non-command text; ignore plain links
@@ -475,7 +475,7 @@ async def restricted_handler(client: Client, message: Message):
         await _start_batch_menu(client, message, links)
 
 
-@Client.on_message(filters.private & owner_only & filters.command("batch"))
+@Client.on_message(filters.private & admin_only & filters.command("batch"))
 async def batch_cmd(client: Client, message: Message):
     owner = message.from_user.id
     links = [m.group(0) for m in LINK_RE.finditer(message.text or "")]
@@ -491,7 +491,7 @@ async def batch_cmd(client: Client, message: Message):
             "Send the t.me links now — one per line, all in one message.")
 
 
-@Client.on_message(filters.private & owner_only & filters.command("cancel"))
+@Client.on_message(filters.private & admin_only & filters.command("cancel"))
 async def cancel_cmd(_client: Client, message: Message):
     flag = _cancel_flags.get(message.from_user.id)
     if flag:

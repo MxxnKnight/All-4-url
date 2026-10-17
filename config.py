@@ -29,6 +29,17 @@ def _int_or_none(name: str):
         return None
 
 
+def _int_set(name: str) -> set:
+    """Space- or comma-separated ids, e.g. SUDO_USERS="123 456,789"."""
+    ids = set()
+    for part in (os.environ.get(name) or "").replace(",", " ").split():
+        try:
+            ids.add(int(part))
+        except ValueError:
+            pass
+    return ids
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
@@ -39,6 +50,13 @@ BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
 # The one and only user allowed to use this bot (your numeric Telegram id,
 # get it from @userinfobot). Everyone else is ignored.
 OWNER_ID = _int("OWNER_ID")
+
+# Extra Telegram user ids allowed to use the bot exactly like the owner
+# (full features). Space- or comma-separated, e.g. "111111111 222222222".
+# This is the permanent home for sudo users — it survives restarts.
+# /addsudo adds temporary ones (kept in data/sudo.json, lost on redeploy
+# on hosts with ephemeral disks like Render free).
+SUDO_USERS = _int_set("SUDO_USERS")
 
 # --- Restricted downloader (optional) -------------------------------------
 # Session string of the *user* account used to read restricted chats.

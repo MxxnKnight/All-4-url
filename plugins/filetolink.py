@@ -23,7 +23,7 @@ from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
 import config
 from core import stats
 from core.linktoken import make_token
-from core.utils import human_bytes, owner_only, react
+from core.utils import human_bytes, admin_only, react
 
 MEDIA_FILTER = (filters.video | filters.document | filters.photo
                 | filters.audio | filters.voice | filters.animation)
@@ -42,7 +42,7 @@ def _file_info(message: Message):
     return (None, 0, "")
 
 
-@Client.on_message(filters.private & owner_only & MEDIA_FILTER)
+@Client.on_message(filters.private & admin_only & MEDIA_FILTER)
 async def file_to_link(client: Client, message: Message):
     if not config.BASE_URL:
         await message.reply_text(

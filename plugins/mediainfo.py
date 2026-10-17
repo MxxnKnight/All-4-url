@@ -25,7 +25,7 @@ from core.mediainfo import (ProbeError, format_summary, probe_message,
                             probe_url, report_sections)
 
 URL_RE = re.compile(r"https?://[^\s]+")
-from core.utils import (cleanup_dir, is_owner_id, make_job_dir, owner_only,
+from core.utils import (cleanup_dir, is_admin_id, make_job_dir, admin_only,
                         react)
 
 MEDIA_FILTER = (filters.video | filters.document | filters.audio
@@ -116,7 +116,7 @@ def _first_url(text: str | None) -> str | None:
     return match.group(0).rstrip(").,>\"'") if match else None
 
 
-@Client.on_message(filters.private & owner_only
+@Client.on_message(filters.private & admin_only
                    & filters.command("mediainfo"))
 async def mediainfo_cmd(client: Client, message: Message):
     parts = (message.text or "").split(None, 1)
@@ -160,7 +160,7 @@ async def mediainfo_cmd(client: Client, message: Message):
         "button under a result.")
 
 
-@Client.on_message(filters.private & owner_only & MEDIA_FILTER
+@Client.on_message(filters.private & admin_only & MEDIA_FILTER
                    & caption_mediainfo, group=-1)
 async def mediainfo_caption(client: Client, message: Message):
     try:
@@ -176,8 +176,8 @@ async def mediainfo_caption(client: Client, message: Message):
 
 @Client.on_callback_query(filters.regex(r"^mi:"))
 async def mediainfo_callback(client: Client, query: CallbackQuery):
-    if not is_owner_id(query.from_user.id if query.from_user else None):
-        await query.answer("Not for you.", show_alert=True)
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
         return
     parts = (query.data or "").split(":")
     if len(parts) != 3:

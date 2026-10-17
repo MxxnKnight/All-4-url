@@ -33,8 +33,8 @@ from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           extract_info)
 from core.sender import send_files
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
-                        check_size, cleanup_dir, human_bytes, is_owner_id,
-                        list_files, make_job_dir, owner_only, progress_text,
+                        check_size, cleanup_dir, human_bytes, is_admin_id,
+                        list_files, make_job_dir, admin_only, progress_text,
                         react, react_to)
 
 URL_RE = re.compile(r"https?://[^\s]+")
@@ -261,7 +261,7 @@ async def _instagram_carousel(client, message, url, status) -> bool:
 
 # ---------------------------------------------------------------- entry point
 
-@Client.on_message(filters.private & owner_only & filters.text
+@Client.on_message(filters.private & admin_only & filters.text
                    & ~filters.command(["start", "help", "batch", "cancel",
                                        "mediainfo"]))
 async def url_handler(client: Client, message: Message):
@@ -391,8 +391,8 @@ def _check_picked_format(job: dict, choice: str) -> None:
 
 @Client.on_callback_query(filters.regex(r"^(fmt|tera):"))
 async def format_callback(client: Client, query: CallbackQuery):
-    if not is_owner_id(query.from_user.id if query.from_user else None):
-        await query.answer("Not for you.", show_alert=True)
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
         return
     parts = (query.data or "").split(":")
     if len(parts) < 3:

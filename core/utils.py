@@ -29,6 +29,23 @@ def is_owner_id(user_id) -> bool:
     return bool(user_id and config.OWNER_ID and user_id == config.OWNER_ID)
 
 
+async def _is_admin(_, __, message) -> bool:
+    from core import sudo
+    user = getattr(message, "from_user", None)
+    return sudo.is_admin(user.id if user else None)
+
+
+#: Drop-in filter for handlers: `filters.private & admin_only`.
+#: Passes for the owner AND sudo users. Strangers match nothing and
+#: get no reply at all.
+admin_only = filters.create(_is_admin, "AdminOnly")
+
+
+def is_admin_id(user_id) -> bool:
+    from core import sudo
+    return sudo.is_admin(user_id)
+
+
 async def react(message, emoji: str) -> None:
     """React to a message with an emoji — pure decoration, never fatal.
 
