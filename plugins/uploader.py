@@ -364,6 +364,15 @@ async def _dispatch(client: Client, message: Message, url: str,
                     "browser, export a cookies.txt, and send it to me with "
                     "/setcookies as the caption — I'll browse as you from "
                     "then on.")
+        if ("youtube.com" in url or "youtu.be" in url) and any(
+                "not a bot" in e for e in errors):
+            hint = ("\n\n⚠️ YouTube is challenging this server (\"not a "
+                    "bot\"), cookies or not. Try in order: 1) /updateytdlp — "
+                    "YouTube breaks old yt-dlp constantly; 2) re-export "
+                    "fresh YouTube cookies while logged in — /setcookies → "
+                    "YouTube warns if the file isn't a logged-in session; "
+                    "3) cookies from a different Google account — YouTube "
+                    "sometimes flags the account+IP combo.")
         await status.edit_text(
             "I couldn't download that with any engine:\n"
             + "\n".join(f"• {e}" for e in errors)

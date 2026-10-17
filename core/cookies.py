@@ -28,6 +28,17 @@ COOKIE_SITES = [
 
 COOKIES_DIR = os.path.join(config.BASE_DIR, "cookies")
 
+#: Cookie names that prove a *logged-in* session (not just a visitor).
+#: Used to warn when an installed file probably won't unblock the site.
+LOGIN_MARKERS = {
+    "youtube": ("SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO"),
+    "instagram": ("sessionid", "ds_user_id"),
+    "reddit": ("reddit_session",),
+    "x": ("auth_token",),
+    "tiktok": ("sessionid",),
+    "facebook": ("c_user", "xs"),
+}
+
 #: message ids already consumed as cookie installs, so file-to-link
 #: (group 0) skips files the cookie handler (group -1) claimed.
 CONSUMED: set = set()
@@ -66,6 +77,28 @@ def parse_cookies(text: str) -> tuple:
             count += 1
             domains.add(parts[0].lstrip(".").lower())
     return count, sorted(domains)
+
+
+def cookie_names(text: str) -> set:
+    """Cookie names present in Netscape-format text."""
+    names = set()
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            names.add(parts[5])
+    return names
+
+
+def looks_logged_in(platform: str, text: str) -> bool:
+    """Does the file contain a logged-in session cookie for the site?"""
+    markers = LOGIN_MARKERS.get(platform)
+    if not markers:
+        return True  # unknown site — nothing to check against
+    names = cookie_names(text)
+    return any(m in names for m in markers)
 
 
 def domain_matches(cookie_domain: str, site_domains: tuple) -> bool:

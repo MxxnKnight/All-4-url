@@ -268,7 +268,9 @@ async def sudos_cmd(_client: Client, message: Message):
 def _cookie_menu() -> InlineKeyboardMarkup:
     rows, row = [], []
     for pid, label, _domains in cookies.COOKIE_SITES:
-        row.append(InlineKeyboardButton(label, callback_data=f"cookie:{pid}"))
+        mark = "🟢 " if os.path.isfile(cookies.jar_path(pid)) else ""
+        row.append(InlineKeyboardButton(f"{mark}{label}",
+                                        callback_data=f"cookie:{pid}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -400,8 +402,15 @@ async def _install_cookie_file(client: Client, message: Message,
         await status.edit_text(f"Couldn't save the cookies: {exc}")
         return
     verb = "Updated" if existed else "Installed"
+    login_warn = ""
+    if not cookies.looks_logged_in(platform, text):
+        login_warn = (f"\n⚠️ These don't look like *logged-in* {label} "
+                      "cookies (no session cookie found) — the site may "
+                      "still block you. Export again while logged into the "
+                      "site and make sure to include all its cookies.")
     await status.edit_text(
-        f"✅ {verb} **{label}** cookies: {count} cookies.\n"
+        f"✅ {verb} **{label}** cookies: {count} cookies."
+        f"{login_warn}\n"
         "They'll be used from the next download on that site.\n"
         "Note: on Render free this lasts until the next redeploy — and "
         "cookies expire anyway, so re-send a fresh file when the site "
