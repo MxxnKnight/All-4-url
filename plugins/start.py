@@ -17,7 +17,7 @@ import sys
 import time
 
 import config
-from core import cookies, stats
+from core import backup, cookies, stats
 from core.utils import human_bytes, is_admin_id, is_owner_id, admin_only, owner_only
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
@@ -37,8 +37,9 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 **Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
 `/setcookies` and pick the site — then send its `cookies.txt`
 (exported from your browser while logged in). Each site gets its own
-jar, verified before installing; `/cookies` lists them. **yt-dlp**:
-`/updateytdlp` upgrades it on the spot, no redeploy needed."""
+jar, verified before installing; `/cookies` lists them. With
+STORAGE_CHANNEL_ID set, jars are backed up and survive redeploys.
+**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
@@ -223,15 +224,20 @@ async def addsudo_cmd(client: Client, message: Message):
         await message.reply_text(f"{target_id} is already a sudo user.")
         return
     sudo.add_sudo(target_id)
+    backed = await backup.backup_kind(client, "data/sudo.json",
+                                      sudo.DATA_FILE)
+    persist = (" Backed up to your storage channel — survives redeploys."
+               if backed else
+               " Note: this lasts until the next redeploy/restart (set "
+               "STORAGE_CHANNEL_ID to make it survive). For a permanent "
+               "sudo user, add their id to the SUDO_USERS env var instead.")
     await message.reply_text(
-        f"✅ {target_id} is now a sudo user — full bot access.\n"
-        "Note: this lasts until the next redeploy/restart. For a permanent "
-        "sudo user, add their id to the SUDO_USERS env var instead.")
+        f"✅ {target_id} is now a sudo user — full bot access.{persist}")
 
 
 @Client.on_message(filters.private & owner_only
                    & filters.command("delsudo"))
-async def delsudo_cmd(_client: Client, message: Message):
+async def delsudo_cmd(client: Client, message: Message):
     """Owner only: /delsudo <user_id>."""
     from core import sudo
     parts = (message.text or "").split()
@@ -246,6 +252,7 @@ async def delsudo_cmd(_client: Client, message: Message):
             "there and redeploy; /delsudo only removes /addsudo users.")
         return
     if sudo.remove_sudo(target_id):
+        await backup.backup_kind(client, "data/sudo.json", sudo.DATA_FILE)
         await message.reply_text(f"Removed {target_id} from sudo users.")
     else:
         await message.reply_text(f"{target_id} is not a sudo user.")
@@ -408,13 +415,22 @@ async def _install_cookie_file(client: Client, message: Message,
                       "cookies (no session cookie found) — the site may "
                       "still block you. Export again while logged into the "
                       "site and make sure to include all its cookies.")
+    backed = await backup.backup_kind(client, f"cookies/{platform}.txt",
+                                      cookies.jar_path(platform))
+    if backed:
+        persist_note = ("\n💾 Backed up to your storage channel — survives "
+                        "redeploys.")
+    else:
+        persist_note = ("\nNote: on Render free this lasts until the next "
+                        "redeploy — set STORAGE_CHANNEL_ID to make cookies "
+                        "survive redeploys. Cookies expire anyway, so "
+                        "re-send a fresh file when the site starts failing "
+                        "again.")
     await status.edit_text(
         f"✅ {verb} **{label}** cookies: {count} cookies."
         f"{login_warn}\n"
-        "They'll be used from the next download on that site.\n"
-        "Note: on Render free this lasts until the next redeploy — and "
-        "cookies expire anyway, so re-send a fresh file when the site "
-        "starts failing again.")
+        "They'll be used from the next download on that site."
+        f"{persist_note}")
 
 
 @Client.on_message(filters.private & owner_only

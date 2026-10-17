@@ -26,7 +26,7 @@ from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 
 import config
-from core import webserver
+from core import backup, stats, webserver
 from core.userclient import stop_user_client
 
 #: The commands menu (Telegram's "/" popup). Registered with Telegram
@@ -91,9 +91,17 @@ async def run() -> None:
     me = await app.get_me()
     log.info("bot started as @%s (owner id %s)", me.username, config.OWNER_ID)
     await _register_commands(app)
+    restored = await backup.restore_missing(app)
+    if restored:
+        log.info("restored from storage channel: %s", ", ".join(restored))
     try:
         await idle()
     finally:
+        try:
+            await backup.backup_kind(app, "data/stats.json",
+                                     stats.DATA_FILE)
+        except Exception as exc:
+            log.warning("stats backup on shutdown failed: %s", exc)
         await stop_user_client()
         await app.stop()
         await runner.cleanup()

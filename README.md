@@ -153,10 +153,21 @@ Manual alternative: drop per-site files into `cookies/` yourself
 (`<site>.txt`, git-ignored — never commit them), or keep one legacy
 `cookies.txt` / `COOKIES_FILE` as a fallback for every site.
 
-Cookies expire eventually (and on Render free a redeploy wipes the
-disk), so when sites start failing again, just re-send a fresh file —
-treat cookies as refreshable, not permanent. A throwaway account's
-cookies are safer than your main account's.
+Cookies expire eventually, so when sites start failing again, just
+re-send a fresh file — treat cookies as refreshable, not permanent. A
+throwaway account's cookies are safer than your main account's.
+
+### Surviving redeploys (Render wipes the disk)
+
+Free hosts wipe the container disk on every redeploy — normally that
+would delete your cookie jars, the `/addsudo` sudo list and the usage
+stats. If `STORAGE_CHANNEL_ID` is set (same private channel as
+permanent file-to-link mode — bot must be admin), the bot backs each
+of those up there the moment it changes, and restores anything missing
+on startup. Usage stats are backed up on shutdown. One channel, zero
+maintenance — set it once and cookies/sudos/stats survive redeploys.
+Without it, everything still works, but re-sending cookies and
+re-adding sudo users after each redeploy is on you.
 
 ## Updating yt-dlp
 
