@@ -111,13 +111,13 @@ async def _probe_and_report(client: Client, chat_id: int, probe,
         await react(react_msg, "👍")
 
 
-@Client.on_message(filters.private & owner_only
-                   & filters.command("mediainfo"))
 def _first_url(text: str | None) -> str | None:
     match = URL_RE.search(text or "")
     return match.group(0).rstrip(").,>\"'") if match else None
 
 
+@Client.on_message(filters.private & owner_only
+                   & filters.command("mediainfo"))
 async def mediainfo_cmd(client: Client, message: Message):
     parts = (message.text or "").split(None, 1)
     target = message.reply_to_message
