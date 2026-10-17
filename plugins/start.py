@@ -37,8 +37,8 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 **Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
 `/setcookies` and pick the site — then send its `cookies.txt`
 (exported from your browser while logged in). Each site gets its own
-jar, verified before installing; `/cookies` lists them. With
-STORAGE_CHANNEL_ID set, jars are backed up and survive redeploys.
+jar, verified before installing; `/cookies` lists them. Jars are backed
+up automatically and survive redeploys.
 **yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
@@ -226,11 +226,11 @@ async def addsudo_cmd(client: Client, message: Message):
     sudo.add_sudo(target_id)
     backed = await backup.backup_kind(client, "data/sudo.json",
                                       sudo.DATA_FILE)
-    persist = (" Backed up to your storage channel — survives redeploys."
+    persist = (" Backed up — survives redeploys."
                if backed else
-               " Note: this lasts until the next redeploy/restart (set "
-               "STORAGE_CHANNEL_ID to make it survive). For a permanent "
-               "sudo user, add their id to the SUDO_USERS env var instead.")
+               " Note: this lasts until the next redeploy/restart. For a "
+               "permanent sudo user, add their id to the SUDO_USERS env "
+               "var instead.")
     await message.reply_text(
         f"✅ {target_id} is now a sudo user — full bot access.{persist}")
 
@@ -417,15 +417,11 @@ async def _install_cookie_file(client: Client, message: Message,
                       "site and make sure to include all its cookies.")
     backed = await backup.backup_kind(client, f"cookies/{platform}.txt",
                                       cookies.jar_path(platform))
-    if backed:
-        persist_note = ("\n💾 Backed up to your storage channel — survives "
-                        "redeploys.")
-    else:
-        persist_note = ("\nNote: on Render free this lasts until the next "
-                        "redeploy — set STORAGE_CHANNEL_ID to make cookies "
-                        "survive redeploys. Cookies expire anyway, so "
-                        "re-send a fresh file when the site starts failing "
-                        "again.")
+    persist_note = ("\n💾 Backed up — survives redeploys."
+                    if backed else
+                    "\n⚠️ Backup failed — re-send this file after a "
+                    "redeploy. Cookies expire anyway, so re-send a fresh "
+                    "file when the site starts failing again.")
     await status.edit_text(
         f"✅ {verb} **{label}** cookies: {count} cookies."
         f"{login_warn}\n"

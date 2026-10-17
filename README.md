@@ -161,13 +161,15 @@ throwaway account's cookies are safer than your main account's.
 
 Free hosts wipe the container disk on every redeploy — normally that
 would delete your cookie jars, the `/addsudo` sudo list and the usage
-stats. If `STORAGE_CHANNEL_ID` is set (same private channel as
-permanent file-to-link mode — bot must be admin), the bot backs each
-of those up there the moment it changes, and restores anything missing
-on startup. Usage stats are backed up on shutdown. One channel, zero
-maintenance — set it once and cookies/sudos/stats survive redeploys.
-Without it, everything still works, but re-sending cookies and
-re-adding sudo users after each redeploy is on you.
+stats. The bot backs each of those up the moment it changes and
+restores anything missing on startup (usage stats are backed up on
+shutdown), so everything survives redeploys with **zero setup**.
+
+Where the backups live: the `STORAGE_CHANNEL_ID` private channel when
+you've set one (invisible, tidiest), otherwise right in your PM with
+the bot — you'll see small `#all4url-backup` documents appear there;
+leave them alone (pin them yourself if you want them tidy, the bot
+finds them by tag either way).
 
 ## Updating yt-dlp
 

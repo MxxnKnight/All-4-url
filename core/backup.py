@@ -1,11 +1,11 @@
 """Survive ephemeral disks (Render free wipes on every redeploy).
 
 Small data files — cookie jars, data/sudo.json, data/stats.json — are
-backed up as documents in the private storage channel (one message per
-file, captioned `#all4url-backup <kind>`), and restored on startup when
-the local copy is missing.
-
-Needs STORAGE_CHANNEL_ID; without it every function is a logged no-op.
+backed up as documents in the vault chat: the private storage channel
+when STORAGE_CHANNEL_ID is set, otherwise the owner's PM with the bot
+(no setup needed). One message per file, captioned
+`#all4url-backup <kind>`; restored on startup when the local copy is
+missing.
 """
 
 import logging
@@ -19,8 +19,10 @@ log = logging.getLogger("all4url")
 BACKUP_TAG = "#all4url-backup"
 
 
-def _channel():
-    return config.STORAGE_CHANNEL_ID or None
+def _vault_chat():
+    """Where backups live: the private storage channel when set,
+    otherwise the owner's PM with the bot — no setup needed either way."""
+    return config.STORAGE_CHANNEL_ID or config.OWNER_ID
 
 
 def _caption(kind: str) -> str:
@@ -47,14 +49,13 @@ def _local_path(kind: str):
 
 async def _find_backups(app, kind: str) -> list:
     """Backup messages for kind, newest first."""
-    channel = _channel()
-    if not channel:
-        return []
+    vault = _vault_chat()
     found = []
     try:
-        async for msg in app.search_messages(channel, BACKUP_TAG,
+        async for msg in app.search_messages(vault, BACKUP_TAG,
                                              limit=50):
-            if msg.document and (msg.caption or "") == _caption(kind):
+            if (msg.document and (msg.caption or "") == _caption(kind)
+                    and getattr(msg, "outgoing", True)):
                 found.append(msg)
     except Exception as exc:
         log.warning("backup search failed: %s", exc)
@@ -67,22 +68,20 @@ async def backup_kind(app, kind: str, local_path: str) -> bool:
     Old backup messages for the kind are deleted, so the channel holds
     exactly one copy. Returns True on success.
     """
-    channel = _channel()
-    if not channel:
-        return False
+    vault = _vault_chat()
     if not local_path or not os.path.isfile(local_path):
         return False
     try:
         olds = await _find_backups(app, kind)
-        await app.send_document(channel, local_path,
+        await app.send_document(vault, local_path,
                                 caption=_caption(kind))
         for old in olds:
             try:
-                await app.delete_messages(channel, old.id)
+                await app.delete_messages(vault, old.id)
             except Exception as exc:
                 log.warning("could not delete old backup %s: %s",
                             kind, exc)
-        log.info("backed up %s to storage channel", kind)
+        log.info("backed up %s to vault chat", kind)
         return True
     except Exception as exc:
         log.warning("backup of %s failed: %s", kind, exc)
@@ -94,15 +93,14 @@ async def restore_missing(app) -> list:
 
     Returns the kinds restored.
     """
-    channel = _channel()
-    if not channel:
-        return []
+    vault = _vault_chat()
     restored = []
     try:
-        async for msg in app.search_messages(channel, BACKUP_TAG,
+        async for msg in app.search_messages(vault, BACKUP_TAG,
                                              limit=100):
             caption = msg.caption or ""
-            if not caption.startswith(BACKUP_TAG + " ") or not msg.document:
+            if (not caption.startswith(BACKUP_TAG + " ") or not msg.document
+                    or not getattr(msg, "outgoing", True)):
                 continue
             kind = caption[len(BACKUP_TAG) + 1:].strip()
             local = _local_path(kind)
@@ -113,7 +111,7 @@ async def restore_missing(app) -> list:
                 tmp = await app.download_media(msg)
                 shutil.move(tmp, local)  # move, not replace: tmp may be
                 restored.append(kind)    # on another filesystem
-                log.info("restored %s from storage channel", kind)
+                log.info("restored %s from vault chat", kind)
             except Exception as exc:
                 log.warning("restore of %s failed: %s", kind, exc)
     except Exception as exc:
