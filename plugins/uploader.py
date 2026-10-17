@@ -355,11 +355,19 @@ async def _dispatch(client: Client, message: Message, url: str,
         except Exception as exc:
             errors.append(f"scrape: {exc}")
 
+        hint = ("\n\nIf it's Instagram/a login-walled site, it may need a "
+                "cookies.txt — see the README.")
+        if "reddit.com" in url and any(
+                "blocked by network security" in e for e in errors):
+            hint = ("\n\n⚠️ Reddit is blocking this server (\"blocked by "
+                    "network security\"). Fix: log into reddit.com in your "
+                    "browser, export a cookies.txt, and send it to me with "
+                    "/setcookies as the caption — I'll browse as you from "
+                    "then on.")
         await status.edit_text(
             "I couldn't download that with any engine:\n"
             + "\n".join(f"• {e}" for e in errors)
-            + "\n\nIf it's Instagram/a login-walled site, it may need a "
-              "cookies.txt — see the README.")
+            + hint)
         return "failed"
     except Exception as exc:  # never leave a stuck status message
         try:

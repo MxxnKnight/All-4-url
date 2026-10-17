@@ -10,6 +10,11 @@ from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
+import asyncio
+import os
+import sys
+import tempfile
+
 import config
 from core import stats
 from core.utils import human_bytes, is_admin_id, admin_only, owner_only
@@ -25,8 +30,13 @@ details on each feature.
 
 This bot only answers its owner and sudo users. Strangers get nothing.
 
-**Sudo users** (owner only): `/addsudo <id>` or reply `/addsudo`, `/delsudo <id>`,
-`/sudos`. Permanent sudo users go in the SUDO_USERS env var."""
+**Sudo users** (owner only): `/addsudo <id or @username>` or reply `/addsudo`,
+`/delsudo <id>`, `/sudos`. Permanent sudo users go in the SUDO_USERS env var.
+
+**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, send me a
+`cookies.txt` with `/setcookies` as the caption (or reply `/setcookies` to it)
+— exported from your browser while logged in. **yt-dlp**: `/updateytdlp`
+upgrades it on the spot, no redeploy needed."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
@@ -172,21 +182,37 @@ async def start_cmd(_client: Client, message: Message):
     await message.reply_text(HOME_TEXT, reply_markup=_home_markup())
 
 
+async def _resolve_user(client: Client, message: Message) -> tuple:
+    """Resolve an /addsudo target: numeric id, @username, or reply.
+
+    Returns (user_id, None), or (None, error_text) when the input is
+    missing or the username can't be found.
+    """
+    parts = (message.text or "").split()
+    if len(parts) > 1:
+        raw = parts[1].lstrip("@")
+        if raw.isdigit():
+            return int(raw), None
+        try:
+            user = await client.get_users(raw)
+            return user.id, None
+        except Exception:
+            return None, (f"Couldn't find @{raw} — check the spelling, or "
+                          "use their numeric id from @userinfobot.")
+    if message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id, None
+    return None, ("Usage: /addsudo <user_id or @username> — or reply to "
+                  "their message with /addsudo.")
+
+
 @Client.on_message(filters.private & owner_only
                    & filters.command("addsudo"))
-async def addsudo_cmd(_client: Client, message: Message):
-    """Owner only: /addsudo <user_id> — or reply to their message."""
+async def addsudo_cmd(client: Client, message: Message):
+    """Owner only: /addsudo <id|@username> — or reply to their message."""
     from core import sudo
-    target_id = None
-    parts = (message.text or "").split()
-    if len(parts) > 1 and parts[1].lstrip("-").isdigit():
-        target_id = int(parts[1])
-    elif (message.reply_to_message and message.reply_to_message.from_user):
-        target_id = message.reply_to_message.from_user.id
-    if not target_id:
-        await message.reply_text(
-            "Usage: /addsudo <user_id> — or reply to their message with /addsudo.\n"
-            "Get the id from @userinfobot.")
+    target_id, err = await _resolve_user(client, message)
+    if err:
+        await message.reply_text(err)
         return
     if sudo.is_owner(target_id):
         await message.reply_text("That's the owner already — no need.")
@@ -235,6 +261,134 @@ async def sudos_cmd(_client: Client, message: Message):
     lines.append("⏳ Added via /addsudo: " +
                  (", ".join(str(i) for i in sorted(runtime_ids)) or "—"))
     await message.reply_text("\n".join(lines))
+
+
+def _looks_like_cookies(text: str) -> tuple:
+    """(cookie_count, domains) when text is Netscape cookies.txt-ish."""
+    domains, count = set(), 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            count += 1
+            domains.add(parts[0].lstrip("."))
+    return count, sorted(domains)
+
+
+async def _install_cookies(client: Client, message: Message,
+                           doc_msg: Message) -> None:
+    """Validate and install a cookies.txt the owner sent."""
+    status = await message.reply_text("Checking the cookies file…")
+    try:
+        tmp = await client.download_media(doc_msg)
+    except Exception as exc:
+        await status.edit_text(f"Couldn't download that file: {exc}")
+        return
+    try:
+        with open(tmp, encoding="utf-8", errors="replace") as handle:
+            text = handle.read(2_000_000)
+    except Exception as exc:
+        await status.edit_text(f"Couldn't read that file: {exc}")
+        return
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    count, domains = _looks_like_cookies(text)
+    if count == 0:
+        await status.edit_text(
+            "That doesn't look like a Netscape cookies.txt — no cookie "
+            "lines found. Export it with a \"Get cookies.txt\" style "
+            "extension (while logged into the site) and try again.")
+        return
+    dest = config.COOKIES_FILE
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        fd, tmp2 = tempfile.mkstemp(dir=os.path.dirname(dest),
+                                    prefix=".cookies", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp2, dest)
+    except Exception as exc:
+        await status.edit_text(f"Couldn't save the cookies: {exc}")
+        return
+    shown = ", ".join(domains[:6]) + ("…" if len(domains) > 6 else "")
+    await status.edit_text(
+        f"✅ Installed {count} cookies ({shown}).\n"
+        "yt-dlp and gallery-dl will use them from the next download.\n"
+        "Note: on Render free this lasts until the next redeploy — and "
+        "cookies expire anyway, so re-send a fresh file when sites start "
+        "failing again.")
+
+
+@Client.on_message(filters.private & owner_only
+                   & filters.command("setcookies"))
+async def setcookies_cmd(client: Client, message: Message):
+    """Owner only: reply to a cookies.txt file with /setcookies."""
+    target = message.reply_to_message
+    doc = getattr(target, "document", None) if target else None
+    if not doc:
+        await message.reply_text(
+            "Reply to a cookies.txt file with /setcookies — or send the "
+            "file with /setcookies as its caption.\n"
+            "Export it from your browser while logged into the site "
+            "(Netscape format — a \"Get cookies.txt\" extension does it).")
+        return
+    await _install_cookies(client, message, target)
+
+
+@Client.on_message(filters.private & owner_only & filters.document
+                   & filters.regex(r"(?i)/setcookies"))
+async def setcookies_caption(client: Client, message: Message):
+    """Owner only: a cookies.txt sent with /setcookies as its caption."""
+    await _install_cookies(client, message, message)
+
+
+@Client.on_message(filters.private & owner_only
+                   & filters.command("updateytdlp"))
+async def updateytdlp_cmd(_client: Client, message: Message):
+    """Owner only: pip-upgrade yt-dlp right now, no redeploy needed."""
+    import subprocess
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        old = version("yt-dlp")
+    except PackageNotFoundError:
+        old = "not installed"
+    status = await message.reply_text(
+        f"Updating yt-dlp (now {old}) — this takes a bit…")
+
+    def _upgrade():
+        return subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-U",
+             "yt-dlp[default,curl-cffi]"],
+            capture_output=True, text=True, timeout=600)
+
+    try:
+        proc = await asyncio.get_running_loop().run_in_executor(None,
+                                                                _upgrade)
+    except Exception as exc:
+        await status.edit_text(f"Update failed: {exc}")
+        return
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "")[-800:]
+        await status.edit_text(f"pip failed:\n{tail}")
+        return
+    # Drop already-imported modules so the next lazy import reads the new
+    # code from disk immediately (our engines import yt_dlp per call).
+    for mod in [m for m in sys.modules
+                if m == "yt_dlp" or m.startswith("yt_dlp.")]:
+        del sys.modules[mod]
+    try:
+        new = version("yt-dlp")
+    except PackageNotFoundError:
+        new = "unknown"
+    await status.edit_text(
+        f"✅ yt-dlp updated: {old} → {new} (active from the next download).\n"
+        "Note: on Render free this lasts until the next redeploy — for a "
+        "permanent update the requirements.txt pin needs bumping too.")
 
 
 @Client.on_callback_query(filters.regex(r"^menu:"))

@@ -125,20 +125,38 @@ Requires Python 3.11+ and `ffmpeg` on the PATH.
 
 ---
 
-## Instagram cookies (when posts fail)
+## Cookies (when login-walled sites fail)
 
-Instagram increasingly demands a login for photo posts. To give the bot
-your (throwaway, ideally) Instagram login:
+Instagram increasingly demands a login for photo posts, and Reddit
+blocks server IPs outright ("blocked by network security") — both are
+fixed the same way: give the bot your logged-in browser cookies.
 
-1. In a desktop browser where you're logged into Instagram, install a
-   "Get cookies.txt" style extension.
-2. On instagram.com, export cookies for the site — Netscape format.
-3. Save the file as `cookies.txt` next to `main.py` locally, **or** on
-   Koyeb add its full contents in a way your deployment mounts as a file
-   (it is git-ignored — never commit it; note a redeploy wipes the disk,
-   so treat cookies as refreshable, not permanent).
+**Easiest (phone-friendly):** just send the bot a `cookies.txt` file —
+with `/setcookies` as the caption, or reply `/setcookies` to it. The
+bot validates it (must be Netscape format) and installs it on the
+spot. One file covers every site (Instagram, Reddit, …) for both
+yt-dlp and gallery-dl, which pick it up automatically.
 
-Both yt-dlp and gallery-dl pick the file up automatically.
+To make the file: in a desktop browser where you're logged into the
+site, install a "Get cookies.txt" style extension and export cookies
+for the site (Netscape format). On Android, Kiwi Browser supports
+desktop Chrome extensions.
+
+Manual alternative: save the file as `cookies.txt` next to `main.py`
+locally, or set the `COOKIES_FILE` env var to its path. It is
+git-ignored — never commit it.
+
+Cookies expire eventually (and on Render free a redeploy wipes the
+disk), so when sites start failing again, just re-send a fresh file —
+treat cookies as refreshable, not permanent. A throwaway account's
+cookies are safer than your main account's.
+
+## Updating yt-dlp
+
+Send `/updateytdlp` — the bot upgrades yt-dlp in place (pip) and the
+new version is active from the next download, no redeploy needed. On
+Render free this lasts until the next redeploy; for a permanent bump,
+the `yt-dlp` pin in `requirements.txt` needs updating too.
 
 ## Terabox cookie (`ndus`)
 
@@ -190,6 +208,8 @@ report arrives as a `mediainfo.txt` document instead.
 | 📈 **Usage** button in `/start` | Uptime, downloaded / uploaded / served bandwidth (this month + all time), outbound vs the 100 GB free allowance, and per-feature job counts |
 | `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo / Usage) — all commands also live in Telegram's `/` commands menu, registered by the bot itself on startup |
 | `/addsudo`, `/delsudo`, `/sudos` | Owner only: add/remove/list sudo users (full bot access, same as you). Permanent sudo users go in the `SUDO_USERS` env var; `/addsudo` ones last until the next redeploy on hosts with ephemeral disks |
+| `/setcookies` | Owner only: reply to a `cookies.txt` with `/setcookies` (or send it with that caption) — installs login cookies for yt-dlp/gallery-dl on the spot. Fixes Instagram/Reddit login walls |
+| `/updateytdlp` | Owner only: upgrades yt-dlp in place, active from the next download — no redeploy needed (lasts until redeploy on Render free) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
 | `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch) |
 | `/cancel` | Stops a running batch after the current item |

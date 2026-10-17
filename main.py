@@ -40,6 +40,8 @@ BOT_COMMANDS = [
     BotCommand("addsudo", "Add a sudo user (owner only)"),
     BotCommand("delsudo", "Remove a sudo user (owner only)"),
     BotCommand("sudos", "List sudo users (owner only)"),
+    BotCommand("setcookies", "Install cookies.txt (owner only)"),
+    BotCommand("updateytdlp", "Update yt-dlp now (owner only)"),
 ]
 
 
