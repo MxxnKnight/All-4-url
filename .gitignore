@@ -2,6 +2,7 @@
 *.session
 *.session-journal
 cookies.txt
+cookies/
 downloads/
 data/
 __pycache__/

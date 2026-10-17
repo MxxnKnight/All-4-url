@@ -12,12 +12,13 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 import asyncio
 import os
+import re
 import sys
-import tempfile
+import time
 
 import config
-from core import stats
-from core.utils import human_bytes, is_admin_id, admin_only, owner_only
+from core import cookies, stats
+from core.utils import human_bytes, is_admin_id, is_owner_id, admin_only, owner_only
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
 #: everything the box sends out: Telegram uploads + file-to-link serves.
@@ -33,10 +34,11 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 **Sudo users** (owner only): `/addsudo <id or @username>` or reply `/addsudo`,
 `/delsudo <id>`, `/sudos`. Permanent sudo users go in the SUDO_USERS env var.
 
-**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, send me a
-`cookies.txt` with `/setcookies` as the caption (or reply `/setcookies` to it)
-— exported from your browser while logged in. **yt-dlp**: `/updateytdlp`
-upgrades it on the spot, no redeploy needed."""
+**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
+`/setcookies` and pick the site — then send its `cookies.txt`
+(exported from your browser while logged in). Each site gets its own
+jar, verified before installing; `/cookies` lists them. **yt-dlp**:
+`/updateytdlp` upgrades it on the spot, no redeploy needed."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
@@ -263,23 +265,91 @@ async def sudos_cmd(_client: Client, message: Message):
     await message.reply_text("\n".join(lines))
 
 
-def _looks_like_cookies(text: str) -> tuple:
-    """(cookie_count, domains) when text is Netscape cookies.txt-ish."""
-    domains, count = set(), 0
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) >= 7:
-            count += 1
-            domains.add(parts[0].lstrip("."))
-    return count, sorted(domains)
+def _cookie_menu() -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for pid, label, _domains in cookies.COOKIE_SITES:
+        row.append(InlineKeyboardButton(label, callback_data=f"cookie:{pid}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🔍 Auto-detect from the file",
+                                      callback_data="cookie:auto")])
+    rows.append([InlineKeyboardButton("❌ Cancel",
+                                      callback_data="cookie:cancel")])
+    return InlineKeyboardMarkup(rows)
 
 
-async def _install_cookies(client: Client, message: Message,
-                           doc_msg: Message) -> None:
-    """Validate and install a cookies.txt the owner sent."""
+@Client.on_message(filters.private & owner_only
+                   & filters.command("setcookies"))
+async def setcookies_cmd(client: Client, message: Message):
+    """Owner only: /setcookies -> platform menu; reply-to-file still works."""
+    target = message.reply_to_message
+    doc = getattr(target, "document", None) if target else None
+    if doc:
+        # fast path: reply to a cookies.txt -> detect its platform
+        cookies.CONSUMED.add(target.id)
+        await _install_cookie_file(client, message, target, platform="auto")
+        return
+    await message.reply_text(
+        "Which site are these cookies for?",
+        reply_markup=_cookie_menu())
+
+
+@Client.on_callback_query(filters.regex(r"^cookie:"))
+async def cookie_callback(client: Client, query: CallbackQuery):
+    if not is_owner_id(query.from_user.id if query.from_user else None):
+        await query.answer()
+        return
+    action = (query.data or "").split(":", 1)[1]
+    owner = query.from_user.id
+    if action == "cancel":
+        cookies.clear_pending(owner)
+        await query.answer("Cancelled.")
+        await query.message.edit_text("Cookie install cancelled.")
+        return
+    if action == "auto" or action in cookies.site_ids():
+        cookies.set_pending(owner, action)
+        label = ("auto-detect" if action == "auto"
+                 else cookies.site_label(action))
+        await query.answer()
+        await query.message.edit_text(
+            f"Send the cookies.txt for **{label}** now (as a file).\n"
+            "I'll check it really holds that site's cookies before "
+            "installing. You have 10 minutes — or tap ❌ Cancel.")
+        return
+    await query.answer("Unknown choice.")
+
+
+@Client.on_message(filters.private & owner_only & filters.document,
+                   group=-1)
+async def cookie_document(client: Client, message: Message):
+    """Owner only: eats cookie files before file-to-link sees them.
+
+    Fires when the owner tapped a /setcookies menu button (pending
+    platform) or captioned the file /setcookies. Consumed messages are
+    marked so file-to-link skips them.
+    """
+    owner = message.from_user.id if message.from_user else None
+    platform = cookies.take_pending(owner) if owner else None
+    caption_hit = bool(re.search(r"(?i)/setcookies",
+                                 message.caption or ""))
+    if platform is None and not caption_hit:
+        return  # not ours — file-to-link handles it normally
+    cookies.CONSUMED.add(message.id)
+    await _install_cookie_file(client, message, message,
+                               platform=platform or "auto")
+
+
+async def _install_cookie_file(client: Client, message: Message,
+                               doc_msg: Message, platform: str) -> None:
+    """Validate a cookies.txt and install it as platform's jar.
+
+    platform="auto" detects the site from the file's domains. A chosen
+    platform is verified: the file must actually contain that site's
+    cookies, otherwise it is rejected with guidance.
+    """
     status = await message.reply_text("Checking the cookies file…")
     try:
         tmp = await client.download_media(doc_msg)
@@ -297,54 +367,64 @@ async def _install_cookies(client: Client, message: Message,
             os.remove(tmp)
         except OSError:
             pass
-    count, domains = _looks_like_cookies(text)
+    count, domains = cookies.parse_cookies(text)
     if count == 0:
         await status.edit_text(
             "That doesn't look like a Netscape cookies.txt — no cookie "
             "lines found. Export it with a \"Get cookies.txt\" style "
             "extension (while logged into the site) and try again.")
         return
-    dest = config.COOKIES_FILE
+    label = None
+    if platform == "auto":
+        platform = cookies.detect_platform(domains)
+        if platform is None:
+            platform = cookies.fallback_platform(domains)
+        label = cookies.site_label(platform)
+    else:
+        label = cookies.site_label(platform)
+        _pid, _plabel, site_domains = next(
+            s for s in cookies.COOKIE_SITES if s[0] == platform)
+        if not any(cookies.domain_matches(d, site_domains)
+                   for d in domains):
+            found = ", ".join(domains[:4]) or "none"
+            await status.edit_text(
+                f"⚠️ That file has no {label} cookies in it "
+                f"(found: {found}).\n"
+                "Export cookies while logged into the right site and try "
+                "again — tap /setcookies to restart.")
+            return
+    existed = os.path.isfile(cookies.jar_path(platform))
     try:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        fd, tmp2 = tempfile.mkstemp(dir=os.path.dirname(dest),
-                                    prefix=".cookies", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(tmp2, dest)
+        cookies.install_jar(platform, text)
     except Exception as exc:
         await status.edit_text(f"Couldn't save the cookies: {exc}")
         return
-    shown = ", ".join(domains[:6]) + ("…" if len(domains) > 6 else "")
+    verb = "Updated" if existed else "Installed"
     await status.edit_text(
-        f"✅ Installed {count} cookies ({shown}).\n"
-        "yt-dlp and gallery-dl will use them from the next download.\n"
+        f"✅ {verb} **{label}** cookies: {count} cookies.\n"
+        "They'll be used from the next download on that site.\n"
         "Note: on Render free this lasts until the next redeploy — and "
-        "cookies expire anyway, so re-send a fresh file when sites start "
-        "failing again.")
+        "cookies expire anyway, so re-send a fresh file when the site "
+        "starts failing again.")
 
 
 @Client.on_message(filters.private & owner_only
-                   & filters.command("setcookies"))
-async def setcookies_cmd(client: Client, message: Message):
-    """Owner only: reply to a cookies.txt file with /setcookies."""
-    target = message.reply_to_message
-    doc = getattr(target, "document", None) if target else None
-    if not doc:
+                   & filters.command("cookies"))
+async def cookies_cmd(_client: Client, message: Message):
+    """Owner only: list installed cookie jars."""
+    jars = cookies.list_jars()
+    if not jars:
         await message.reply_text(
-            "Reply to a cookies.txt file with /setcookies — or send the "
-            "file with /setcookies as its caption.\n"
-            "Export it from your browser while logged into the site "
-            "(Netscape format — a \"Get cookies.txt\" extension does it).")
+            "No cookie jars installed. Use /setcookies to add one.")
         return
-    await _install_cookies(client, message, target)
-
-
-@Client.on_message(filters.private & owner_only & filters.document
-                   & filters.regex(r"(?i)/setcookies"))
-async def setcookies_caption(client: Client, message: Message):
-    """Owner only: a cookies.txt sent with /setcookies as its caption."""
-    await _install_cookies(client, message, message)
+    lines = []
+    for _pid, label, count, ts in jars:
+        when = time.strftime("%Y-%m-%d", time.localtime(ts))
+        lines.append(f"• {label}: {count} cookies (installed {when})")
+    legacy = config.cookies_path()
+    if legacy and os.path.basename(legacy) == "cookies.txt":
+        lines.append("• legacy cookies.txt: also present (fallback)")
+    await message.reply_text("🍪 **Cookie jars**\n" + "\n".join(lines))
 
 
 @Client.on_message(filters.private & owner_only

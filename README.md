@@ -131,20 +131,27 @@ Instagram increasingly demands a login for photo posts, and Reddit
 blocks server IPs outright ("blocked by network security") — both are
 fixed the same way: give the bot your logged-in browser cookies.
 
-**Easiest (phone-friendly):** just send the bot a `cookies.txt` file —
-with `/setcookies` as the caption, or reply `/setcookies` to it. The
-bot validates it (must be Netscape format) and installs it on the
-spot. One file covers every site (Instagram, Reddit, …) for both
-yt-dlp and gallery-dl, which pick it up automatically.
+**How:** tap `/setcookies` and pick the site (YouTube, Instagram,
+Reddit, X, TikTok, Facebook — or 🔍 Auto-detect). The bot asks for the
+file; send the `cookies.txt` and it **verifies the file really holds
+that site's cookies** before installing. Each site gets its own jar
+(`cookies/instagram.txt`, …), so refreshing one never touches the
+others and no site ever sees another site's cookies. Sending a newer
+file for the same site just updates it. `/cookies` lists every jar
+with cookie counts and install dates.
+
+Fast paths still work: reply `/setcookies` to a cookies.txt, or send
+one with `/setcookies` as the caption — the site is auto-detected
+from the file.
 
 To make the file: in a desktop browser where you're logged into the
 site, install a "Get cookies.txt" style extension and export cookies
 for the site (Netscape format). On Android, Kiwi Browser supports
 desktop Chrome extensions.
 
-Manual alternative: save the file as `cookies.txt` next to `main.py`
-locally, or set the `COOKIES_FILE` env var to its path. It is
-git-ignored — never commit it.
+Manual alternative: drop per-site files into `cookies/` yourself
+(`<site>.txt`, git-ignored — never commit them), or keep one legacy
+`cookies.txt` / `COOKIES_FILE` as a fallback for every site.
 
 Cookies expire eventually (and on Render free a redeploy wipes the
 disk), so when sites start failing again, just re-send a fresh file —
@@ -208,7 +215,8 @@ report arrives as a `mediainfo.txt` document instead.
 | 📈 **Usage** button in `/start` | Uptime, downloaded / uploaded / served bandwidth (this month + all time), outbound vs the 100 GB free allowance, and per-feature job counts |
 | `/start` or `/help` | The button menu (Uploader / File-to-Link / Restricted / MediaInfo / Usage) — all commands also live in Telegram's `/` commands menu, registered by the bot itself on startup |
 | `/addsudo`, `/delsudo`, `/sudos` | Owner only: add/remove/list sudo users (full bot access, same as you). Permanent sudo users go in the `SUDO_USERS` env var; `/addsudo` ones last until the next redeploy on hosts with ephemeral disks |
-| `/setcookies` | Owner only: reply to a `cookies.txt` with `/setcookies` (or send it with that caption) — installs login cookies for yt-dlp/gallery-dl on the spot. Fixes Instagram/Reddit login walls |
+| `/setcookies` | Owner only: tap and pick the site, then send its `cookies.txt` — verified and installed as that site's own jar (reply-to-file and `/setcookies` caption still auto-detect). Fixes Instagram/Reddit login walls |
+| `/cookies` | Owner only: list installed cookie jars with counts and dates |
 | `/updateytdlp` | Owner only: upgrades yt-dlp in place, active from the next download — no redeploy needed (lasts until redeploy on Render free) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
 | `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch) |

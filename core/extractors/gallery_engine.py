@@ -12,6 +12,7 @@ import sys
 
 import config
 from core import stats
+from core.cookies import jar_for_url
 from core.utils import list_files
 
 
@@ -25,7 +26,7 @@ async def download(url: str, dest_dir: str) -> list[str]:
     before = set(list_files(dest_dir))
     cmd = [sys.executable, "-m", "gallery_dl", "-D", dest_dir,
            "--no-mtime", "--restrict-filenames", "windows"]
-    cookies = config.cookies_path()
+    cookies = jar_for_url(url)
     if cookies:
         cmd += ["-C", cookies]  # gallery-dl's cookies-file flag
     cmd.append(url)

@@ -22,6 +22,7 @@ from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
 
 import config
 from core import stats
+from core.cookies import CONSUMED
 from core.linktoken import make_token
 from core.utils import human_bytes, admin_only, react
 
@@ -44,6 +45,9 @@ def _file_info(message: Message):
 
 @Client.on_message(filters.private & admin_only & MEDIA_FILTER)
 async def file_to_link(client: Client, message: Message):
+    if message.id in CONSUMED:
+        CONSUMED.discard(message.id)
+        return  # eaten by the /setcookies handler (group -1)
     if not config.BASE_URL:
         await message.reply_text(
             "File-to-link needs one thing: BASE_URL must be this bot's "

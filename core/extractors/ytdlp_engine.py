@@ -10,6 +10,7 @@ import os
 
 import config
 from core import stats
+from core.cookies import jar_for_url
 from core.utils import list_files
 
 
@@ -17,7 +18,8 @@ class YtdlpError(Exception):
     pass
 
 
-def _base_opts(dest_dir: str, state: dict | None = None) -> dict:
+def _base_opts(dest_dir: str, url: str | None = None,
+               state: dict | None = None) -> dict:
     opts = {
         "outtmpl": os.path.join(dest_dir, "%(title).70s [%(id)s].%(ext)s"),
         "restrictfilenames": True,
@@ -27,7 +29,7 @@ def _base_opts(dest_dir: str, state: dict | None = None) -> dict:
         "socket_timeout": 30,
         "retries": 3,
     }
-    cookies = config.cookies_path()
+    cookies = jar_for_url(url) if url else config.cookies_path()
     if cookies:
         opts["cookiefile"] = cookies
     if state is not None:
@@ -52,7 +54,7 @@ async def extract_info(url: str, ignore_no_formats: bool = False) -> dict:
     """Metadata only. `ignore_no_formats` matters for Instagram image
     posts: yt-dlp then returns the extracted entries (with CDN image
     URLs) instead of erroring out with 'no video formats found'."""
-    opts = _base_opts(config.DOWNLOAD_DIR)
+    opts = _base_opts(config.DOWNLOAD_DIR, url)
     opts.pop("outtmpl", None)
     if ignore_no_formats:
         opts["ignore_no_formats_error"] = True
@@ -114,7 +116,7 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
                    audio_only: bool = False, progress_cb=None) -> list[str]:
     """Download and return the list of new file paths in dest_dir."""
     state: dict = {}
-    opts = _base_opts(dest_dir, state)
+    opts = _base_opts(dest_dir, url, state)
     if audio_only:
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [{
