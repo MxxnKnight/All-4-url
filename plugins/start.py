@@ -17,7 +17,7 @@ import sys
 import time
 
 import config
-from core import backup, cookies, stats
+from core import backup, cookies, db, stats
 from core.utils import human_bytes, is_admin_id, is_owner_id, admin_only, owner_only
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
@@ -137,9 +137,12 @@ def _usage_text() -> str:
     outbound = month["uploaded"] + month["served"]
     pct = min(100.0, outbound / FREE_OUTBOUND_BYTES * 100)
 
+    storage = (f"MongoDB ({config.DB_NAME})"
+               if db.enabled() else "local files — no database!")
     lines = [f"📊 **Usage** — {snap['month_key']}",
              "",
              f"⏱ Uptime: {_uptime_text(snap['uptime'])}",
+             f"🗄 Storage: {storage}",
              "",
              "**Today**",
              f"📥 Downloaded: {human_bytes(day['downloaded'])}",

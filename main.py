@@ -50,11 +50,23 @@ BOT_COMMANDS = [
 
 
 async def _register_commands(app: Client) -> None:
+    """Sync Telegram's "/" menu with BOT_COMMANDS on every boot:
+    read what's currently set, replace only when it differs, and log
+    the outcome so deploy logs show the menu state."""
+    want = [(c.command, c.description) for c in BOT_COMMANDS]
     try:
+        current = await app.get_bot_commands()
+        have = [(c.command, c.description) for c in current]
+        if have == want:
+            log.info("bot commands menu already up to date "
+                     "(%d commands)", len(want))
+            return
         if await app.set_bot_commands(BOT_COMMANDS):
-            log.info("bot commands registered")
+            log.info("bot commands menu updated (%d commands): %s",
+                     len(want),
+                     ", ".join("/" + name for name, _ in want))
     except Exception as exc:
-        log.warning("could not register bot commands: %s", exc)
+        log.warning("could not sync bot commands menu: %s", exc)
 
 logging.basicConfig(
     level=logging.INFO,

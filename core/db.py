@@ -36,27 +36,46 @@ def enabled() -> bool:
     return _db is not None
 
 
+def _uri_host(uri: str) -> str:
+    """Host part of a Mongo URI for logs — never the credentials."""
+    try:
+        rest = uri.split("://", 1)[-1]      # user:pass@host/db?opts
+        rest = rest.rsplit("@", 1)[-1]      # host/db?opts
+        host = rest.split("/")[0].split("?")[0]
+        return host or "?"
+    except Exception:
+        return "?"
+
+
 async def init() -> bool:
     """Connect + ping. Returns True when Mongo is usable."""
     global _client, _db
     if not config.DB_URI:
-        log.info("DB_URI not set — using local JSON storage")
+        log.info("DB_URI not set — local JSON storage "
+                 "(Telegram backups ON)")
         return False
+    log.info("DB_URI set (host: %s, database: %s) — connecting…",
+             _uri_host(config.DB_URI), config.DB_NAME)
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
     except ImportError:
-        log.warning("motor not installed — using local JSON storage")
+        log.warning("⚠️ motor not installed — local JSON storage "
+                    "(Telegram backups ON)")
         return False
     try:
         _client = AsyncIOMotorClient(config.DB_URI,
                                      serverSelectionTimeoutMS=5000)
         await _client.admin.command("ping")
         _db = _client[config.DB_NAME]
-        log.info("MongoDB connected (database: %s)", config.DB_NAME)
+        log.info("✅ MongoDB connected (database: %s) — sudo/usage/"
+                 "cookies/settings live in MongoDB; Telegram backups OFF",
+                 config.DB_NAME)
         return True
     except Exception as exc:
-        log.warning("MongoDB unavailable (%s) — using local JSON storage",
-                    exc)
+        log.warning("⚠️ MongoDB NOT connected (%s) — falling back to "
+                    "local files; Telegram backups ON. If this is "
+                    "Atlas: Network Access must allow the host's IPs "
+                    "(0.0.0.0/0 for dynamic hosts like Koyeb).", exc)
         _client, _db = None, None
         return False
 
