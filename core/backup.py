@@ -1,4 +1,4 @@
-"""Survive ephemeral disks (Render free wipes on every redeploy).
+"""Survive ephemeral disks (free hosts wipe on every redeploy).
 
 Small data files — cookie jars, data/sudo.json, data/stats.json — are
 backed up as documents in the vault chat: the private storage channel
@@ -6,6 +6,12 @@ when STORAGE_CHANNEL_ID is set, otherwise the owner's PM with the bot
 (no setup needed). One message per file, captioned
 `#all4url-backup <kind>`; restored on startup when the local copy is
 missing.
+
+This vault is the NO-DATABASE fallback. When MongoDB is enabled
+(DB_URI set), the database is the durable store for all of the above,
+so backup_kind() sends nothing at all — no documents in the owner's
+PM. (Restores still run: on the first Mongo boot they feed the
+file→database migration.)
 """
 
 import logging
@@ -13,6 +19,7 @@ import os
 import shutil
 
 import config
+from core import db
 
 log = logging.getLogger("all4url")
 
@@ -66,8 +73,12 @@ async def backup_kind(app, kind: str, local_path: str) -> bool:
     """Upload local_path as the current backup for kind.
 
     Old backup messages for the kind are deleted, so the channel holds
-    exactly one copy. Returns True on success.
+    exactly one copy. Returns True on success — including when MongoDB
+    is enabled, in which case the database already holds this data and
+    nothing is sent anywhere.
     """
+    if db.enabled():
+        return True  # Mongo is the durable store; no Telegram backup
     vault = _vault_chat()
     if not local_path or not os.path.isfile(local_path):
         return False

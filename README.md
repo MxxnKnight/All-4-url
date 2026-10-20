@@ -171,6 +171,10 @@ the bot — you'll see small `#all4url-backup` documents appear there;
 leave them alone (pin them yourself if you want them tidy, the bot
 finds them by tag either way).
 
+**With MongoDB enabled (next section), none of this is sent at all** —
+the database is the durable store, and the vault only remains as the
+safety net for running without a database.
+
 ### MongoDB storage (recommended)
 
 Set `DB_URI` (your MongoDB connection string, e.g. from MongoDB Atlas)
