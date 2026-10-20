@@ -183,6 +183,7 @@ bot's durable data moves into MongoDB:
 | `sudo` | the runtime sudo users added with `/addsudo` |
 | `usage` | bandwidth + job counters per day (`2026-10-21`), per month (`2026-10`) and all-time (`total`) — downloaded, uploaded and served bytes |
 | `cookies` | the per-site cookie jars from `/setcookies` (the owner uses throwaway accounts for these — anyone with the DB URI could use the sessions, so treat the URI like a password) |
+| `settings` | bot settings changed from chat — currently the upload destinations |
 
 The 📈 Usage screen shows today / this month / all time from it.
 Without `DB_URI` the bot keeps using its local files (with the
@@ -257,6 +258,7 @@ report arrives as a `mediainfo.txt` document instead.
 | `/addsudo`, `/delsudo`, `/sudos` | Owner only: add/remove/list sudo users (full bot access, same as you). Permanent sudo users go in the `SUDO_USERS` env var; `/addsudo` ones last until the next redeploy on hosts with ephemeral disks |
 | `/setcookies` | Owner only: tap and pick the site, then send its `cookies.txt` — verified and installed as that site's own jar (reply-to-file and `/setcookies` caption still auto-detect). Fixes Instagram/Reddit login walls |
 | `/cookies` | Owner only: list installed cookie jars with counts and dates |
+| `/destination` | Owner only: choose where finished files are delivered — 💬 Bot PM or 💾 your own Saved Messages (via the user session) — separately for URL uploads and restricted downloads |
 | `/updateytdlp` | Owner only: upgrades yt-dlp in place, active from the next download — no redeploy needed (lasts until redeploy on Render free) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
 | `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch) |

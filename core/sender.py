@@ -137,6 +137,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
             await _attach_mediainfo_button(sent_all[0])
+        stats.record_paths("uploaded", paths)
         return sent_all
 
     photos = [p for p in paths if guess_kind(p) == "photo"]
@@ -173,3 +174,34 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         await _attach_mediainfo_button(sent_all[0])
     stats.record_paths("uploaded", paths)
     return sent_all
+
+
+async def send_files_routed(bot_client, chat_id: int, paths: list[str],
+                            feature: str, caption: str = "",
+                            status_msg=None,
+                            mediainfo_button: bool = False) -> list:
+    """send_files() to the destination chosen for `feature`.
+
+    Destinations (core/settings.py, /destination command):
+      "bot"   — the bot sends the files to the requester's chat (default).
+      "saved" — the *user account* uploads them to its own Saved
+                Messages (Destiny-style). Needs SESSION_STRING; when no
+                user session is configured, falls back to "bot".
+    The progress editor keeps working either way: the status message
+    belongs to the bot, only the uploading client changes.
+    """
+    from core import settings
+    from core.userclient import SessionNotConfigured, get_user_client
+
+    if settings.get_dest(feature) == "saved":
+        try:
+            user = await get_user_client()
+        except SessionNotConfigured:
+            user = None
+        if user is not None:
+            return await send_files(user, "me", paths, caption=caption,
+                                    status_msg=status_msg,
+                                    mediainfo_button=False)
+    return await send_files(bot_client, chat_id, paths, caption=caption,
+                            status_msg=status_msg,
+                            mediainfo_button=mediainfo_button)

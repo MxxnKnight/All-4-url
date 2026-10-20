@@ -28,7 +28,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
 import config
-from core.sender import send_files
+from core.sender import send_files_routed
 from core.userclient import SessionNotConfigured, get_user_client
 from core import stats
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size,
@@ -223,7 +223,7 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
                 paths.append(path)
                 stats.record_paths("downloaded", [path])
         if paths:
-            await send_files(bot, owner_chat, paths, caption=caption)
+            await send_files_routed(bot, owner_chat, paths, "restricted", caption=caption)
         if handled_any:
             return "done"
         if blocked_msg:

@@ -39,7 +39,10 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 (exported from your browser while logged in). Each site gets its own
 jar, verified before installing; `/cookies` lists them. Jars are backed
 up automatically and survive redeploys.
-**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed."""
+**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
+**Destination**: `/destination` picks where finished files land —
+this chat, or your own Saved Messages — separately for URL uploads
+and restricted downloads."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 

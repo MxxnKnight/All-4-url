@@ -31,7 +31,7 @@ from core.extractors.direct import (check_direct, download_file,
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
-from core.sender import send_files
+from core.sender import send_files_routed
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
                         check_size, cleanup_dir, human_bytes, is_admin_id,
                         list_files, make_job_dir, admin_only, progress_text,
@@ -98,7 +98,7 @@ async def _terabox_download(client, message, url, index, info, status, editor):
             path = await terabox.download(url, job_dir, index=index,
                                           progress_cb=progress)
             await editor.edit("Uploading…", force=True)
-            await send_files(client, message.chat.id, [path],
+            await send_files_routed(client, message.chat.id, [path], "uploader",
                              caption=f"Terabox · {info['name'] if info else ''}",
                              status_msg=status)
             await status.delete()
@@ -161,7 +161,7 @@ async def _ytdlp_download(client, message, url, title, status, editor,
             paths = await download(url, job_dir, format_id=format_id,
                                    audio_only=audio_only, progress_cb=progress)
             await editor.edit("Uploading…", force=True)
-            await send_files(client, message.chat.id, paths,
+            await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=title[:200], status_msg=status)
             await status.delete()
         finally:
@@ -176,7 +176,7 @@ async def _gallery_flow(client, message, url, status):
         try:
             await status.edit_text("Fetching with gallery-dl…")
             paths = await gallery_engine.download(url, job_dir)
-            await send_files(client, message.chat.id, paths,
+            await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
             await status.delete()
         finally:
@@ -196,7 +196,7 @@ async def _direct_flow(client, message, url, info, status, editor):
                                        progress_cb=progress,
                                        filename=info.get("filename"))
             await editor.edit("Uploading…", force=True)
-            await send_files(client, message.chat.id, [path],
+            await send_files_routed(client, message.chat.id, [path], "uploader",
                              caption=info.get("filename", ""), status_msg=status)
             await status.delete()
         finally:
@@ -227,7 +227,7 @@ async def _scrape_flow(client, message, url, status, editor):
                                            headers={"Referer": url})
                 paths = [path]
             await editor.edit("Uploading…", force=True)
-            await send_files(client, message.chat.id, paths,
+            await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
             await status.delete()
         finally:
@@ -251,7 +251,7 @@ async def _instagram_carousel(client, message, url, status) -> bool:
             for i, img_url in enumerate(urls):
                 paths.append(await download_file(
                     img_url, job_dir, filename=f"instagram_{i + 1}.jpg"))
-            await send_files(client, message.chat.id, paths,
+            await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
             await status.delete()
             return True

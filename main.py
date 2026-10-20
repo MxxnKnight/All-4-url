@@ -26,7 +26,8 @@ from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 
 import config
-from core import backup, cookies, db, stats, sudo, webserver
+from core import (backup, cookies, db, settings, stats, sudo,
+                  webserver)
 from core.userclient import stop_user_client
 from core.utils import human_bytes
 
@@ -38,6 +39,7 @@ BOT_COMMANDS = [
     BotCommand("batch", "Batch t.me links — or a first..last range"),
     BotCommand("cancel", "Stop the current batch"),
     BotCommand("mediainfo", "File metadata: reply, file, or link"),
+    BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),
     BotCommand("addsudo", "Add a sudo user (owner only)"),
     BotCommand("delsudo", "Remove a sudo user (owner only)"),
     BotCommand("sudos", "List sudo users (owner only)"),
@@ -102,6 +104,7 @@ async def run() -> None:
     await sudo.init_from_db()
     await stats.init_from_db()
     await cookies.init_from_db()
+    await settings.init_from_db()
 
     async def _bandwidth_alert(level: str, used: int, cap: int) -> None:
         pct = used / cap * 100 if cap else 0.0

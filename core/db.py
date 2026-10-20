@@ -166,6 +166,32 @@ async def save_cookie(platform: str, text: str) -> None:
         log.warning("mongo cookie save failed: %s", exc)
 
 
+# --- bot settings ----------------------------------------------------------
+
+async def load_settings():
+    """Bot settings dict (upload destinations, ...) or None."""
+    if _db is None:
+        return None
+    try:
+        doc = await _db["settings"].find_one({"_id": "bot"})
+        if doc:
+            return {k: v for k, v in doc.items() if k != "_id"}
+        return {}
+    except Exception as exc:
+        log.warning("mongo settings load failed: %s", exc)
+    return None
+
+
+async def save_setting(key: str, value) -> None:
+    if _db is None:
+        return
+    try:
+        await _db["settings"].update_one(
+            {"_id": "bot"}, {"$set": {key: value}}, upsert=True)
+    except Exception as exc:
+        log.warning("mongo setting save failed: %s", exc)
+
+
 async def close() -> None:
     global _client, _db
     if _client is not None:
