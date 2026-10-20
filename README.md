@@ -157,7 +157,7 @@ Cookies expire eventually, so when sites start failing again, just
 re-send a fresh file — treat cookies as refreshable, not permanent. A
 throwaway account's cookies are safer than your main account's.
 
-### Surviving redeploys (Render wipes the disk)
+### Surviving redeploys (free hosts wipe the disk)
 
 Free hosts wipe the container disk on every redeploy — normally that
 would delete your cookie jars, the `/addsudo` sudo list and the usage
@@ -170,6 +170,25 @@ you've set one (invisible, tidiest), otherwise right in your PM with
 the bot — you'll see small `#all4url-backup` documents appear there;
 leave them alone (pin them yourself if you want them tidy, the bot
 finds them by tag either way).
+
+### MongoDB storage (recommended)
+
+Set `DB_URI` (your MongoDB connection string, e.g. from MongoDB Atlas)
+and `DB_NAME` (this bot's own database name on that cluster — the same
+URI can serve all your bots, each with its own `DB_NAME`) and the
+bot's durable data moves into MongoDB:
+
+| Collection | Holds |
+|---|---|
+| `sudo` | the runtime sudo users added with `/addsudo` |
+| `usage` | bandwidth + job counters per day (`2026-10-21`), per month (`2026-10`) and all-time (`total`) — downloaded, uploaded and served bytes |
+
+The 📈 Usage screen shows today / this month / all time from it.
+Without `DB_URI` the bot keeps using its local JSON files (with the
+PM/channel backup vault as their safety net) — Mongo is an upgrade,
+never a requirement. Cookies are *not* put in the database: login
+credentials don't belong in a shared DB, they stay in the backup
+vault described above.
 
 ## Updating yt-dlp
 

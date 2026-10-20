@@ -12,4 +12,6 @@ gallery-dl
 aiohttp
 curl-cffi
 python-dotenv
+# Async MongoDB driver (sudo users + usage stats when DB_URI is set).
+motor
 Pillow

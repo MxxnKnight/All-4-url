@@ -28,6 +28,7 @@ services:
       # API_ID, API_HASH, BOT_TOKEN, OWNER_ID,
       # SESSION_STRING (optional, restricted downloader),
       # STORAGE_CHANNEL_ID + BASE_URL (file-to-link),
+      # DB_URI + DB_NAME (optional, MongoDB for sudo users + stats),
       # TERABOX_NDUS (optional, Terabox links)
       - key: API_ID
         value: ""
@@ -37,3 +38,7 @@ services:
         value: ""
       - key: OWNER_ID
         value: ""
+      - key: DB_URI
+        value: ""            # MongoDB URI (optional; JSON files if empty)
+      - key: DB_NAME
+        value: "all4url"     # this bot's own database on that cluster

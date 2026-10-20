@@ -64,6 +64,15 @@ SUDO_USERS = _int_set("SUDO_USERS")
 # keep it only in the host's env vars, never in the repo.
 SESSION_STRING = (os.environ.get("SESSION_STRING") or "").strip()
 
+# --- Database (optional, recommended) -------------------------------------
+# MongoDB for the bot's durable data (runtime sudo users + usage stats),
+# so they survive redeploys on hosts with ephemeral disks. DB_NAME picks
+# THIS bot's own database on the cluster — the same DB_URI may be shared
+# with other bots, each keeps its own DB_NAME. Leave DB_URI empty to
+# keep using the local JSON files instead.
+DB_URI = (os.environ.get("DB_URI") or "").strip()
+DB_NAME = (os.environ.get("DB_NAME") or "all4url").strip() or "all4url"
+
 # --- File-to-link -----------------------------------------------------------
 # BASE_URL (below) is the only thing file-to-link strictly needs: by
 # default the links point back at the file message in the owner's PM.

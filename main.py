@@ -26,7 +26,7 @@ from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 
 import config
-from core import backup, stats, webserver
+from core import backup, db, stats, sudo, webserver
 from core.userclient import stop_user_client
 
 #: The commands menu (Telegram's "/" popup). Registered with Telegram
@@ -93,15 +93,25 @@ async def run() -> None:
     await _register_commands(app)
     restored = await backup.restore_missing(app)
     if restored:
-        log.info("restored from storage channel: %s", ", ".join(restored))
+        log.info("restored from vault chat: %s", ", ".join(restored))
+    # Durable storage: Mongo when DB_URI is set (sudo + usage), else the
+    # local JSON files. Runs after the vault restore so file data the
+    # vault brought back can migrate up into a fresh database.
+    await db.init()
+    await sudo.init_from_db()
+    await stats.init_from_db()
+    flusher = asyncio.create_task(stats.flusher())
     try:
         await idle()
     finally:
+        flusher.cancel()
+        await stats.flush()
         try:
             await backup.backup_kind(app, "data/stats.json",
                                      stats.DATA_FILE)
         except Exception as exc:
             log.warning("stats backup on shutdown failed: %s", exc)
+        await db.close()
         await stop_user_client()
         await app.stop()
         await runner.cleanup()

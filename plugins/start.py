@@ -130,13 +130,18 @@ def _uptime_text(seconds: float) -> str:
 
 def _usage_text() -> str:
     snap = stats.snapshot()
-    month, total = snap["month"], snap["total"]
+    month, total, day = snap["month"], snap["total"], snap["day"]
     outbound = month["uploaded"] + month["served"]
     pct = min(100.0, outbound / FREE_OUTBOUND_BYTES * 100)
 
     lines = [f"📊 **Usage** — {snap['month_key']}",
              "",
              f"⏱ Uptime: {_uptime_text(snap['uptime'])}",
+             "",
+             "**Today**",
+             f"📥 Downloaded: {human_bytes(day['downloaded'])}",
+             f"📤 Uploaded to Telegram: {human_bytes(day['uploaded'])}",
+             f"🌐 Served via links: {human_bytes(day['served'])}",
              "",
              "**This month**",
              f"📥 Downloaded: {human_bytes(month['downloaded'])}",
