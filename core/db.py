@@ -5,14 +5,16 @@ cluster — the same URI is shared with the owner's other bots, so this
 bot keeps its own database (DB_NAME) and, inside it, its own
 collections:
 
-    sudo   {_id: "runtime", ids: [123, 456]}           — /addsudo users
-    usage  {_id: "total" | "2026-10" | "2026-10-21",   — bandwidth + jobs
-            downloaded, uploaded, served,
-            jobs: {feature: {ok, failed}}}
+    sudo    {_id: "runtime", ids: [123, 456]}          — /addsudo users
+    usage   {_id: "total" | "2026-10" | "2026-10-21",  — bandwidth + jobs
+             downloaded, uploaded, served,
+             jobs: {feature: {ok, failed}}}
+    cookies {_id: <platform>, text: <netscape file>}   — cookie jars
 
-Cookies are deliberately NOT stored here: a shared database is the
-wrong place for login credentials — those live in the backup vault
-(core/backup.py) instead.
+The owner knowingly stores cookie jars here (throwaway accounts only,
+never main accounts) so they survive redeploys; the backup vault
+(core/backup.py) keeps a second copy. Anyone with the DB_URI could
+use those sessions — treat the URI like a password.
 
 If DB_URI is unset or Mongo is unreachable, the bot falls back to the
 local JSON files exactly as before — Mongo is an upgrade, never a
@@ -133,6 +135,35 @@ async def inc_usage(buckets: dict) -> bool:
     except Exception as exc:
         log.warning("mongo usage write failed: %s", exc)
         return False
+
+
+# --- cookie jars -----------------------------------------------------------
+
+async def load_cookies():
+    """{platform: netscape_text} from Mongo, or None when unavailable."""
+    if _db is None:
+        return None
+    try:
+        out = {}
+        async for doc in _db["cookies"].find({}):
+            text = doc.get("text")
+            if isinstance(text, str) and text:
+                out[str(doc["_id"])] = text
+        return out
+    except Exception as exc:
+        log.warning("mongo cookies load failed: %s", exc)
+    return None
+
+
+async def save_cookie(platform: str, text: str) -> None:
+    if _db is None:
+        return
+    try:
+        await _db["cookies"].replace_one(
+            {"_id": platform}, {"_id": platform, "text": text},
+            upsert=True)
+    except Exception as exc:
+        log.warning("mongo cookie save failed: %s", exc)
 
 
 async def close() -> None:

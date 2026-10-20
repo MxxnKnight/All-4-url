@@ -26,8 +26,9 @@ from pyrogram import Client, idle
 from pyrogram.types import BotCommand
 
 import config
-from core import backup, db, stats, sudo, webserver
+from core import backup, cookies, db, stats, sudo, webserver
 from core.userclient import stop_user_client
+from core.utils import human_bytes
 
 #: The commands menu (Telegram's "/" popup). Registered with Telegram
 #: on every startup, so the menu is always there with no BotFather setup.
@@ -94,12 +95,32 @@ async def run() -> None:
     restored = await backup.restore_missing(app)
     if restored:
         log.info("restored from vault chat: %s", ", ".join(restored))
-    # Durable storage: Mongo when DB_URI is set (sudo + usage), else the
-    # local JSON files. Runs after the vault restore so file data the
-    # vault brought back can migrate up into a fresh database.
+    # Durable storage: Mongo when DB_URI is set (sudo, usage, cookie
+    # jars), else the local files. Runs after the vault restore so file
+    # data the vault brought back can migrate up into a fresh database.
     await db.init()
     await sudo.init_from_db()
     await stats.init_from_db()
+    await cookies.init_from_db()
+
+    async def _bandwidth_alert(level: str, used: int, cap: int) -> None:
+        pct = used / cap * 100 if cap else 0.0
+        if level == "warn":
+            text = (f"⚠️ **Bandwidth at {pct:.0f}%** — "
+                    f"{human_bytes(used)} of the "
+                    f"{config.OUTBOUND_CAP_GB} GB monthly outbound used. "
+                    f"At {config.BANDWIDTH_STOP_PCT}% new downloads pause "
+                    "until the 1st (streaming links keep working).")
+        else:
+            text = (f"⛔ **Bandwidth at {pct:.0f}%** — new download "
+                    "jobs are now paused until the 1st. Streaming "
+                    "links still work.")
+        try:
+            await app.send_message(config.OWNER_ID, text)
+        except Exception as exc:
+            log.warning("bandwidth alert failed: %s", exc)
+
+    stats.set_alert_callback(_bandwidth_alert)
     flusher = asyncio.create_task(stats.flusher())
     try:
         await idle()

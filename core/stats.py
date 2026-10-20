@@ -127,18 +127,74 @@ def _buckets():
     return ("total", _month_key(), _day_key())
 
 
+# --- bandwidth guard -----------------------------------------------------
+# Outbound = this month's uploaded + served (what the host meters).
+# record() fires the alert callback when a threshold is *crossed*
+# (state-based, so a restart after crossing never re-fires, and the
+# monthly reset naturally re-arms it).
+
+_alert_cb = None
+
+
+def set_alert_callback(cb) -> None:
+    """cb(level, used_bytes, cap_bytes) — an async function."""
+    global _alert_cb
+    _alert_cb = cb
+
+
+def outbound_month() -> int:
+    month = _memory()["months"].get(_month_key(), _blank_period())
+    return month["uploaded"] + month["served"]
+
+
+def outbound_pct() -> float:
+    cap = config.OUTBOUND_CAP_BYTES
+    return (outbound_month() / cap * 100) if cap else 0.0
+
+
+def bandwidth_blocked() -> bool:
+    """True when new download jobs should pause (STOP threshold hit)."""
+    return outbound_pct() >= config.BANDWIDTH_STOP_PCT
+
+
+def bandwidth_pause_text() -> str:
+    return (f"⛔ **Bandwidth paused** — this month's outbound is at "
+            f"{outbound_pct():.0f}% of the {config.OUTBOUND_CAP_GB} GB "
+            "monthly cap. New downloads pause until the 1st; "
+            "streaming links still work.")
+
+
+def _check_alerts(prev_out: int, new_out: int) -> None:
+    if _alert_cb is None:
+        return
+    cap = config.OUTBOUND_CAP_BYTES
+    if not cap:
+        return
+    for level, thr in (("warn", config.BANDWIDTH_WARN_PCT),
+                       ("stop", config.BANDWIDTH_STOP_PCT)):
+        if prev_out * 100 < cap * thr <= new_out * 100:
+            db.schedule(_alert_cb(level, new_out, cap))
+
+
 def record(kind: str, nbytes: int) -> None:
     """Add `nbytes` to `kind` (downloaded|uploaded|served)."""
     nbytes = int(nbytes or 0)
     if nbytes <= 0 or kind not in ("downloaded", "uploaded", "served"):
         return
     data = _memory()
+    prev_out = None
+    if kind in ("uploaded", "served"):
+        mp = _period(data, _month_key())
+        prev_out = mp["uploaded"] + mp["served"]
     for bucket in _buckets():
         _period(data, bucket)[kind] += nbytes
         if db.enabled():
             _bump(bucket, kind, nbytes)
     if not db.enabled():
         _save_file(data)
+    if prev_out is not None:
+        mp = _period(data, _month_key())
+        _check_alerts(prev_out, mp["uploaded"] + mp["served"])
 
 
 def record_paths(kind: str, paths) -> None:

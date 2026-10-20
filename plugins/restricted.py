@@ -246,6 +246,9 @@ async def _run_links(bot: Client, message: Message, links: list[str],
     (range batches) counts deleted messages silently instead of
     spamming one failure reply per missing message.
     """
+    if stats.bandwidth_blocked():
+        await message.reply_text(stats.bandwidth_pause_text())
+        return
     await react(message, "👀")
     owner = message.from_user.id
     cancel = _cancel_flags.setdefault(owner, asyncio.Event())

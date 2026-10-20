@@ -22,7 +22,7 @@ from core.utils import human_bytes, is_admin_id, is_owner_id, admin_only, owner_
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
 #: everything the box sends out: Telegram uploads + file-to-link serves.
-FREE_OUTBOUND_BYTES = 100 * 1024 ** 3
+FREE_OUTBOUND_BYTES = config.OUTBOUND_CAP_BYTES
 
 HOME_TEXT = """**All-4-URL** — your personal downloader bot.
 

@@ -284,7 +284,13 @@ async def url_handler(client: Client, message: Message):
 
 async def _dispatch(client: Client, message: Message, url: str,
                     status: Message, editor: ThrottledEditor) -> str:
-    """Run the resolver chain. Returns "done" | "pending" | "failed"."""
+    """Run the resolver chain.
+
+    Returns "done" | "pending" | "failed" | "blocked" (bandwidth cap).
+    """
+    if stats.bandwidth_blocked():
+        await status.edit_text(stats.bandwidth_pause_text())
+        return "blocked"
     errors: list[str] = []
     try:
         # 1) Terabox gets its own extractor, always first for its domains.
@@ -420,6 +426,13 @@ async def format_callback(client: Client, query: CallbackQuery):
     if not job:
         await query.answer("This job expired — send the link again.",
                            show_alert=True)
+        return
+    if stats.bandwidth_blocked():
+        await query.answer("⛔ Bandwidth paused", show_alert=True)
+        try:
+            await query.message.edit_text(stats.bandwidth_pause_text())
+        except Exception:
+            pass
         return
     await query.answer("Starting…")
     status = query.message

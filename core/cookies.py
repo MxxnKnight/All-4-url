@@ -15,6 +15,7 @@ import time
 from urllib.parse import urlparse
 
 import config
+from core import db
 
 #: (platform id, button label, domains that identify it)
 COOKIE_SITES = [
@@ -140,11 +141,7 @@ def jar_for_url(url: str) -> str | None:
     return legacy  # old single cookies.txt, or None
 
 
-def install_jar(platform: str, text: str) -> tuple:
-    """Atomically (re)write a jar. Returns (cookie_count, domains)."""
-    count, domains = parse_cookies(text)
-    if count == 0:
-        raise ValueError("no cookie lines found")
+def _write_jar(platform: str, text: str) -> None:
     dest = jar_path(platform)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest),
@@ -152,7 +149,47 @@ def install_jar(platform: str, text: str) -> tuple:
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
     os.replace(tmp, dest)
+
+
+def install_jar(platform: str, text: str) -> tuple:
+    """Atomically (re)write a jar. Returns (cookie_count, domains).
+
+    Also schedules a Mongo save (when DB_URI is set) so the jar
+    survives redeploys — see init_from_db().
+    """
+    count, domains = parse_cookies(text)
+    if count == 0:
+        raise ValueError("no cookie lines found")
+    _write_jar(platform, text)
+    db.schedule(db.save_cookie(platform, text))
     return count, domains
+
+
+async def init_from_db() -> None:
+    """At startup: sync jars with Mongo (when enabled).
+
+    Jars stored in Mongo overwrite the local files (Mongo is the
+    truth once in use); local jars Mongo doesn't have yet are
+    migrated up, so switching loses nothing.
+    """
+    stored = await db.load_cookies()
+    if stored is None:
+        return  # file mode
+    for platform, text in stored.items():
+        try:
+            count, _domains = parse_cookies(text)
+            if count:
+                _write_jar(platform, text)
+        except Exception:
+            pass  # a bad stored jar must not break startup
+    for pid, _label, _count, _ts in list_jars():
+        if pid not in stored:
+            try:
+                with open(jar_path(pid), encoding="utf-8",
+                          errors="replace") as handle:
+                    await db.save_cookie(pid, handle.read())
+            except OSError:
+                pass
 
 
 def list_jars() -> list:

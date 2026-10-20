@@ -182,13 +182,21 @@ bot's durable data moves into MongoDB:
 |---|---|
 | `sudo` | the runtime sudo users added with `/addsudo` |
 | `usage` | bandwidth + job counters per day (`2026-10-21`), per month (`2026-10`) and all-time (`total`) — downloaded, uploaded and served bytes |
+| `cookies` | the per-site cookie jars from `/setcookies` (the owner uses throwaway accounts for these — anyone with the DB URI could use the sessions, so treat the URI like a password) |
 
 The 📈 Usage screen shows today / this month / all time from it.
-Without `DB_URI` the bot keeps using its local JSON files (with the
+Without `DB_URI` the bot keeps using its local files (with the
 PM/channel backup vault as their safety net) — Mongo is an upgrade,
-never a requirement. Cookies are *not* put in the database: login
-credentials don't belong in a shared DB, they stay in the backup
-vault described above.
+never a requirement.
+
+### Bandwidth guard
+
+Outbound traffic (uploads to Telegram + file-to-link serves) is what
+free hosts meter. The bot watches this month's outbound against
+`OUTBOUND_CAP_GB` (default 100): at `BANDWIDTH_WARN_PCT` (80%) it PMs
+the owner a warning; at `BANDWIDTH_STOP_PCT` (95%) it pauses new
+download jobs (uploader + restricted + batch) until the 1st —
+streaming links keep working. Thresholds are env-tunable.
 
 ## Updating yt-dlp
 

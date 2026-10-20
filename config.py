@@ -73,6 +73,16 @@ SESSION_STRING = (os.environ.get("SESSION_STRING") or "").strip()
 DB_URI = (os.environ.get("DB_URI") or "").strip()
 DB_NAME = (os.environ.get("DB_NAME") or "all4url").strip() or "all4url"
 
+# --- Bandwidth guard --------------------------------------------------------
+# Monthly outbound (uploads to Telegram + file-to-link serves) is what
+# the host meters — Koyeb free includes 100 GB/month. The guard warns
+# the owner at BANDWIDTH_WARN_PCT and pauses new download jobs at
+# BANDWIDTH_STOP_PCT (streaming links keep working either way).
+OUTBOUND_CAP_GB = _int("OUTBOUND_CAP_GB", 100)
+OUTBOUND_CAP_BYTES = OUTBOUND_CAP_GB * 1024 ** 3
+BANDWIDTH_WARN_PCT = _int("BANDWIDTH_WARN_PCT", 80)
+BANDWIDTH_STOP_PCT = _int("BANDWIDTH_STOP_PCT", 95)
+
 # --- File-to-link -----------------------------------------------------------
 # BASE_URL (below) is the only thing file-to-link strictly needs: by
 # default the links point back at the file message in the owner's PM.
