@@ -246,6 +246,33 @@ report arrives as a `mediainfo.txt` document instead.
 
 ---
 
+## Split downloads (`/sdl`)
+
+For a direct-link video that's too big to fetch whole (Telegram's
+2 GB cap — and this host's small disk):
+
+    /sdl <direct video link>
+
+The bot **probes first and downloads nothing**: it checks the link
+is really a direct file, reads the video's duration/resolution/
+bitrate remotely, and verifies the host supports **range/seek**
+requests. You get a report card — total size, duration, and the
+part plan — with a **✂️ Start splitting** button.
+
+Each part obeys **both** caps (`SEGMENT_MAX_MIN`, default 45
+minutes, and `SEGMENT_MAX_MB`, default 1000 MB): the cutter
+(ffmpeg, stream-copy, all audio/subtitle tracks kept) reads only
+that part's time window from the remote file, measures the real
+result, and re-plans the next part from the measured bitrate —
+variable-bitrate files self-correct, and an over-cap part is
+re-cut shorter before upload. Parts arrive as **playable videos**
+in your chosen upload destination. Only one split job runs at a
+time; free disk is checked before every part; the monthly
+bandwidth guard can stop a job between parts (sent parts stay
+sent). Files up to `SEGMENT_MAX_TOTAL_GB` (default 8 GB). Honest
+limits: cut points snap to keyframes (a few seconds' drift), and
+hosts without range support can't be split this way.
+
 ## Control panel (Mini App)
 
 The bot has a Telegram Mini App control panel — same Koyeb web

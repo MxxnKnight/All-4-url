@@ -49,6 +49,7 @@ BOT_COMMANDS = [
     BotCommand("batch", "Batch t.me links — or a first..last range"),
     BotCommand("cancel", "Stop the current batch"),
     BotCommand("mediainfo", "File metadata: reply, file, or link"),
+    BotCommand("sdl", "Split-download an oversize video link"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),
     BotCommand("addsudo", "Add a sudo user (owner only)"),
     BotCommand("delsudo", "Remove a sudo user (owner only)"),

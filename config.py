@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.13.2"
+BOT_VERSION = "1.14.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -124,6 +124,14 @@ MAX_JOBS = max(1, _int("MAX_JOBS", 2))
 # Safety ceiling for a single file, in bytes. Telegram bot uploads are
 # limited to 2 GB anyway; keep a little headroom below that.
 MAX_FILE_SIZE = _int("MAX_FILE_SIZE", 2_000_000_000)
+
+# Split downloads (/sdl, core/segmenter.py): an oversized direct-link
+# VIDEO is cut into watchable parts instead of being refused. Each
+# part obeys BOTH caps; the whole file must fit under the total cap.
+SEGMENT_MAX_MIN = max(1, _int("SEGMENT_MAX_MIN", 45))
+SEGMENT_MAX_MB = max(50, _int("SEGMENT_MAX_MB", 1000))
+SEGMENT_MAX_TOTAL_GB = max(1, _int("SEGMENT_MAX_TOTAL_GB", 8))
+SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
 
 # Biggest message range a single /batch may expand (first-link..last-link).
 BATCH_RANGE_LIMIT = max(2, _int("BATCH_RANGE_LIMIT", 100))
