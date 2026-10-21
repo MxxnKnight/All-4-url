@@ -37,7 +37,7 @@ from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size,
 
 LINK_RE = re.compile(
     r"(?:https?://)?(?:t\.me|telegram\.me)/"
-    r"(?:c/(\d+)|([A-Za-z0-9_]+))/(\d+)(?:/(\d+))?")
+    r"(?:c/(\d+)|([A-Za-z0-9_]+))/(\d+)(?:/(\d+))?(?:[-–](\d+))?")
 
 # Per-owner batch state
 _cancel_flags: dict[int, asyncio.Event] = {}
@@ -73,27 +73,72 @@ def parse_link(url: str):
     match = LINK_RE.search(url or "")
     if not match:
         return None
-    internal, username, first, second = match.groups()
+    internal, username, first, second, _range_end = match.groups()
     message_id = int(second) if second else int(first)
     if internal:
         return int(f"-100{internal}"), message_id
     return username, message_id
 
 
+def parse_link_range(url: str):
+    """-> (chat, lo, hi) for a Destiny-style range link, else None.
+
+    `t.me/chat/111-115` (hyphen or en-dash) names a whole range in
+    ONE link. Only the plain form counts: with a forum-topic segment
+    (t.me/chat/111/222) the last number is the message, and a dash
+    suffix there is left alone."""
+    match = LINK_RE.search(url or "")
+    if not match:
+        return None
+    internal, username, first, second, range_end = match.groups()
+    if second or not range_end:
+        return None
+    lo, hi = sorted((int(first), int(range_end)))
+    if lo == hi:
+        return None
+    if internal:
+        return int(f"-100{internal}"), lo, hi
+    return username, lo, hi
+
+
 class MessageMissing(ValueError):
     """A ranged-batch message that doesn't exist (deleted, most likely)."""
 
 
-def _expand_links(links: list[str]) -> tuple[list[str], str | None, bool]:
-    """Expand a 2-link same-chat batch into the full message range.
+def _expand_range(chat, lo: int, hi: int):
+    """The link list + label for messages lo…hi in one chat."""
+    count = hi - lo + 1
+    if count > config.BATCH_RANGE_LIMIT:
+        raise ValueError(
+            f"That range is {count} messages — the limit is "
+            f"{config.BATCH_RANGE_LIMIT} per batch. Send a smaller range.")
+    if isinstance(chat, int):
+        internal = str(chat)[4:] if str(chat).startswith("-100") else str(chat)
+        expanded = [f"https://t.me/c/{internal}/{i}"
+                    for i in range(lo, hi + 1)]
+    else:
+        expanded = [f"https://t.me/{chat}/{i}" for i in range(lo, hi + 1)]
+    return expanded, f"messages {lo}–{hi}", True
 
-    t.me/channel/1 + t.me/channel/7 becomes the 7 links for messages
-    1…7, so the batch walks everything between (and including) them.
-    Returns (links, range_label, is_range). Anything else — 1 link,
-    3+ links, different chats — comes back unchanged.
+
+def _expand_links(links: list[str]) -> tuple[list[str], str | None, bool]:
+    """Expand a range batch into the full message range.
+
+    Two spellings, same result: TWO links to the same chat
+    (t.me/channel/1 + t.me/channel/7) or ONE Destiny-style range
+    link (t.me/channel/1-7) both become the links for messages
+    1…7, so the batch walks everything between (and including)
+    them. Returns (links, range_label, is_range). Anything else —
+    a plain single link, 3+ links, different chats — comes back
+    unchanged.
 
     Raises ValueError when the range is bigger than BATCH_RANGE_LIMIT.
     """
+    if len(links) == 1:
+        ranged = parse_link_range(links[0])
+        if ranged:
+            return _expand_range(*ranged)
+        return links, None, False
     if len(links) != 2:
         return links, None, False
     first, second = parse_link(links[0]), parse_link(links[1])
@@ -102,19 +147,7 @@ def _expand_links(links: list[str]) -> tuple[list[str], str | None, bool]:
     lo, hi = sorted((first[1], second[1]))
     if lo == hi:
         return links, None, False
-    count = hi - lo + 1
-    if count > config.BATCH_RANGE_LIMIT:
-        raise ValueError(
-            f"That range is {count} messages — the limit is "
-            f"{config.BATCH_RANGE_LIMIT} per batch. Send a smaller range.")
-    chat = first[0]
-    if isinstance(chat, int):
-        internal = str(chat)[4:] if str(chat).startswith("-100") else str(chat)
-        expanded = [f"https://t.me/c/{internal}/{i}"
-                    for i in range(lo, hi + 1)]
-    else:
-        expanded = [f"https://t.me/{chat}/{i}" for i in range(lo, hi + 1)]
-    return expanded, f"messages {lo}–{hi}", True
+    return _expand_range(first[0], lo, hi)
 
 
 def _media_kind(msg) -> str:
@@ -472,7 +505,7 @@ async def restricted_handler(client: Client, message: Message):
         return
     if not links:
         return
-    if len(links) == 1:
+    if len(links) == 1 and not parse_link_range(links[0]):
         await _run_links(client, message, links)
     else:
         await _start_batch_menu(client, message, links)
@@ -483,7 +516,7 @@ async def batch_cmd(client: Client, message: Message):
     owner = message.from_user.id
     links = [m.group(0) for m in LINK_RE.finditer(message.text or "")]
     if links:
-        if len(links) == 1:
+        if len(links) == 1 and not parse_link_range(links[0]):
             await _run_links(client, message, links)
         else:
             await _start_batch_menu(client, message, links)

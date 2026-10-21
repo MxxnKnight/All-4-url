@@ -318,7 +318,7 @@ in.
 | `/destination` | Owner only: choose where finished files are delivered — 💬 Bot PM or 💾 your own Saved Messages (via the user session) — separately for URL uploads and restricted downloads |
 | `/updateytdlp` | Owner only: upgrades yt-dlp in place, active from the next download — no redeploy needed (lasts until redeploy on Render free) |
 | A `t.me/…` post link | An unrestricted re-upload of that post; media-group albums re-upload as albums |
-| `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch) |
+| `/batch` then one message with many t.me links (or links right in the `/batch` message) | 2+ links: a content-type filter menu (toggle text/photos/videos/… on/off), then a delay menu (3–60 s between items), then the batch runs. Exactly two links to the same chat = a *range*: first-link…last-link walks every message between them (deleted ones counted silently, capped at 100/batch). The same range also works as ONE Destiny-style link — `t.me/chat/111-115` |
 | `/cancel` | Stops a running batch after the current item |
 | `/help` | Short in-bot help |
 
