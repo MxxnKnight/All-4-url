@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from urllib.parse import parse_qsl
 
@@ -34,6 +35,34 @@ log = logging.getLogger("all4url")
 MAX_INITDATA_AGE = 24 * 3600
 #: Pasted cookie text cap (real jars are far smaller).
 MAX_PASTE_CHARS = 1_000_000
+
+#: A custom site's domain (the "Other site" jar key).
+_DOMAIN_RE = re.compile(
+    r"^(?=.{4,253}$)([a-z0-9](-?[a-z0-9])*\.)+[a-z]{2,}$")
+
+
+def _resolve_site(raw: str):
+    """Panel site choice → (platform_id, label, domains) or None.
+
+    Accepts a preset platform id ("youtube") or any site domain
+    ("voe.sx", "https://voe.sx/…") for a custom jar; a domain that
+    belongs to a preset site maps to that preset."""
+    sites = {pid: (label, domains)
+             for pid, label, domains in cookies.COOKIE_SITES}
+    raw = (raw or "").strip().lower()
+    if raw in sites:
+        label, domains = sites[raw]
+        return raw, label, domains
+    dom = raw.split("://", 1)[-1].split("/")[0].split(":")[0]
+    if dom.startswith("www."):
+        dom = dom[4:]
+    mapped = cookies.detect_platform([dom])
+    if mapped:
+        label, domains = sites[mapped]
+        return mapped, label, domains
+    if not _DOMAIN_RE.match(dom):
+        return None
+    return dom, dom, (dom,)
 
 
 def validate_init_data(init_data: str, token: str):
@@ -105,6 +134,11 @@ def _state_payload() -> dict:
              "installed": pid in installed,
              "count": installed.get(pid, 0)}
             for pid, label, _d in cookies.COOKIE_SITES]
+    known = {j["id"] for j in jars}
+    for pid, _l, count, _t in cookies.list_jars():
+        if pid not in known:  # custom-site jar (keyed by domain)
+            jars.append({"id": pid, "label": pid, "installed": True,
+                         "count": count})
     used = (snap["month"].get("uploaded", 0)
             + snap["month"].get("served", 0))
     return {
@@ -143,18 +177,19 @@ async def api_cookies(request: web.Request) -> web.Response:
     _fields, body, error = await _owner(request)
     if error is not None:
         return error
-    platform = str(body.get("platform", "")).strip().lower()
+    raw = str(body.get("platform", ""))
     text = str(body.get("text", ""))
-    sites = {pid: (label, domains)
-             for pid, label, domains in cookies.COOKIE_SITES}
-    if platform not in sites:
+    resolved = _resolve_site(raw)
+    if resolved is None:
         return web.json_response(
-            {"ok": False, "error": "Pick a site first."}, status=400)
+            {"ok": False, "error": "Pick a site, or type a valid "
+                                   "site domain (like voe.sx)."},
+            status=400)
+    platform, label, domains = resolved
     if len(text) > MAX_PASTE_CHARS:
         return web.json_response(
             {"ok": False, "error": "That paste is too large for a "
                                    "cookie file."}, status=400)
-    label, domains = sites[platform]
     try:
         count, found = cookies.parse_cookies(text)
     except Exception:
@@ -246,8 +281,22 @@ h1{font-size:19px;margin:2px 0 2px}
 .bar{height:8px;border-radius:4px;background:rgba(127,127,127,.25);overflow:hidden;margin:8px 0 4px}
 .bar>i{display:block;height:100%;background:var(--btn);border-radius:4px}
 .bar>i.warn{background:#f5a623}.bar>i.stop{background:#e5484d}
-select,textarea{width:100%;border:1px solid rgba(127,127,127,.35);border-radius:10px;
+select,textarea,input{width:100%;border:1px solid rgba(127,127,127,.35);border-radius:10px;
   background:var(--bg);color:var(--text);padding:10px;font-size:14px}
+.dd{position:relative}
+.dd-btn{width:100%;display:flex;justify-content:space-between;align-items:center;
+  border:1px solid rgba(127,127,127,.35);border-radius:10px;background:var(--bg);
+  color:var(--text);padding:11px 12px;font-size:14px}
+.dd-arrow{color:var(--hint);font-size:12px}
+.dd-list{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:30;
+  background:var(--bg);border:1px solid rgba(127,127,127,.35);border-radius:12px;
+  overflow:hidden;box-shadow:0 10px 28px rgba(0,0,0,.22)}
+.dd-item{display:flex;justify-content:space-between;align-items:center;
+  padding:11px 12px;font-size:14px}
+.dd-item:active{background:var(--secondary)}
+.dd-item.sel{color:var(--link);font-weight:600}
+.dd-item .cnt{color:var(--hint);font-size:12.5px;font-weight:400}
+#customdomain{margin-top:8px}
 textarea{min-height:110px;font-family:ui-monospace,monospace;font-size:12px;margin-top:8px}
 button.main{width:100%;margin-top:10px;padding:12px;border:0;border-radius:10px;
   background:var(--btn);color:var(--btn-text);font-size:15px;font-weight:600}
@@ -281,7 +330,14 @@ button.main{width:100%;margin-top:10px;padding:12px;border:0;border-radius:10px;
   <h2>🍪 Cookie jars</h2>
   <div id="jars"></div>
   <div class="seglabel">Paste cookies.txt for:</div>
-  <select id="site"></select>
+  <div class="dd" id="sitedd">
+    <button type="button" class="dd-btn" id="ddbtn">
+      <span id="ddlabel">Choose site…</span><span class="dd-arrow">▾</span>
+    </button>
+    <div class="dd-list" id="ddlist" hidden></div>
+  </div>
+  <input id="customdomain" type="text" placeholder="Site domain — e.g. voe.sx"
+         autocomplete="off" autocapitalize="none" hidden>
   <textarea id="paste" placeholder="Paste the full cookies.txt content here…"></textarea>
   <button class="main" id="install">Install cookies</button>
   <div class="msg" id="cookiemsg"></div>
@@ -337,14 +393,41 @@ async function load() {
     : s.bandwidth.state === "warn" ? "🟠 near cap" : "🔴 downloads paused";
   $("jars").innerHTML = s.jars.map(j =>
     `<div class="jar"><span><i class="dot ${j.installed ? "y" : ""}"></i>${j.label}</span><span>${j.installed ? j.count + " cookies" : "not installed"}</span></div>`).join("");
-  $("site").innerHTML = s.jars.map(j => `<option value="${j.id}">${j.label}</option>`).join("");
+  jarsCache = s.jars;
+  buildDropdown(s.jars);
   paintSeg("dest-uploader", s.dest.uploader);
   paintSeg("dest-restricted", s.dest.restricted);
   $("foot").textContent = `User session: ${s.session ? "connected" : "not set"} · Sudo users: ${s.sudo_count}`;
 }
+let siteChoice = null;  // {id, label} | {id:"__other", label:"Other site…"}
+function buildDropdown(jars) {
+  const items = jars.map(j => ({id: j.id, label: j.label,
+    cnt: j.installed ? j.count + " 🍪" : ""}));
+  items.push({id: "__other", label: "➕ Other site…", cnt: ""});
+  if (!siteChoice) siteChoice = items[0];
+  $("ddlabel").textContent = siteChoice.label;
+  $("ddlist").innerHTML = items.map(it =>
+    `<div class="dd-item ${it.id === siteChoice.id ? "sel" : ""}" data-id="${it.id}" data-label="${it.label}"><span>${it.label}</span><span class="cnt">${it.cnt}</span></div>`).join("");
+  document.querySelectorAll(".dd-item").forEach(el => el.onclick = () => {
+    siteChoice = {id: el.dataset.id, label: el.dataset.label};
+    $("ddlabel").textContent = siteChoice.label;
+    $("ddlist").hidden = true;
+    $("customdomain").hidden = siteChoice.id !== "__other";
+    buildDropdown(jarsCache);
+  });
+}
+let jarsCache = [];
+$("ddbtn").onclick = e => { e.stopPropagation(); $("ddlist").hidden = !$("ddlist").hidden; };
+document.addEventListener("click", e => {
+  if (!$("sitedd").contains(e.target)) $("ddlist").hidden = true;
+});
+function siteValue() {
+  if (!siteChoice) return "";
+  return siteChoice.id === "__other" ? $("customdomain").value : siteChoice.id;
+}
 $("install").onclick = async () => {
   const m = $("cookiemsg"); m.className = "msg"; m.textContent = "Installing…";
-  const r = await api("/api/cookies", {platform: $("site").value, text: $("paste").value});
+  const r = await api("/api/cookies", {platform: siteValue(), text: $("paste").value});
   if (r.ok) {
     m.className = "msg ok";
     m.textContent = `✅ Installed ${r.count} cookies.` + (r.warning ? " ⚠️ " + r.warning : "");

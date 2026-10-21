@@ -62,7 +62,10 @@ def site_label(platform: str) -> str:
 
 
 def jar_path(platform: str) -> str:
-    safe = "".join(c for c in platform if c.isalnum() or c in "-_") or "other"
+    # "." stays: custom-site jars are keyed by domain (voe.sx.txt).
+    # "/" and friends are stripped, so an id can never escape the dir.
+    safe = "".join(c for c in platform if c.isalnum() or c in "-_.") \
+        or "other"
     return os.path.join(COOKIES_DIR, f"{safe}.txt")
 
 
@@ -127,6 +130,17 @@ def platform_for_url(url: str) -> str | None:
     for pid, _label, site_domains in COOKIE_SITES:
         if domain_matches(host, site_domains):
             return pid
+    # Custom jars are keyed by their site's domain
+    # (cookies/<domain>.txt — see the panel's "Other site" install).
+    try:
+        names = os.listdir(COOKIES_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".txt"):
+            pid = name[:-4]
+            if pid not in site_ids() and domain_matches(host, (pid,)):
+                return pid
     return None
 
 
