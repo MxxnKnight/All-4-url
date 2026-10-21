@@ -26,7 +26,8 @@ from pyrogram import Client, idle
 from pyrogram.types import (BotCommand,
                             BotCommandScopeAllChatAdministrators,
                             BotCommandScopeAllGroupChats,
-                            BotCommandScopeAllPrivateChats)
+                            BotCommandScopeAllPrivateChats,
+                            BotCommandScopeChat)
 
 import config
 from core import (backup, cookies, db, settings, stats, sudo,
@@ -67,7 +68,9 @@ def _menu_variants():
               ("all_private_chats", BotCommandScopeAllPrivateChats()),
               ("all_group_chats", BotCommandScopeAllGroupChats()),
               ("all_chat_administrators",
-               BotCommandScopeAllChatAdministrators())]
+               BotCommandScopeAllChatAdministrators()),
+              ("owner_chat",
+               BotCommandScopeChat(chat_id=config.OWNER_ID))]
     return [(f"{label} lang={lang or '-'}", scope, lang)
             for label, scope in scopes for lang in ("", "en")]
 
@@ -114,9 +117,18 @@ async def _register_panel_button(app: Client) -> None:
         return
     try:
         from pyrogram.types import MenuButtonWebApp, WebAppInfo
-        await app.set_chat_menu_button(menu_button=MenuButtonWebApp(
+        button = MenuButtonWebApp(
             text="🎛 Panel",
-            web_app=WebAppInfo(url=config.BASE_URL + "/app")))
+            web_app=WebAppInfo(url=config.BASE_URL + "/app"))
+        await app.set_chat_menu_button(menu_button=button)
+        # A previous bot on this token may have set a *per-chat* menu
+        # button for the owner's PM, which shadows the default — set
+        # that one explicitly too.
+        try:
+            await app.set_chat_menu_button(chat_id=config.OWNER_ID,
+                                           menu_button=button)
+        except Exception as exc:
+            log.warning("could not set owner-chat menu button: %s", exc)
         log.info("chat menu button set to control panel (%s/app)",
                  config.BASE_URL)
     except Exception as exc:
