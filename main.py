@@ -23,13 +23,22 @@ except Exception:  # uvloop unavailable (e.g. Windows dev) — asyncio is fine
     pass
 
 from pyrogram import Client, idle
-from pyrogram.types import BotCommand
+from pyrogram.types import (BotCommand,
+                            BotCommandScopeAllChatAdministrators,
+                            BotCommandScopeAllGroupChats,
+                            BotCommandScopeAllPrivateChats)
 
 import config
 from core import (backup, cookies, db, settings, stats, sudo,
                   webserver)
 from core.userclient import stop_user_client
 from core.utils import human_bytes
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+log = logging.getLogger("all4url")
 
 #: The commands menu (Telegram's "/" popup). Registered with Telegram
 #: on every startup, so the menu is always there with no BotFather setup.
@@ -49,10 +58,24 @@ BOT_COMMANDS = [
 ]
 
 
+def _menu_variants():
+    """(label, scope, language) combos Telegram resolves the "/" menu
+    from. The (default, no-language) combo is the main list; every
+    other combo is a place a PREVIOUS bot on this same token could
+    have left commands that override ours in some chats/languages."""
+    scopes = [("default", None),
+              ("all_private_chats", BotCommandScopeAllPrivateChats()),
+              ("all_group_chats", BotCommandScopeAllGroupChats()),
+              ("all_chat_administrators",
+               BotCommandScopeAllChatAdministrators())]
+    return [(f"{label} lang={lang or '-'}", scope, lang)
+            for label, scope in scopes for lang in ("", "en")]
+
+
 async def _register_commands(app: Client) -> None:
-    """Sync Telegram's "/" menu with BOT_COMMANDS on every boot:
-    read what's currently set, replace only when it differs, and log
-    the outcome so deploy logs show the menu state."""
+    """Sync Telegram's "/" menu with BOT_COMMANDS on every boot, and
+    sweep stale command lists left by other bots in other scopes or
+    languages (they shadow the main list). Logs every action."""
     want = [(c.command, c.description) for c in BOT_COMMANDS]
     try:
         current = await app.get_bot_commands()
@@ -60,19 +83,27 @@ async def _register_commands(app: Client) -> None:
         if have == want:
             log.info("bot commands menu already up to date "
                      "(%d commands)", len(want))
-            return
-        if await app.set_bot_commands(BOT_COMMANDS):
+        elif await app.set_bot_commands(BOT_COMMANDS):
             log.info("bot commands menu updated (%d commands): %s",
                      len(want),
                      ", ".join("/" + name for name, _ in want))
     except Exception as exc:
         log.warning("could not sync bot commands menu: %s", exc)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-log = logging.getLogger("all4url")
+    for label, scope, lang in _menu_variants():
+        if scope is None and lang == "":
+            continue  # the main list, synced above
+        try:
+            stale = await app.get_bot_commands(scope=scope,
+                                               language_code=lang)
+            if stale:
+                names = ", ".join("/" + c.command for c in stale)
+                if await app.delete_bot_commands(scope=scope,
+                                                 language_code=lang):
+                    log.info("cleared stale bot commands [%s]: %s",
+                             label, names)
+        except Exception as exc:
+            log.warning("could not check stale commands [%s]: %s",
+                        label, exc)
 
 
 def _bot_workers() -> int:
