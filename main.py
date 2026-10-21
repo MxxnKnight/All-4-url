@@ -106,6 +106,23 @@ async def _register_commands(app: Client) -> None:
                         label, exc)
 
 
+async def _register_panel_button(app: Client) -> None:
+    """Point the chat menu button (next to the text box) at the
+    Mini App control panel — only when BASE_URL is set, since the
+    panel lives on the bot's own web server."""
+    if not config.BASE_URL:
+        return
+    try:
+        from pyrogram.types import MenuButtonWebApp, WebAppInfo
+        await app.set_chat_menu_button(menu_button=MenuButtonWebApp(
+            text="🎛 Panel",
+            web_app=WebAppInfo(url=config.BASE_URL + "/app")))
+        log.info("chat menu button set to control panel (%s/app)",
+                 config.BASE_URL)
+    except Exception as exc:
+        log.warning("could not set chat menu button: %s", exc)
+
+
 def _bot_workers() -> int:
     """Scale workers to the box, but stay tiny on a free nano."""
     cores = os.cpu_count() or 1
@@ -137,6 +154,7 @@ async def run() -> None:
     me = await app.get_me()
     log.info("bot started as @%s (owner id %s)", me.username, config.OWNER_ID)
     await _register_commands(app)
+    await _register_panel_button(app)
     restored = await backup.restore_missing(app)
     if restored:
         log.info("restored from vault chat: %s", ", ".join(restored))

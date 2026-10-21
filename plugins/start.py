@@ -8,7 +8,7 @@ like every handler in this bot.
 
 from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
-                            InlineKeyboardMarkup, Message)
+                            InlineKeyboardMarkup, Message, WebAppInfo)
 
 import asyncio
 import os
@@ -176,13 +176,18 @@ def _usage_text() -> str:
 
 
 def _home_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("📥 URL Uploader", callback_data="menu:uploader"),
          InlineKeyboardButton("🔗 File-to-Link", callback_data="menu:filetolink")],
         [InlineKeyboardButton("🔒 Restricted", callback_data="menu:restricted"),
          InlineKeyboardButton("📊 MediaInfo", callback_data="menu:mediainfo")],
         [InlineKeyboardButton("📈 Usage", callback_data="menu:usage")],
-    ])
+    ]
+    if config.BASE_URL:
+        rows.append([InlineKeyboardButton(
+            "🎛 Control Panel",
+            web_app=WebAppInfo(url=config.BASE_URL + "/app"))])
+    return InlineKeyboardMarkup(rows)
 
 
 def _back_markup() -> InlineKeyboardMarkup:

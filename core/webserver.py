@@ -175,6 +175,8 @@ def make_app() -> web.Application:
     app.router.add_get("/health", _health)
     # NOTE: aiohttp auto-registers HEAD for every GET route, so players
     # can probe a link's headers; _serve answers HEAD with headers only.
+    from core import webapp
+    webapp.add_routes(app)
     app.router.add_get("/d/{token}", _download)
     app.router.add_get("/stream/{token}", _stream)
     return app

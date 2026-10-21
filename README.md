@@ -246,6 +246,32 @@ report arrives as a `mediainfo.txt` document instead.
 
 ---
 
+## Control panel (Mini App)
+
+The bot has a Telegram Mini App control panel — same Koyeb web
+server, no extra hosting. After deploying with `BASE_URL` set, open
+`/start`: the **🎛 Control Panel** button opens it (the bot also
+sets the chat menu button next to the text box to the panel on
+startup). If an old bot on this token left *its* menu button
+behind, BotFather can override: `/mybots` → Bot Settings → Menu
+Button.
+
+Inside, styled like a normal Telegram Mini App:
+
+- **📊 Usage** — today / month / all-time numbers and the monthly
+  outbound bandwidth meter.
+- **🍪 Cookie jars** — which sites have jars, plus **paste-to-
+  install**: pick the site, paste the full `cookies.txt` content,
+  tap Install. Same checks as the file flow (right site's cookies,
+  login-cookie warning), saved to the database like any jar.
+- **🎯 Upload destination** — Bot PM / Saved Messages toggles for
+  URL uploads and restricted downloads (same setting as
+  `/destination`).
+
+The panel is **owner-only**: every request is verified against
+Telegram's signed Mini App data, and only the owner's account gets
+in.
+
 ## Usage
 
 | Send this | Get this |

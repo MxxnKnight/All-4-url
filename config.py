@@ -43,6 +43,8 @@ def _int_set(name: str) -> set:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
+#: Release version (shown in /start and the control panel).
+BOT_VERSION = "1.13.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
