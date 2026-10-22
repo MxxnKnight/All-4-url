@@ -68,12 +68,21 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
 
     Returns the sent Message (or None if the client returned nothing)."""
     kind = guess_kind(path)
+    meta: dict = {}
+    if kind == "document":
+        # A video wearing a wrong/no extension (or an unknown MIME in
+        # this container) would leave as a document. Trust the CONTENT
+        # instead: if ffprobe finds a video stream, send it as video.
+        meta = await run_blocking(_ffprobe, path)
+        if meta.get("duration") or meta.get("width"):
+            kind = "video"
     editor = ThrottledEditor(status_msg) if status_msg is not None else None
     progress = _progress_callback(editor, "Uploading…") if editor else None
 
     sent = None
     if kind == "video":
-        meta, thumb = await run_blocking(_ffprobe, path), None
+        if not meta:
+            meta = await run_blocking(_ffprobe, path)
         thumb = await run_blocking(_make_thumb, path)
         sent = await client.send_video(
             chat_id, path, caption=caption, supports_streaming=True,

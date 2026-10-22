@@ -205,7 +205,10 @@ def list_files(root: str) -> list[str]:
     return sorted(found)
 
 
-VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
+VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts",
+              ".mpg", ".mpeg", ".3gp", ".3gpp", ".flv", ".wmv", ".m2ts",
+              ".mts", ".vob", ".ogv", ".f4v", ".asf", ".rm", ".rmvb",
+              ".divx"}
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 AUDIO_EXTS = {".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac"}
 

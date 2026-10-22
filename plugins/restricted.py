@@ -19,6 +19,7 @@ batch. /cancel stops a running batch.
 """
 
 import asyncio
+import os
 import re
 import time
 
@@ -103,6 +104,31 @@ def parse_link_range(url: str):
 
 class MessageMissing(ValueError):
     """A ranged-batch message that doesn't exist (deleted, most likely)."""
+
+
+#: Extension for a video, from the MIME type Telegram reports.
+_VIDEO_MIME_EXTS = {
+    "video/mp4": ".mp4", "video/x-matroska": ".mkv",
+    "video/webm": ".webm", "video/quicktime": ".mov",
+    "video/x-msvideo": ".avi", "video/mp2t": ".ts",
+    "video/3gpp": ".3gp", "video/mpeg": ".mpg",
+}
+
+
+def _video_ext_fix(path: str, mime_type: str | None) -> str:
+    """Give a downloaded VIDEO a video extension when its name lacks
+    one (or wears a wrong one) — otherwise the sender, which guesses
+    from the name, would re-upload it as a document."""
+    from core.utils import VIDEO_EXTS
+    if os.path.splitext(path)[1].lower() in VIDEO_EXTS:
+        return path
+    new_path = os.path.splitext(path)[0] + _VIDEO_MIME_EXTS.get(
+        (mime_type or "").lower(), ".mp4")
+    try:
+        os.replace(path, new_path)
+        return new_path
+    except OSError:
+        return path
 
 
 def _expand_range(chat, lo: int, hi: int):
@@ -252,6 +278,9 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
             job_dir = make_job_dir()
             job_dirs.append(job_dir)
             path = await user.download_media(msg, file_name=job_dir + "/")
+            if path and msg.video is not None:
+                path = _video_ext_fix(
+                    path, getattr(media, "mime_type", None))
             if path:
                 paths.append(path)
                 stats.record_paths("downloaded", [path])
