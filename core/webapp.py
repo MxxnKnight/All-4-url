@@ -247,6 +247,14 @@ async def page(_request: web.Request) -> web.Response:
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/app", page)
+    # Aliases for the shapes a panel URL picks up in the wild: a
+    # trailing slash from a hand-typed/BotFather entry, and the
+    # doubled /app/app produced when BASE_URL itself ended in /app.
+    # Serving the page (not a redirect) keeps Telegram's #tgWebAppData
+    # fragment attached. Both used to be a bare 404.
+    app.router.add_get("/app/", page)
+    app.router.add_get("/app/app", page)
+    app.router.add_get("/app/index.html", page)
     app.router.add_post("/api/state", api_state)
     app.router.add_post("/api/cookies", api_cookies)
     app.router.add_post("/api/destination", api_destination)

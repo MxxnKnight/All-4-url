@@ -114,13 +114,13 @@ async def _register_panel_button(app: Client) -> None:
     """Point the chat menu button (next to the text box) at the
     Mini App control panel — only when BASE_URL is set, since the
     panel lives on the bot's own web server."""
-    if not config.BASE_URL:
+    if not config.PANEL_URL:
         return
     try:
         from pyrogram.types import MenuButtonWebApp, WebAppInfo
         button = MenuButtonWebApp(
             text="🎛 Panel",
-            web_app=WebAppInfo(url=config.BASE_URL + "/app"))
+            web_app=WebAppInfo(url=config.PANEL_URL))
         await app.set_chat_menu_button(menu_button=button)
         # A previous bot on this token may have set a *per-chat* menu
         # button for the owner's PM, which shadows the default — set
@@ -130,8 +130,8 @@ async def _register_panel_button(app: Client) -> None:
                                            menu_button=button)
         except Exception as exc:
             log.warning("could not set owner-chat menu button: %s", exc)
-        log.info("chat menu button set to control panel (%s/app)",
-                 config.BASE_URL)
+        log.info("chat menu button set to control panel (%s)",
+                 config.PANEL_URL)
     except Exception as exc:
         log.warning("could not set chat menu button: %s", exc)
 

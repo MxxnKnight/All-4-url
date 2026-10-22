@@ -183,10 +183,10 @@ def _home_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("📊 MediaInfo", callback_data="menu:mediainfo")],
         [InlineKeyboardButton("📈 Usage", callback_data="menu:usage")],
     ]
-    if config.BASE_URL:
+    if config.PANEL_URL:
         rows.append([InlineKeyboardButton(
             "🎛 Control Panel",
-            web_app=WebAppInfo(url=config.BASE_URL + "/app"))])
+            web_app=WebAppInfo(url=config.PANEL_URL))])
     return InlineKeyboardMarkup(rows)
 
 
