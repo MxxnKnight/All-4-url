@@ -111,54 +111,118 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
         "Accept-Ranges": "bytes",
     }
     if byte_range is None:
-        status_code, offset, limit, remaining = 200, 0, 0, None
+        status_code = 200
         if size:
             headers["Content-Length"] = str(size)
     else:
         start, end = byte_range
-        remaining = end - start + 1
-        skip_chunks, skip_in_chunk = divmod(start, TG_CHUNK)
-        # Whole 1 MiB chunks to skip, then drop the leftover bytes of
-        # the first chunk; limit trims the tail to the exact length.
-        offset = skip_chunks
-        limit = -(-(skip_in_chunk + remaining) // TG_CHUNK)  # ceil div
         status_code = 206
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-        headers["Content-Length"] = str(remaining)
+        headers["Content-Length"] = str(end - start + 1)
 
     response = web.StreamResponse(status=status_code, headers=headers)
     await response.prepare(request)
     served = 0
     if request.method != "HEAD":
-        first = True
         try:
-            async for chunk in _bot.stream_media(message, offset=offset,
-                                                 limit=limit):
-                if not chunk:
-                    continue
-                if first and byte_range is not None:
-                    first = False
-                    chunk = chunk[skip_in_chunk:]
-                if remaining is not None:
-                    chunk = chunk[:remaining]
-                    remaining -= len(chunk)
-                # Write in small slices: never hold a whole 1 MiB
-                # Telegram chunk in the HTTP buffer at once.
-                for i in range(0, len(chunk), HTTP_SLICE):
-                    await response.write(chunk[i:i + HTTP_SLICE])
-                    served += min(HTTP_SLICE, len(chunk) - i)
-                if remaining is not None and remaining <= 0:
-                    break
+            if size:
+                lo = byte_range[0] if byte_range else 0
+                hi = byte_range[1] if byte_range else size - 1
+                served, complete = await _stream_window(
+                    response, message, size, lo, hi)
+                if not complete:
+                    # Never leave the player hanging on a
+                    # Content-Length we could not fill: close the
+                    # connection so it sees a definite error and can
+                    # retry the seek itself.
+                    log.warning("stream incomplete: %d of %d bytes sent",
+                                served, hi - lo + 1)
+                    response.force_close()
+            else:
+                # Unknown size: no length was promised; single pass.
+                async for chunk in _bot.stream_media(message):
+                    for i in range(0, len(chunk), HTTP_SLICE):
+                        await response.write(chunk[i:i + HTTP_SLICE])
+                        served += min(HTTP_SLICE, len(chunk) - i)
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         except Exception as exc:
             log.warning("stream failed: %s", exc)
+            response.force_close()
     try:
         await response.write_eof()
     except Exception:
         pass
     stats.record("served", served)
     return response
+
+
+#: Total passes (1 initial + resumes) at delivering one byte window
+#: before the stream is declared incomplete.
+STREAM_ATTEMPTS = 4
+
+
+async def _stream_window(response: web.StreamResponse, message,
+                         size: int, lo: int, hi: int):
+    """Deliver bytes [lo, hi] of the message's media to `response`.
+
+    Returns (bytes_written, complete). One `stream_media` pass is not
+    guaranteed to deliver the whole window: the library can end the
+    generator early (all its fetch workers finished while a chunk is
+    missing), give up on a FloodWait, or yield a short chunk mid-file
+    (it advances a full 1 MiB anyway, so continuing would leave a
+    hole). Any of those used to end the response short of its
+    declared Content-Length on a keep-alive connection, and players
+    waited forever for bytes that were never coming — the far-seek
+    stall. So: track the first undelivered byte and resume from
+    exactly there; a short chunk that is not the file tail ends the
+    pass (its bytes are valid, the next chunk would not be).
+    """
+    pos = lo  # next absolute byte the client is still owed
+    served = 0
+    attempts = 0
+    while pos <= hi:
+        attempts += 1
+        chunk_off, to_skip = divmod(pos, TG_CHUNK)
+        limit = -(-(to_skip + (hi - pos + 1)) // TG_CHUNK)  # ceil div
+        raw_pos = chunk_off * TG_CHUNK
+        try:
+            async for raw in _bot.stream_media(message, offset=chunk_off,
+                                               limit=limit):
+                if not raw:
+                    continue
+                raw_len = len(raw)
+                raw_start = raw_pos
+                raw_pos += TG_CHUNK
+                chunk = raw
+                if to_skip:
+                    if raw_len <= to_skip:
+                        to_skip -= raw_len
+                        continue
+                    chunk = raw[to_skip:]
+                    to_skip = 0
+                chunk = chunk[:hi - pos + 1]
+                if chunk:
+                    # Write in small slices: never hold a whole 1 MiB
+                    # Telegram chunk in the HTTP buffer at once.
+                    for i in range(0, len(chunk), HTTP_SLICE):
+                        await response.write(chunk[i:i + HTTP_SLICE])
+                        served += min(HTTP_SLICE, len(chunk) - i)
+                    pos += len(chunk)
+                if raw_len < TG_CHUNK and raw_start + raw_len < size:
+                    break  # short mid-file chunk: resume from pos
+                if pos > hi:
+                    break
+        except (ConnectionResetError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            log.warning("stream interrupted at byte %d: %s", pos, exc)
+        if pos > hi:
+            return served, True
+        if attempts >= STREAM_ATTEMPTS:
+            return served, False
+        await asyncio.sleep(1)
+    return served, True
 
 
 async def _download(request: web.Request) -> web.Response:
