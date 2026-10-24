@@ -21,6 +21,7 @@ import mimetypes
 from urllib.parse import quote
 
 from aiohttp import web
+from aiohttp.abc import AbstractAccessLogger
 
 import config
 from core import stats
@@ -234,22 +235,37 @@ async def _stream(request: web.Request) -> web.Response:
 
 
 def make_app() -> web.Application:
-    app = web.Application()
+    # 32 MB: one upload chunk is 16 MB; the default 1 MB cap would
+    # reject every chunked upload with a 413.
+    app = web.Application(client_max_size=32 * 1024 * 1024)
     app.router.add_get("/", _health)
     app.router.add_get("/health", _health)
     # NOTE: aiohttp auto-registers HEAD for every GET route, so players
     # can probe a link's headers; _serve answers HEAD with headers only.
     from core import webapp
     webapp.add_routes(app)
+    from core import upage
+    upage.add_routes(app)
     app.router.add_get("/d/{token}", _download)
     app.router.add_get("/stream/{token}", _stream)
     return app
 
 
+class _SilentAccessLog(AbstractAccessLogger):
+    """Access logger that logs nothing — the upload page must not
+    leave a trail of who connected, from where, or when."""
+
+    def log(self, request, response, time):
+        pass
+
+
 async def start_web_server() -> web.AppRunner:
+    from core import upage
+    upage.startup_cleanup()
     runner = web.AppRunner(make_app())
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", config.PORT)
+    site = web.TCPSite(runner, "0.0.0.0", config.PORT,
+                       access_log=_SilentAccessLog())
     await site.start()
     log.info("web server listening on port %s", config.PORT)
     return runner

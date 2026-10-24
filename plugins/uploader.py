@@ -18,6 +18,7 @@ import asyncio
 import os
 import re
 import time
+from urllib.parse import urlparse
 
 from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
@@ -25,7 +26,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 import config
 from core.extractors import gallery_engine, scrape, terabox
-from core import stats
+from core import stats, upage
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
@@ -282,6 +283,53 @@ async def url_handler(client: Client, message: Message):
     # button callback when the job actually finishes.
 
 
+async def _upage_local_flow(client: Client, message: Message, url: str,
+                            status: Message) -> str:
+    """Upload a web-upload file to Telegram from the disk copy.
+
+    The link is single-use by design: the file is deleted the moment
+    this upload succeeds, so the same link can never upload twice.
+    A failed Telegram upload leaves the file (and the link) intact
+    for a retry.
+    """
+    token = urlparse(url).path[len("/u/"):].split("/")[0].split("?")[0]
+    try:
+        fid = upage.verify_download_token(token)
+    except upage.TokenError:
+        await status.edit_text(
+            "❌ That upload link is invalid or expired. Make a fresh "
+            "one with /upage.")
+        return "failed"
+    rec = upage.lookup_file(fid)
+    if rec is None:
+        await status.edit_text(
+            "❌ That upload link was already used or expired — the "
+            "file is gone from the server. Upload it again with /upage.")
+        return "failed"
+    path, name, size = rec["path"], rec["name"], rec["size"]
+    if not os.path.exists(path):
+        upage.consume(fid)
+        await status.edit_text(
+            "❌ The file is no longer on the server. Upload it again "
+            "with /upage.")
+        return "failed"
+    await status.edit_text(
+        f"Uploading {name} ({human_bytes(size)}) from your web upload…")
+    try:
+        await send_files_routed(client, message.chat.id, [path],
+                                "uploader", caption=name)
+    except Exception as exc:
+        await status.edit_text(
+            f"❌ Telegram upload failed: {exc}\nThe file is still on "
+            "the server — you can retry this link.")
+        return "failed"
+    upage.consume(fid)
+    await status.edit_text(
+        f"✅ {name} ({human_bytes(size)}) is now on Telegram, and the "
+        "server copy is deleted.")
+    return "done"
+
+
 async def _dispatch(client: Client, message: Message, url: str,
                     status: Message, editor: ThrottledEditor) -> str:
     """Run the resolver chain.
@@ -293,6 +341,17 @@ async def _dispatch(client: Client, message: Message, url: str,
         return "blocked"
     errors: list[str] = []
     try:
+        # 0) Own web-upload links: the file is ALREADY on this disk.
+        # Send it straight to Telegram — downloading it again would
+        # waste disk, bandwidth and time for zero benefit.
+        if config.BASE_URL:
+            parsed = urlparse(url)
+            base = urlparse(config.BASE_URL)
+            if parsed.netloc == base.netloc \
+                    and parsed.path.startswith("/u/"):
+                return await _upage_local_flow(client, message, url,
+                                               status)
+
         # 1) Terabox gets its own extractor, always first for its domains.
         if terabox.is_terabox_url(url):
             try:

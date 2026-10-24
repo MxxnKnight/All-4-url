@@ -42,7 +42,11 @@ up automatically and survive redeploys.
 **yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
 **Destination**: `/destination` picks where finished files land —
 this chat, or your own Saved Messages — separately for URL uploads
-and restricted downloads."""
+and restricted downloads.
+**Web upload**: `/upage` gives you a private, 1-hour upload page.
+Drop files there (max 750 MB each) and send the download link it
+gives you back here — I'll push it to Telegram straight from the
+server disk, no re-download, then delete the server copy."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 

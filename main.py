@@ -50,6 +50,7 @@ BOT_COMMANDS = [
     BotCommand("cancel", "Stop the current batch"),
     BotCommand("mediainfo", "File metadata: reply, file, or link"),
     BotCommand("sdl", "Split-download an oversize video link"),
+    BotCommand("upage", "Private web upload link (owner only)"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),
     BotCommand("addsudo", "Add a sudo user (owner only)"),
     BotCommand("delsudo", "Remove a sudo user (owner only)"),

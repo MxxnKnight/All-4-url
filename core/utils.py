@@ -104,10 +104,23 @@ def check_size(size: int | None, name: str = "file") -> None:
         free = shutil.disk_usage(config.BASE_DIR).free
     except Exception:
         return  # can't measure; let the download try
-    if size + _DISK_HEADROOM > free:
+    # A web-upload file waiting on disk already occupies real bytes,
+    # but while a BIG one waits we keep extra headroom on top, so
+    # other jobs can't eat the disk out from under it: with a 750 MB
+    # file waiting, effectively no other download starts until the
+    # bot uploads it (or it expires).
+    reserved = 0
+    try:
+        from core import upage
+        reserved = upage.pending_bytes()
+    except Exception:
+        reserved = 0
+    if size + _DISK_HEADROOM + reserved > free:
+        hint = (" (a web upload is waiting on disk — send its link "
+                "to the bot first)") if reserved else ""
         raise SizeBlocked(
             f"Not enough space on the server for {human_bytes(size)} "
-            f"right now — try a smaller file.")
+            f"right now — try a smaller file.{hint}")
 
 
 def human_bytes(size) -> str:
