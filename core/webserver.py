@@ -253,7 +253,15 @@ def make_app() -> web.Application:
 
 class _SilentAccessLog(AbstractAccessLogger):
     """Access logger that logs nothing — the upload page must not
-    leave a trail of who connected, from where, or when."""
+    leave a trail of who connected, from where, or when.
+
+    NOTE (learned the hard way, v1.15.0): AppRunner instantiates
+    this class itself with (logger, log_format) — so do NOT override
+    __init__ with no arguments, and do NOT pass an instance to
+    TCPSite (modern aiohttp rejects that kwarg outright). The class
+    is handed to AppRunner via access_log_class; log() stays a no-op,
+    so the logger it is given is never written to.
+    """
 
     def log(self, request, response, time):
         pass
@@ -262,10 +270,9 @@ class _SilentAccessLog(AbstractAccessLogger):
 async def start_web_server() -> web.AppRunner:
     from core import upage
     upage.startup_cleanup()
-    runner = web.AppRunner(make_app())
+    runner = web.AppRunner(make_app(), access_log_class=_SilentAccessLog)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", config.PORT,
-                       access_log=_SilentAccessLog())
+    site = web.TCPSite(runner, "0.0.0.0", config.PORT)
     await site.start()
     log.info("web server listening on port %s", config.PORT)
     return runner
