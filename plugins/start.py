@@ -70,7 +70,11 @@ sent here — so don't delete that message, or the links break.
 
 Links expire after the configured hours (default 72).
 Optional upgrade: set STORAGE_CHANNEL_ID and files are copied into a
-private storage channel instead, so links survive deleting the original."""
+private storage channel instead, so links survive deleting the original.
+
+Photos and image files don't trigger this — they stay quiet until you
+reply /phost to one, which hosts it on Catbox and gives you a direct
+image link instead."""
 
 SECTION_RESTRICTED = """🔒 **Restricted Downloader**
 

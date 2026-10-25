@@ -43,11 +43,29 @@ def _file_info(message: Message):
     return (None, 0, "")
 
 
+def _is_image_message(message: Message) -> bool:
+    """True for photos and image files — which are NOT file-to-link
+    material. Sending an image used to instantly produce download /
+    stream links, which is exactly the confusion /phost exists to
+    avoid: an image is a picture waiting for a host, not a file
+    waiting for a download link. Images stay silent until the owner
+    replies /phost to one. Videos, audio, animations, stickers and
+    non-image documents are unaffected."""
+    if message.photo is not None:
+        return True
+    doc = message.document
+    if doc is not None and (doc.mime_type or "").startswith("image/"):
+        return True
+    return False
+
+
 @Client.on_message(filters.private & admin_only & MEDIA_FILTER)
 async def file_to_link(client: Client, message: Message):
     if message.id in CONSUMED:
         CONSUMED.discard(message.id)
         return  # eaten by the /setcookies handler (group -1)
+    if _is_image_message(message):
+        return  # an image, not a file-to-link upload — see /phost
     if not config.BASE_URL:
         await message.reply_text(
             "File-to-link needs one thing: BASE_URL must be this bot's "
