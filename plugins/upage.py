@@ -1,10 +1,14 @@
-""" /upage — private web-upload link (owner only).
+""" /upage — private web-upload link (owner + sudo).
 
 The bot replies with a signed upload-page link valid for 1 hour.
 Files uploaded there land on the server disk; each finished file gets
 its own download link, and sending that link back to the bot uploads
 it to Telegram straight from the disk copy (never downloaded again),
 then deletes the server copy.
+
+Sudo accounts get this too, like every other bot feature: the
+original owner-only gate left sudo users with total silence, which
+looked like the bot was ignoring them.
 """
 
 from pyrogram import Client, filters
@@ -12,10 +16,10 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
 from core import upage
-from core.utils import owner_only
+from core.utils import admin_only
 
 
-@Client.on_message(filters.private & owner_only
+@Client.on_message(filters.private & admin_only
                    & filters.command("upage"))
 async def upage_cmd(client: Client, message):
     if not config.BASE_URL:

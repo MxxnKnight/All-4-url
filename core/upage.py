@@ -1,6 +1,6 @@
 """Private web-upload page (the /upage command).
 
-Flow: the owner runs /upage, the bot replies with a signed page link
+Flow: the owner (or a sudo user) runs /upage, the bot replies with a signed page link
 valid for 1 hour. The page uploads files in 16 MB chunks (each chunk is
 its own short request, so a slow uplink or a Koyeb edge timeout can't
 kill a big upload, and a dropped connection resumes from the last
