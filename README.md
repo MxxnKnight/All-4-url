@@ -24,7 +24,8 @@ messages, and a 📊 MediaInfo button under uploaded files.
 ## How the uploader decides (resolver chain)
 
 ```
-link ─┬─ Terabox domain ──────────────► Terabox extractor (needs ndus cookie)
+link ─┬─ Terabox domain ──────────────► Terabox extractor (ndus cookie
+      │                                   first, FileSnag fallback)
       ├─ Instagram /p/ (photos) ────────► yt-dlp metadata (carousel images)
       │                                   └► gallery-dl ► yt-dlp ► scrape
       ├─ Instagram /reel/, most sites ──► yt-dlp (quality buttons when the
@@ -222,6 +223,15 @@ cookie:
 
 Cookies expire eventually; when Terabox links start failing with a
 cookie error, repeat the steps.
+
+**FileSnag fallback:** when the cookie route fails (or no `ndus` is
+set), the bot falls back to FileSnag, a third-party Terabox
+downloader that works over plain HTTP — no browser, no account, no
+key. It fetches a fresh code from FileSnag's homepage on every call,
+asks it to resolve the share link, and downloads the returned link
+straight away (those links expire after a few hours). The share link
+is handed to FileSnag when the fallback runs; the `ndus` cookie is
+never sent to it.
 
 ---
 

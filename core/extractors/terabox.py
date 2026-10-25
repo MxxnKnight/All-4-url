@@ -11,6 +11,14 @@ Original implementation of the publicly documented share flow:
 
 Terabox changes this flow from time to time; when it breaks, the API
 step is the part to re-check. A valid TERABOX_NDUS cookie is required.
+
+Fallback (added 2026-10-25): when the cookie route fails — including
+when no ndus cookie is set at all — list_files() falls back to
+FileSnag (core/extractors/filesnag.py), a third-party Terabox
+downloader that works over plain HTTP with no browser. The cookie
+route is always tried first; FileSnag only sees the share link when
+the first-party route has already failed. Its links expire after a
+few hours, so download() uses them immediately and never stores them.
 """
 
 import re
@@ -19,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import aiohttp
 
 import config
+from core.extractors import filesnag
 from core.extractors.direct import BROWSER_UA, download_file
 
 TERABOX_DOMAINS = (
@@ -64,8 +73,8 @@ def _cookies() -> dict:
     return {"ndus": config.TERABOX_NDUS}
 
 
-async def list_files(url: str) -> list[dict]:
-    """List the files in a Terabox share: [{name, size, dlink, is_dir}]."""
+async def _cookie_list_files(url: str) -> list[dict]:
+    """List via the first-party share API (needs the ndus cookie)."""
     cookies = _cookies()
     surl = extract_surl(url)
     if not surl:
@@ -109,12 +118,37 @@ async def list_files(url: str) -> list[dict]:
                 "size": int(item.get("size") or 0),
                 "dlink": item.get("dlink") or "",
                 "is_dir": str(item.get("isdir")) == "1",
+                "via": "cookie",
             })
         real = [f for f in files if not f["is_dir"]]
         if not real:
             raise TeraboxError("this share contains no downloadable files "
                                "(folders-only shares are not supported yet)")
         return real
+
+
+async def list_files(url: str) -> list[dict]:
+    """List the files in a Terabox share: [{name, size, dlink, is_dir}].
+
+    Cookie route first; FileSnag fallback when it fails. Each entry
+    carries "via" ("cookie" or "filesnag") so the caller can say
+    which route worked. When both routes fail, the error names both,
+    so a dead link is not mistaken for a cookie problem (or reverse).
+    """
+    cookie_err = None
+    if config.TERABOX_NDUS:
+        try:
+            return await _cookie_list_files(url)
+        except TeraboxError as exc:
+            cookie_err = exc
+    else:
+        cookie_err = TeraboxError("no ndus cookie set")
+    try:
+        return await filesnag.list_files(url)
+    except filesnag.FileSnagError as exc:
+        raise TeraboxError(
+            f"Terabox failed ({cookie_err}); FileSnag fallback also "
+            f"failed ({exc})")
 
 
 async def download(url: str, dest_dir: str, index: int = 0,
@@ -127,6 +161,14 @@ async def download(url: str, dest_dir: str, index: int = 0,
     if not chosen["dlink"]:
         raise TeraboxError("Terabox did not return a direct link for "
                            f"{chosen['name']} (cookie may lack download rights)")
+    if chosen.get("via") == "filesnag":
+        # FileSnag's link carries its own token and expires in hours:
+        # download it right now, and never send the Terabox ndus
+        # cookie to a third-party host.
+        return await download_file(
+            chosen["dlink"], dest_dir, progress_cb=progress_cb,
+            filename=chosen["name"],
+        )
     return await download_file(
         chosen["dlink"], dest_dir, progress_cb=progress_cb,
         filename=chosen["name"], cookies=_cookies(),

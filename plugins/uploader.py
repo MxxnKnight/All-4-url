@@ -81,8 +81,11 @@ async def _terabox_flow(client: Client, message: Message, url: str,
             callback_data=f"tera:{job_id}:{i}")]
         for i, f in enumerate(files[:10])
     ]
+    via_note = (" (via FileSnag — its links expire in a few hours, "
+                "so pick promptly)" if files[0].get("via") == "filesnag"
+                else "")
     await status.edit_text(
-        "This Terabox share has several files — pick one:",
+        f"This Terabox share has several files — pick one:{via_note}",
         reply_markup=InlineKeyboardMarkup(buttons))
     return True
 
@@ -92,8 +95,13 @@ async def _terabox_download(client, message, url, index, info, status, editor):
         job_dir = make_job_dir()
         started = time.time()
 
+        via = (info or {}).get("via")
+        progress_label = ("Downloading from Terabox (via FileSnag)…"
+                          if via == "filesnag"
+                          else "Downloading from Terabox…")
+
         async def progress(done, total):
-            await editor.edit(progress_text("Downloading from Terabox…",
+            await editor.edit(progress_text(progress_label,
                                             done, total, started))
         try:
             path = await terabox.download(url, job_dir, index=index,
