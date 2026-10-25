@@ -37,7 +37,7 @@ import re
 
 import aiohttp
 
-from core.extractors.direct import BROWSER_UA, download_file
+from core.extractors.direct import BROWSER_UA, download_file_parallel
 
 HOMEPAGE = "https://filesnag.com/"
 DEFAULT_AJAX_URL = "https://filesnag.com/wp-admin/admin-ajax.php"
@@ -187,7 +187,8 @@ async def download(url: str, dest_dir: str, index: int = 0,
     if index >= len(files):
         index = 0
     chosen = files[index]
-    return await download_file(
+    # Parallel Range chunks (falls back to single-stream on any doubt).
+    return await download_file_parallel(
         chosen["dlink"], dest_dir, progress_cb=progress_cb,
         filename=chosen["name"],
     )

@@ -28,7 +28,8 @@ import aiohttp
 
 import config
 from core.extractors import filesnag
-from core.extractors.direct import BROWSER_UA, download_file
+from core.extractors.direct import (BROWSER_UA, download_file,
+                                    download_file_parallel)
 
 TERABOX_DOMAINS = (
     "terabox.com", "1024terabox.com", "1024tera.com", "teraboxapp.com",
@@ -164,8 +165,11 @@ async def download(url: str, dest_dir: str, index: int = 0,
     if chosen.get("via") == "filesnag":
         # FileSnag's link carries its own token and expires in hours:
         # download it right now, and never send the Terabox ndus
-        # cookie to a third-party host.
-        return await download_file(
+        # cookie to a third-party host. Parallel Range chunks: the
+        # backend throttles a single connection but serves concurrent
+        # ranges fine (verified 2026-10-25); small files and any
+        # doubt fall back to single-stream inside that function.
+        return await download_file_parallel(
             chosen["dlink"], dest_dir, progress_cb=progress_cb,
             filename=chosen["name"],
         )

@@ -10,6 +10,7 @@ They return None here so the chain hands them to yt-dlp, which fetches
 the actual video segments.
 """
 
+import asyncio
 import os
 import re
 from urllib.parse import parse_qs, unquote, urlparse
@@ -151,3 +152,122 @@ async def download_file(url: str, dest_dir: str, progress_cb=None,
                         await progress_cb(done, total)
             stats.record_paths("downloaded", [path])
             return path
+
+
+#: Parallel-download tuning. Only used for hosts proven to support
+#: Range (FileSnag's backend does — verified 2026-10-25: concurrent
+#: Range requests all returned 206 with byte-exact slices). Small
+#: files are not worth the extra connections, so below this size the
+#: caller falls back to the single-stream download_file above.
+PARALLEL_MIN_BYTES = 20 * 1024 * 1024
+PARALLEL_CONNECTIONS = 4
+
+
+async def download_file_parallel(url: str, dest_dir: str, progress_cb=None,
+                                 filename: str | None = None,
+                                 headers: dict | None = None,
+                                 cookies: dict | None = None) -> str:
+    """Download in parallel Range chunks, falling back to single-stream.
+
+    Why this exists: FileSnag's download server (the host behind its
+    `fsn_media` link — a 302 to its own backend, NOT a WordPress proxy
+    stream, and NOT a Terabox CDN link; the page JS only ever hands
+    out the fsn_media URL, there is no hidden Terabox link to steal)
+    throttles a single connection, but serves concurrent Range
+    requests fine. So: probe with `Range: bytes=0-0`, follow the
+    redirect once to the real backend URL, then fetch N chunks
+    concurrently from that URL and stitch them on disk.
+
+    Safety: chunks are streamed to disk at their own offsets (never
+    held in RAM); every chunk's byte count is verified; ANY failure,
+    a 200 instead of 206, a missing size, or a host without
+    Accept-Ranges, discards the partial file and retries the whole
+    download single-stream via download_file. A cancelled job is
+    never retried — cancellation re-raises.
+    """
+    req_headers = {"User-Agent": BROWSER_UA}
+    if headers:
+        req_headers.update(headers)
+    timeout = aiohttp.ClientTimeout(total=None, connect=30, sock_read=120)
+    path = None
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Probe: 1 byte, following the redirect to the backend.
+            async with session.get(
+                    url, headers={**req_headers, "Range": "bytes=0-0"},
+                    cookies=cookies, allow_redirects=True) as resp:
+                if resp.status != 206:
+                    raise ValueError(
+                        f"Range probe returned {resp.status}, not 206")
+                content_range = resp.headers.get("Content-Range", "")
+                if resp.headers.get("Accept-Ranges", "").lower() != "bytes":
+                    raise ValueError("host does not advertise Accept-Ranges")
+                try:
+                    total = int(content_range.rsplit("/", 1)[1])
+                except (IndexError, ValueError):
+                    raise ValueError("Range probe gave no usable total")
+                if total < PARALLEL_MIN_BYTES:
+                    raise ValueError("file too small for parallel download")
+                await resp.read()  # 1 byte — release the connection
+                final_url = str(resp.url)
+                name = filename or filename_from(final_url, resp.headers)
+            path = os.path.join(dest_dir, name)
+            with open(path, "wb") as fh:
+                fh.truncate(total)
+            chunk_size = (total + PARALLEL_CONNECTIONS - 1) \
+                // PARALLEL_CONNECTIONS
+            ranges = [(i * chunk_size, min(total - 1, (i + 1) * chunk_size - 1))
+                      for i in range(PARALLEL_CONNECTIONS)]
+            done = [0]
+
+            async def _fetch(start: int, end: int) -> None:
+                written = 0
+                async with session.get(
+                        final_url,
+                        headers={**req_headers,
+                                 "Range": f"bytes={start}-{end}"},
+                        cookies=cookies, allow_redirects=True) as resp:
+                    if resp.status != 206:
+                        raise ValueError(
+                            f"chunk {start}-{end} returned {resp.status}")
+                    with open(path, "r+b") as fh:
+                        fh.seek(start)
+                        async for piece in resp.content.iter_chunked(
+                                256 * 1024):
+                            if written + len(piece) > end - start + 1:
+                                raise ValueError(
+                                    f"chunk {start}-{end} overran its range")
+                            fh.write(piece)
+                            written += len(piece)
+                            done[0] += len(piece)
+                            if progress_cb:
+                                await progress_cb(done[0], total)
+                if written != end - start + 1:
+                    raise ValueError(
+                        f"chunk {start}-{end} short: {written} bytes")
+
+            await asyncio.gather(*[_fetch(s, e) for s, e in ranges])
+            if done[0] != total:
+                raise ValueError(f"parallel total {done[0]} != {total}")
+    except asyncio.CancelledError:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
+    except Exception:
+        # Any doubt at all: throw the partial away and do it the
+        # slow, proven way. A correct slow download beats a fast
+        # corrupt one, and the caller never sees the difference
+        # except in speed.
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        return await download_file(url, dest_dir, progress_cb=progress_cb,
+                                   filename=filename, headers=headers,
+                                   cookies=cookies)
+    stats.record_paths("downloaded", [path])
+    return path
