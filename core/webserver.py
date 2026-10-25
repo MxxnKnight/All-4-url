@@ -11,8 +11,8 @@ Seeking: `stream_media` takes an `offset` counted in chunks of exactly
 offset_bytes = offset * chunk_size). A byte Range is therefore served
 byte-exact: skip whole chunks via offset, drop the leftover bytes of
 the first chunk, and stop after the requested length. RAM stays flat —
-we only ever hold one slice (256 KiB) at a time, which is what the
-free-tier host needs.
+we only ever hold one 1 MiB Telegram chunk at a time, which is what
+the free-tier host needs.
 """
 
 import asyncio
@@ -33,9 +33,6 @@ _bot = None  # set by main.py via bind_bot()
 
 #: stream_media's chunk size, in bytes — exact, verified in the lib source.
 TG_CHUNK = 1024 * 1024
-#: Max bytes held in RAM per HTTP write. Small on purpose: the free-tier
-#: host has ~512 MB and a 2 GB file must never sit in memory.
-HTTP_SLICE = 256 * 1024
 
 
 def bind_bot(client) -> None:
@@ -130,7 +127,7 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
                 lo = byte_range[0] if byte_range else 0
                 hi = byte_range[1] if byte_range else size - 1
                 served, complete = await _stream_window(
-                    response, message, size, lo, hi)
+                    response, message, size, lo, hi, request)
                 if not complete:
                     # Never leave the player hanging on a
                     # Content-Length we could not fill: close the
@@ -142,9 +139,8 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
             else:
                 # Unknown size: no length was promised; single pass.
                 async for chunk in _bot.stream_media(message):
-                    for i in range(0, len(chunk), HTTP_SLICE):
-                        await response.write(chunk[i:i + HTTP_SLICE])
-                        served += min(HTTP_SLICE, len(chunk) - i)
+                    await response.write(chunk)
+                    served += len(chunk)
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         except Exception as exc:
@@ -163,8 +159,22 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
 STREAM_ATTEMPTS = 4
 
 
+def _client_gone(request) -> bool:
+    """True when the player has already hung up on this request.
+
+    Checked between chunks and before each resume attempt, so an
+    abandoned seek stops fetching instead of competing with the
+    player's new seek for Telegram slots and outbound bandwidth.
+    A transport that is merely slow (not closing) is NOT gone.
+    """
+    if request is None:
+        return False
+    transport = request.transport
+    return transport is None or transport.is_closing()
+
+
 async def _stream_window(response: web.StreamResponse, message,
-                         size: int, lo: int, hi: int):
+                         size: int, lo: int, hi: int, request=None):
     """Deliver bytes [lo, hi] of the message's media to `response`.
 
     Returns (bytes_written, complete). One `stream_media` pass is not
@@ -183,6 +193,8 @@ async def _stream_window(response: web.StreamResponse, message,
     served = 0
     attempts = 0
     while pos <= hi:
+        if _client_gone(request):
+            raise asyncio.CancelledError
         attempts += 1
         chunk_off, to_skip = divmod(pos, TG_CHUNK)
         limit = -(-(to_skip + (hi - pos + 1)) // TG_CHUNK)  # ceil div
@@ -204,12 +216,15 @@ async def _stream_window(response: web.StreamResponse, message,
                     to_skip = 0
                 chunk = chunk[:hi - pos + 1]
                 if chunk:
-                    # Write in small slices: never hold a whole 1 MiB
-                    # Telegram chunk in the HTTP buffer at once.
-                    for i in range(0, len(chunk), HTTP_SLICE):
-                        await response.write(chunk[i:i + HTTP_SLICE])
-                        served += min(HTTP_SLICE, len(chunk) - i)
+                    # Write the whole chunk at once: it is already
+                    # fully in memory, so slicing it into smaller
+                    # writes only added aiohttp write/drain calls on
+                    # a 0.1 vCPU box without saving any RAM.
+                    await response.write(chunk)
+                    served += len(chunk)
                     pos += len(chunk)
+                    if _client_gone(request):
+                        raise asyncio.CancelledError
                 if raw_len < TG_CHUNK and raw_start + raw_len < size:
                     break  # short mid-file chunk: resume from pos
                 if pos > hi:
@@ -222,7 +237,11 @@ async def _stream_window(response: web.StreamResponse, message,
             return served, True
         if attempts >= STREAM_ATTEMPTS:
             return served, False
-        await asyncio.sleep(1)
+        # Short pause only: the library's rate bucket still gates
+        # Telegram requests, so this does not hammer Telegram — it
+        # just stops a failed window costing a full second per retry
+        # (up to ~3 s) while the player sits with an empty buffer.
+        await asyncio.sleep(0.2)
     return served, True
 
 
