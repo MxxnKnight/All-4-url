@@ -137,10 +137,22 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
                                 served, hi - lo + 1)
                     response.force_close()
             else:
-                # Unknown size: no length was promised; single pass.
-                async for chunk in _bot.stream_media(message):
-                    await response.write(chunk)
-                    served += len(chunk)
+                # Unknown size: no length was promised. Still fetched
+                # one chunk at a time (see _stream_window): a
+                # whole-file pass hangs the same way past chunk one.
+                chunk_off = 0
+                while True:
+                    if _client_gone(request):
+                        raise asyncio.CancelledError
+                    raw = await _fetch_chunk_with_retries(
+                        message, chunk_off, size=0)
+                    if not raw:
+                        break
+                    await response.write(raw)
+                    served += len(raw)
+                    if len(raw) < TG_CHUNK:
+                        break  # short chunk is the file tail
+                    chunk_off += 1
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         except Exception as exc:
@@ -154,9 +166,13 @@ async def _serve(request: web.Request, inline: bool) -> web.Response:
     return response
 
 
-#: Total passes (1 initial + resumes) at delivering one byte window
-#: before the stream is declared incomplete.
+#: Attempts per Telegram chunk before a window is declared incomplete.
 STREAM_ATTEMPTS = 4
+#: Seconds to wait for one chunk before giving up on that attempt.
+#: A single chunk normally arrives in ~1 s on the live server; 20 s
+#: is generous, and it bounds a hung fetch instead of letting the
+#: player wait until the ~100 s proxy timeout kills the connection.
+CHUNK_TIMEOUT = 20
 
 
 def _client_gone(request) -> bool:
@@ -173,75 +189,102 @@ def _client_gone(request) -> bool:
     return transport is None or transport.is_closing()
 
 
+async def _fetch_one_chunk(message, chunk_off: int,
+                           timeout: float = CHUNK_TIMEOUT) -> bytes:
+    """One Telegram chunk (chunk_off), via the main session only.
+
+    `stream_media(limit=1)` never needs the library's parallel pool
+    (pool only kicks in for multi-chunk windows), and that matters:
+    live Range tests on 2026-10-25 proved every multi-chunk window
+    delivers exactly its first chunk and then hangs — single-chunk
+    windows work for every offset tested (0, 1, 47, 152). So this
+    code never asks for more than one chunk per call.
+    Raises on timeout (bounded by `timeout`, never an open-ended
+    hang) or on a library error; returns b"" only past the end.
+    """
+    gen = _bot.stream_media(message, offset=chunk_off, limit=1)
+    try:
+        return await asyncio.wait_for(gen.__anext__(), timeout=timeout)
+    except StopAsyncIteration:
+        return b""
+    finally:
+        try:
+            await gen.aclose()
+        except Exception:
+            pass
+
+
+async def _fetch_chunk_with_retries(message, chunk_off: int,
+                                    size: int) -> bytes:
+    """One chunk, retried up to STREAM_ATTEMPTS times.
+
+    A short chunk in the middle of a known-size file is treated as
+    a failed fetch (writing it would leave a hole, since the
+    library advances a full chunk past it) and retried, not written.
+    Raises the last error when every attempt fails.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(STREAM_ATTEMPTS):
+        try:
+            raw = await _fetch_one_chunk(message, chunk_off)
+        except (ConnectionResetError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            last_exc = exc
+        else:
+            if not raw:
+                last_exc = RuntimeError("empty chunk")
+            elif size and len(raw) < TG_CHUNK \
+                    and chunk_off * TG_CHUNK + len(raw) < size:
+                last_exc = RuntimeError("short mid-file chunk")
+            else:
+                return raw
+        log.warning("chunk %d fetch failed (attempt %d/%d): %s",
+                    chunk_off, attempt + 1, STREAM_ATTEMPTS, last_exc)
+        if attempt + 1 < STREAM_ATTEMPTS:
+            await asyncio.sleep(0.2)
+    raise RuntimeError(f"chunk {chunk_off} failed after "
+                       f"{STREAM_ATTEMPTS} attempts: {last_exc}")
+
+
 async def _stream_window(response: web.StreamResponse, message,
                          size: int, lo: int, hi: int, request=None):
     """Deliver bytes [lo, hi] of the message's media to `response`.
 
-    Returns (bytes_written, complete). One `stream_media` pass is not
-    guaranteed to deliver the whole window: the library can end the
-    generator early (all its fetch workers finished while a chunk is
-    missing), give up on a FloodWait, or yield a short chunk mid-file
-    (it advances a full 1 MiB anyway, so continuing would leave a
-    hole). Any of those used to end the response short of its
-    declared Content-Length on a keep-alive connection, and players
-    waited forever for bytes that were never coming — the far-seek
-    stall. So: track the first undelivered byte and resume from
-    exactly there; a short chunk that is not the file tail ends the
-    pass (its bytes are valid, the next chunk would not be).
+    Returns (bytes_written, complete). Chunks are fetched one at a
+    time (see _fetch_one_chunk): a multi-chunk `stream_media` call
+    hangs after its first chunk on the live server, and the old
+    resume logic could not help because it only runs when a pass
+    *ends* — a hung pass never ends, so the player waited until
+    the ~100 s proxy timeout. One-chunk calls with a per-chunk
+    timeout and retry turn that hang into, at worst, a fast
+    definite failure (force-close in _serve) that the player can
+    retry, instead of a stuck seek. RAM stays flat: one 1 MiB
+    chunk in memory at a time, written whole (slicing it only
+    added aiohttp write/drain calls on a 0.1 vCPU box).
     """
     pos = lo  # next absolute byte the client is still owed
     served = 0
-    attempts = 0
     while pos <= hi:
         if _client_gone(request):
             raise asyncio.CancelledError
-        attempts += 1
         chunk_off, to_skip = divmod(pos, TG_CHUNK)
-        limit = -(-(to_skip + (hi - pos + 1)) // TG_CHUNK)  # ceil div
-        raw_pos = chunk_off * TG_CHUNK
         try:
-            async for raw in _bot.stream_media(message, offset=chunk_off,
-                                               limit=limit):
-                if not raw:
-                    continue
-                raw_len = len(raw)
-                raw_start = raw_pos
-                raw_pos += TG_CHUNK
-                chunk = raw
-                if to_skip:
-                    if raw_len <= to_skip:
-                        to_skip -= raw_len
-                        continue
-                    chunk = raw[to_skip:]
-                    to_skip = 0
-                chunk = chunk[:hi - pos + 1]
-                if chunk:
-                    # Write the whole chunk at once: it is already
-                    # fully in memory, so slicing it into smaller
-                    # writes only added aiohttp write/drain calls on
-                    # a 0.1 vCPU box without saving any RAM.
-                    await response.write(chunk)
-                    served += len(chunk)
-                    pos += len(chunk)
-                    if _client_gone(request):
-                        raise asyncio.CancelledError
-                if raw_len < TG_CHUNK and raw_start + raw_len < size:
-                    break  # short mid-file chunk: resume from pos
-                if pos > hi:
-                    break
+            raw = await _fetch_chunk_with_retries(message, chunk_off,
+                                                  size)
         except (ConnectionResetError, asyncio.CancelledError):
             raise
-        except Exception as exc:
-            log.warning("stream interrupted at byte %d: %s", pos, exc)
-        if pos > hi:
-            return served, True
-        if attempts >= STREAM_ATTEMPTS:
+        except Exception:
             return served, False
-        # Short pause only: the library's rate bucket still gates
-        # Telegram requests, so this does not hammer Telegram — it
-        # just stops a failed window costing a full second per retry
-        # (up to ~3 s) while the player sits with an empty buffer.
-        await asyncio.sleep(0.2)
+        chunk = raw[to_skip:] if to_skip < len(raw) else b""
+        if not chunk:
+            return served, False
+        chunk = chunk[:hi - pos + 1]
+        await response.write(chunk)
+        served += len(chunk)
+        pos += len(chunk)
+        if _client_gone(request):
+            raise asyncio.CancelledError
     return served, True
 
 
