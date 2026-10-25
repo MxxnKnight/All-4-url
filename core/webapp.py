@@ -372,7 +372,22 @@ button.main{width:100%;margin-top:10px;padding:12px;border:0;border-radius:10px;
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
-const initData = tg ? tg.initData : "";
+// initData normally arrives through the Telegram bridge, but the bridge
+// has been seen empty inside a genuine Mini App (script blocked, bridge
+// late). Fall back to the #tgWebAppData fragment Telegram attaches to
+// direct-link opens, and re-check once after a short delay before
+// giving up — the empty case must be a real empty, not a race.
+function readInitData() {
+  try {
+    if (tg && tg.initData) return tg.initData;
+  } catch (e) {}
+  try {
+    const m = location.hash.match(/tgWebAppData=([^&]+)/);
+    if (m) return decodeURIComponent(m[1]);
+  } catch (e) {}
+  return "";
+}
+let initData = readInitData();
 const $ = id => document.getElementById(id);
 
 async function api(path, extra) {
@@ -396,11 +411,20 @@ function paintSeg(id, val) {
     b.classList.toggle("on", b.dataset.d === val));
 }
 async function load() {
-  // Opened as a plain web link (not from inside Telegram), there is
-  // no initData at all — the server can only refuse, and the old page
-  // showed nothing but that refusal. Say so in plain words instead.
+  // The bridge can arrive a beat after the page script runs, so give
+  // it one short second before concluding there is no signature.
   if (!initData) {
-    $("sub").textContent = "Open this panel from inside Telegram — tap the bot's 🎛 Control Panel button. As a plain web link it carries no Telegram signature, so the server cannot show anything.";
+    await new Promise(r => setTimeout(r, 1000));
+    initData = readInitData();
+  }
+  // Still nothing: say so in plain words, plus a diagnostic (bridge
+  // seen? link data seen?) so the next screenshot shows exactly which
+  // half of the handshake failed. No signature data is ever displayed.
+  if (!initData) {
+    const bridge = !!(window.Telegram && window.Telegram.WebApp);
+    const frag = /tgWebAppData=/.test(location.hash);
+    $("sub").textContent = "Open this panel from inside Telegram — tap the bot's 🎛 Control Panel button. As a plain web link it carries no Telegram signature, so the server cannot show anything."
+      + " (Bridge: " + (bridge ? "found" : "missing") + " · link data: " + (frag ? "found" : "missing") + ")";
     return;
   }
   const s = await api("/api/state");
