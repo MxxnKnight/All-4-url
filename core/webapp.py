@@ -141,6 +141,7 @@ def _state_payload() -> dict:
                          "count": count})
     used = (snap["month"].get("uploaded", 0)
             + snap["month"].get("served", 0))
+    env_ids, runtime_ids = sudo.list_sudo()
     return {
         "ok": True,
         "version": config.BOT_VERSION,
@@ -148,7 +149,9 @@ def _state_payload() -> dict:
                     else "local files — no database"),
         "uptime": int(snap["uptime"]),
         "session": bool(config.SESSION_STRING),
-        "sudo_count": len(sudo.list_sudo()),
+        # NOTE: list_sudo() returns a TUPLE of two id sets — len() of
+        # that tuple was always 2, whatever the real sudo count was.
+        "sudo_count": len(env_ids) + len(runtime_ids),
         "bandwidth": {
             "used": human_bytes(used),
             "cap_gb": config.OUTBOUND_CAP_GB,
@@ -373,10 +376,16 @@ const initData = tg ? tg.initData : "";
 const $ = id => document.getElementById(id);
 
 async function api(path, extra) {
-  const r = await fetch(path, {method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({initData}, extra || {}))});
-  return r.json();
+  // Never let a failed call hang the page on "Loading…" with no
+  // explanation: every failure comes back as an {ok:false} object
+  // that load() can show, including a non-JSON error page.
+  try {
+    const r = await fetch(path, {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({initData}, extra || {}))});
+    try { return await r.json(); }
+    catch (e) { return {ok: false, error: "Server answered " + r.status + " (not JSON)."}; }
+  } catch (e) { return {ok: false, error: "Could not reach the server: " + e.message}; }
 }
 function period(name, p) {
   return `<div class="row"><span>${name}</span><span>⬇ ${p.downloaded} · ⬆ ${p.uploaded}</span></div>
@@ -387,6 +396,13 @@ function paintSeg(id, val) {
     b.classList.toggle("on", b.dataset.d === val));
 }
 async function load() {
+  // Opened as a plain web link (not from inside Telegram), there is
+  // no initData at all — the server can only refuse, and the old page
+  // showed nothing but that refusal. Say so in plain words instead.
+  if (!initData) {
+    $("sub").textContent = "Open this panel from inside Telegram — tap the bot's 🎛 Control Panel button. As a plain web link it carries no Telegram signature, so the server cannot show anything.";
+    return;
+  }
   const s = await api("/api/state");
   if (!s.ok) { $("sub").textContent = s.error || "Could not load."; return; }
   const up = Math.floor(s.uptime / 3600) + "h " + Math.floor(s.uptime % 3600 / 60) + "m";

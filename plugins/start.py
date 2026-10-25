@@ -13,6 +13,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 import asyncio
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -177,6 +178,38 @@ def _usage_text() -> str:
         if bits:
             lines += ["", "📦 Jobs: " + " · ".join(bits)]
     return "\n".join(lines)
+
+
+def _status_text() -> str:
+    """Usage stats + server health, for the /status command.
+
+    The usage block is the same one the /start menu's Usage button
+    shows; the server block is new: version, free disk, and which
+    cookie jars are installed, so a quick /status answers "is the
+    bot healthy and what is it running?" without opening the panel.
+    """
+    lines = [_usage_text(), "", "**Server**",
+             f"🖥 Version: v{config.BOT_VERSION}"]
+    try:
+        usage = shutil.disk_usage(config.BASE_DIR)
+        lines.append(f"💾 Disk free: {human_bytes(usage.free)} "
+                     f"of {human_bytes(usage.total)}")
+    except Exception:
+        pass
+    jars = cookies.list_jars()
+    if jars:
+        lines.append("🍪 Cookie jars: " + ", ".join(
+            f"{label} ({count})"
+            for _pid, label, count, _ts in jars))
+    else:
+        lines.append("🍪 Cookie jars: none installed")
+    return "\n".join(lines)
+
+
+@Client.on_message(filters.private & admin_only
+                   & filters.command("status"))
+async def status_cmd(_client: Client, message: Message):
+    await message.reply_text(_status_text())
 
 
 def _home_markup() -> InlineKeyboardMarkup:

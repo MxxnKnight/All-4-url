@@ -45,6 +45,7 @@ log = logging.getLogger("all4url")
 #: on every startup, so the menu is always there with no BotFather setup.
 BOT_COMMANDS = [
     BotCommand("start", "Show the main menu"),
+    BotCommand("status", "Server + usage status"),
     BotCommand("help", "How each feature works"),
     BotCommand("batch", "Batch t.me links — or a first..last range"),
     BotCommand("cancel", "Stop the current batch"),

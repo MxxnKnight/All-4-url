@@ -11,7 +11,10 @@ import os
 import config
 from core import stats
 from core.cookies import jar_for_url
-from core.utils import list_files
+from core.utils import VIDEO_EXTS, list_files
+
+#: Audio extensions, for ordering downloads video/audio-first.
+_AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".wav", ".opus", ".ogg"}
 
 
 class YtdlpError(Exception):
@@ -136,6 +139,17 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
     else:
         opts["format"] = "bestvideo+bestaudio/best"
 
+    if not audio_only:
+        # Subtitles ride along with the video: yt-dlp writes them next
+        # to it (Malayalam + English, SRT), and the sender delivers
+        # them right after the video. Only subtitles the uploader
+        # provided — never auto-generated captions. When a video has
+        # no subtitles, nothing extra appears; the job is unchanged.
+        opts["writesubtitles"] = True
+        opts["writeautomaticsub"] = False
+        opts["subtitleslangs"] = ["ml", "en.*"]
+        opts["subtitlesformat"] = "srt/best"
+
     before = set(list_files(dest_dir))
     stop_polling = asyncio.Event()
 
@@ -171,5 +185,11 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
     new_files = [p for p in list_files(dest_dir) if p not in before]
     if not new_files:
         raise YtdlpError("yt-dlp finished but produced no file")
+    # The sender gives the caption to the first file only, so the
+    # media itself must come first: a ".en.srt" would otherwise sort
+    # ahead of the ".mp4" and steal the video's caption.
+    _media = VIDEO_EXTS | _AUDIO_EXTS
+    new_files.sort(key=lambda p: (
+        0 if os.path.splitext(p)[1].lower() in _media else 1, p))
     stats.record_paths("downloaded", new_files)
     return new_files
