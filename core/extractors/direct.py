@@ -12,7 +12,7 @@ the actual video segments.
 
 import os
 import re
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
 
@@ -54,12 +54,33 @@ def safe_filename(name: str, fallback: str = "file") -> str:
     return name
 
 
+def _query_disposition_filename(url: str) -> str | None:
+    """Real filename hiding in a signed URL's query string.
+
+    S3/R2 presigned links (hubcloud etc.) carry
+    `response-content-disposition=attachment; filename="Movie.mkv"` as a
+    query parameter — the storage service turns it into a real
+    Content-Disposition header on GET, but the bot's HEAD probe never
+    gets that far (see check_direct). Reading it here means the file
+    keeps its proper name instead of the URL's hash-like last segment.
+    """
+    for value in parse_qs(urlparse(url).query).get(
+            "response-content-disposition", []):
+        match = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", value)
+        if match:
+            return safe_filename(unquote(match.group(1)))
+    return None
+
+
 def filename_from(url: str, headers=None, fallback: str = "file") -> str:
     if headers:
         disposition = headers.get("Content-Disposition", "")
         match = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", disposition)
         if match:
             return safe_filename(unquote(match.group(1)), fallback)
+    query_name = _query_disposition_filename(url)
+    if query_name:
+        return query_name
     name = unquote(os.path.basename(urlparse(url).path)) or fallback
     return safe_filename(name, fallback)
 
@@ -68,6 +89,16 @@ async def check_direct(url: str) -> dict | None:
     """Return {filename, size, mime} if `url` looks like a raw file."""
     if is_playlist_url(url):
         return None  # a stream manifest — yt-dlp's job, not ours
+    # Signed storage links: the signature covers GET only, so the HEAD
+    # probe below would be rejected (403) and the link would fall
+    # through to yt-dlp, which then chokes on the query string as a
+    # filename. A response-content-disposition filename in the query
+    # already proves this is a file download — trust it, no probe
+    # needed. The direct flow's GET is the signed method, so it works.
+    query_name = _query_disposition_filename(url)
+    if query_name:
+        return {"filename": query_name, "size": 0, "mime": "",
+                "final_url": url}
     ext = os.path.splitext(urlparse(url).path)[1].lower()
     timeout = aiohttp.ClientTimeout(total=20)
     try:

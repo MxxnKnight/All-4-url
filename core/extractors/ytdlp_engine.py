@@ -21,7 +21,14 @@ class YtdlpError(Exception):
 def _base_opts(dest_dir: str, url: str | None = None,
                state: dict | None = None) -> dict:
     opts = {
-        "outtmpl": os.path.join(dest_dir, "%(title).70s [%(id)s].%(ext)s"),
+        # NOTE: title was capped at 70 but id was NOT — and for a
+        # generic (non-site) link yt-dlp sets id to the URL itself.
+        # A signed storage URL's query string then blew the filename
+        # past Linux's 255-byte limit (Errno 36, crashed a job on
+        # 2026-10-25). Cap id too: worst case here is ~70+2+40+1+ext,
+        # safely under the limit. Job dirs are per-job, so truncating
+        # the id can't collide two files.
+        "outtmpl": os.path.join(dest_dir, "%(title).70s [%(id).40s].%(ext)s"),
         "restrictfilenames": True,
         "noplaylist": True,
         "quiet": True,
