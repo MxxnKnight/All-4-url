@@ -31,7 +31,7 @@ from pyrogram.types import (BotCommand,
 
 import config
 from core import (backup, cookies, db, settings, stats, sudo,
-                  webserver)
+                  version_notify, webserver)
 from core.userclient import stop_user_client
 from core.utils import human_bytes
 
@@ -182,6 +182,13 @@ async def run() -> None:
     await stats.init_from_db()
     await cookies.init_from_db()
     await settings.init_from_db()
+    # Update notice: only when BOT_VERSION changed since the last
+    # notice (i.e. a real deployment), to owner + sudo, once each.
+    # Never breaks startup if Telegram refuses a send.
+    try:
+        await version_notify.notify_if_updated(app)
+    except Exception as exc:
+        log.warning("update notice check failed: %s", exc)
 
     async def _bandwidth_alert(level: str, used: int, cap: int) -> None:
         pct = used / cap * 100 if cap else 0.0
