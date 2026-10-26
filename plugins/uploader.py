@@ -26,7 +26,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 
 import config
 from core.extractors import gallery_engine, scrape, terabox
-from core import stats, upage
+from core import stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
@@ -42,7 +42,84 @@ URL_RE = re.compile(r"https?://[^\s]+")
 
 # Jobs waiting on a format-button tap: job_id -> job dict
 PENDING: dict[str, dict] = {}
+# Zip jobs waiting on an unzip-button tap: job_id -> job dict.
+# Unlike the format picker (which has no TTL — a known wart), these
+# DO expire: a job_dir left waiting forever would pin disk space.
+PENDING_UNZIP: dict[str, dict] = {}
+UNZIP_TTL = 3600
 _counter = 0
+
+
+def _prune_unzip_pending() -> None:
+    now = int(time.time())
+    for job_id, job in list(PENDING_UNZIP.items()):
+        if now - job.get("ts", 0) > UNZIP_TTL:
+            cleanup_dir(job["job_dir"])
+            PENDING_UNZIP.pop(job_id, None)
+
+
+async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
+                              caption: str, status: Message,
+                              job_dir: str) -> bool:
+    """Intercept a single downloaded zip with an unzip prompt.
+
+    Returns True when the prompt is on screen — the caller must
+    then NOT send the file and NOT clean up job_dir; the callback
+    owns both from here. Returns False when the file is not a zip
+    (or the prompt could not be shown), and the caller sends it
+    normally. A zip that fails the pre-check is NOT prompted:
+    the owner gets a persistent "exceeds" message and the zip
+    itself is sent as-is.
+    """
+    if len(paths) != 1 or not unzip.is_zip_file(paths[0]):
+        return False
+    zip_path = paths[0]
+    try:
+        if os.path.getsize(zip_path) > unzip.MAX_ZIP_BYTES:
+            raise unzip.ZipTooBig(
+                f"this zip is {human_bytes(os.path.getsize(zip_path))} — "
+                f"over the {human_bytes(unzip.MAX_ZIP_BYTES)} unzip "
+                f"limit, so I can't unzip it here")
+        info = unzip.zip_info(zip_path)
+        unzip.check_disk_room(zip_path, info["total"])
+    except unzip.ZipTooBig as exc:
+        # Persistent message (status is deleted after a normal send).
+        try:
+            await client.send_message(
+                chat_id,
+                f"📦 This zip is a zip, but I can't unzip it: {exc}\n"
+                f"Sending the zip itself as-is instead.")
+        except Exception:
+            pass
+        return False
+    except unzip.ZipBad:
+        return False
+    except Exception:
+        return False
+    _prune_unzip_pending()
+    job_id = _next_job_id()
+    PENDING_UNZIP[job_id] = {"job_dir": job_dir, "path": zip_path,
+                             "chat_id": chat_id, "caption": caption,
+                             "ts": int(time.time())}
+    try:
+        await status.edit_text(
+            f"📦 **{os.path.basename(zip_path)}**\n"
+            f"Zip: {human_bytes(os.path.getsize(zip_path))} · "
+            f"unzips to {human_bytes(info['total'])} · "
+            f"{info['count']} file(s)"
+            + (f"\n⚠️ {len(info['encrypted'])} password-protected "
+               f"file(s) will be skipped" if info["encrypted"] else "")
+            + "\n\nUnzip it and send the contents, or send the zip itself?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 Unzip & send contents",
+                                      callback_data=f"unzip:{job_id}:go")],
+                [InlineKeyboardButton("📦 Send zip as-is",
+                                      callback_data=f"unzip:{job_id}:asis")],
+            ]))
+    except Exception:
+        PENDING_UNZIP.pop(job_id, None)
+        return False
+    return True
 
 
 def _next_job_id() -> str:
@@ -70,8 +147,8 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     files = await terabox.list_files(url)
     if len(files) == 1:
         check_size(files[0].get("size") or 0, files[0].get("name") or "file")
-        await _terabox_download(client, message, url, 0, files[0], status, editor)
-        return False
+        return await _terabox_download(client, message, url, 0, files[0],
+                                       status, editor)
     job_id = _next_job_id()
     PENDING[job_id] = {"type": "terabox", "url": url, "chat_id": message.chat.id,
                        "origin_chat": message.chat.id, "origin_msg": message.id}
@@ -103,16 +180,24 @@ async def _terabox_download(client, message, url, index, info, status, editor):
         async def progress(done, total):
             await editor.edit(progress_text(progress_label,
                                             done, total, started))
+        prompted = False
         try:
             path = await terabox.download(url, job_dir, index=index,
                                           progress_cb=progress)
-            await editor.edit("Uploading…", force=True)
-            await send_files_routed(client, message.chat.id, [path], "uploader",
-                             caption=f"Terabox · {info['name'] if info else ''}",
-                             status_msg=status)
-            await status.delete()
+            prompted = await _maybe_unzip_prompt(
+                client, message.chat.id, [path],
+                f"Terabox · {info['name'] if info else ''}", status, job_dir)
+            if not prompted:
+                await editor.edit("Uploading…", force=True)
+                await send_files_routed(
+                    client, message.chat.id, [path], "uploader",
+                    caption=f"Terabox · {info['name'] if info else ''}",
+                    status_msg=status)
+                await status.delete()
         finally:
-            cleanup_dir(job_dir)
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
 
 
 # ---------------------------------------------------------------- yt-dlp flow
@@ -153,8 +238,7 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
         # No picker (reels / single format): still refuse a giant file
         # before spending the download on it.
         check_size(formats[0].get("filesize") or 0, title)
-    await _ytdlp_download(client, message, url, title, status, editor)
-    return False
+    return await _ytdlp_download(client, message, url, title, status, editor)
 
 
 async def _ytdlp_download(client, message, url, title, status, editor,
@@ -166,15 +250,22 @@ async def _ytdlp_download(client, message, url, title, status, editor,
         async def progress(done, total):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
+        prompted = False
         try:
             paths = await download(url, job_dir, format_id=format_id,
                                    audio_only=audio_only, progress_cb=progress)
-            await editor.edit("Uploading…", force=True)
-            await send_files_routed(client, message.chat.id, paths, "uploader",
-                             caption=title[:200], status_msg=status)
-            await status.delete()
+            prompted = await _maybe_unzip_prompt(
+                client, message.chat.id, paths, title[:200], status, job_dir)
+            if not prompted:
+                await editor.edit("Uploading…", force=True)
+                await send_files_routed(client, message.chat.id, paths,
+                                        "uploader", caption=title[:200],
+                                        status_msg=status)
+                await status.delete()
         finally:
-            cleanup_dir(job_dir)
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
 
 
 # ---------------------------------------------------------------- fallbacks
@@ -200,16 +291,25 @@ async def _direct_flow(client, message, url, info, status, editor):
         async def progress(done, total):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
+        prompted = False
         try:
             path = await download_file(info.get("final_url") or url, job_dir,
                                        progress_cb=progress,
                                        filename=info.get("filename"))
-            await editor.edit("Uploading…", force=True)
-            await send_files_routed(client, message.chat.id, [path], "uploader",
-                             caption=info.get("filename", ""), status_msg=status)
-            await status.delete()
+            prompted = await _maybe_unzip_prompt(
+                client, message.chat.id, [path], info.get("filename", ""),
+                status, job_dir)
+            if not prompted:
+                await editor.edit("Uploading…", force=True)
+                await send_files_routed(client, message.chat.id, [path],
+                                        "uploader",
+                                        caption=info.get("filename", ""),
+                                        status_msg=status)
+                await status.delete()
         finally:
-            cleanup_dir(job_dir)
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
 
 
 async def _scrape_flow(client, message, url, status, editor):
@@ -396,9 +496,9 @@ async def _dispatch(client: Client, message: Message, url: str,
                 await status.edit_text(f"❌ {exc}")
                 return "failed"
             try:
-                await _direct_flow(client, message, url, direct_info,
-                                   status, editor)
-                return "done"
+                prompted = await _direct_flow(client, message, url, direct_info,
+                                              status, editor)
+                return "pending" if prompted else "done"
             except Exception as exc:
                 errors.append(f"direct: {exc}")
 
@@ -479,6 +579,81 @@ def _check_picked_format(job: dict, choice: str) -> None:
 
 # ---------------------------------------------------------------- callbacks
 
+@Client.on_callback_query(filters.regex(r"^unzip:"))
+async def unzip_callback(client: Client, query: CallbackQuery):
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) < 3:
+        await query.answer("Stale button.")
+        return
+    job_id, choice = parts[1], parts[2]
+    _prune_unzip_pending()
+    job = PENDING_UNZIP.pop(job_id, None)
+    if not job:
+        await query.answer("This unzip job expired — send the link again.",
+                           show_alert=True)
+        return
+    status = query.message
+    job_dir, zip_path = job["job_dir"], job["path"]
+    try:
+        if choice == "asis":
+            await query.answer("Sending the zip…")
+            await status.edit_text("Uploading the zip…")
+            await send_files_routed(client, job["chat_id"], [zip_path],
+                                    "uploader", caption=job["caption"],
+                                    status_msg=status)
+        else:
+            await query.answer("Unzipping…")
+            await status.edit_text("Unzipping…")
+            extract_dir = os.path.join(job_dir, "extracted")
+            try:
+                extracted, skipped = unzip.extract_zip(zip_path, extract_dir)
+            except unzip.ZipTooBig as exc:
+                await status.edit_text(
+                    f"❌ Can't unzip this one: {exc}\n"
+                    f"Sending the zip itself as-is instead.")
+                await send_files_routed(client, job["chat_id"], [zip_path],
+                                        "uploader", caption=job["caption"],
+                                        status_msg=status)
+                return
+            if not extracted:
+                await status.edit_text(
+                    "❌ Nothing could be unzipped from this file"
+                    + (f" (skipped: {', '.join(skipped[:5])})"
+                       if skipped else "")
+                    + ".\nSending the zip itself as-is instead.")
+                await send_files_routed(client, job["chat_id"], [zip_path],
+                                        "uploader", caption=job["caption"],
+                                        status_msg=status)
+                return
+            await status.edit_text(
+                f"Uploading {len(extracted)} unzipped file(s)…")
+            await send_files_routed(client, job["chat_id"], extracted,
+                                    "uploader", caption=job["caption"],
+                                    status_msg=status)
+            if skipped:
+                try:
+                    await client.send_message(
+                        job["chat_id"],
+                        "⚠️ Skipped while unzipping: "
+                        + ", ".join(skipped[:10]))
+                except Exception:
+                    pass
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            await status.edit_text(f"Unzip failed: {exc}")
+        except Exception:
+            pass
+    finally:
+        cleanup_dir(job_dir)
+
+
 @Client.on_callback_query(filters.regex(r"^(fmt|tera):"))
 async def format_callback(client: Client, query: CallbackQuery):
     if not is_admin_id(query.from_user.id if query.from_user else None):
@@ -513,16 +688,20 @@ async def format_callback(client: Client, query: CallbackQuery):
             info = files[index] if index < len(files) else None
             if info:
                 check_size(info.get("size") or 0, info.get("name") or "file")
-            await _terabox_download(client, fake_message, job["url"], index,
-                                    info, status, editor)
+            prompted = await _terabox_download(client, fake_message, job["url"],
+                                               index, info, status, editor)
         else:
             choice = parts[2]
             _check_picked_format(job, choice)
-            await _ytdlp_download(
+            prompted = await _ytdlp_download(
                 client, fake_message, job["url"], job.get("title", "Download"),
                 status, editor,
                 format_id=None if choice in ("best", "audio") else choice,
                 audio_only=choice == "audio")
+        if prompted:
+            # Unzip prompt is on screen; the unzip callback will
+            # finish (and react to) the job. Do not mark it done yet.
+            return
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👍")
         stats.record_job("uploader", ok=True)
