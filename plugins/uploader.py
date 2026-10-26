@@ -25,7 +25,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
 import config
-from core.extractors import gallery_engine, scrape, terabox
+from core.extractors import gallery_engine, scrape, site_registry, terabox
 from core import stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
@@ -193,6 +193,48 @@ async def _terabox_download(client, message, url, index, info, status, editor):
                     client, message.chat.id, [path], "uploader",
                     caption=f"Terabox · {info['name'] if info else ''}",
                     status_msg=status)
+                await status.delete()
+        finally:
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
+
+
+# ---------------------------------------------------------------- custom sites
+
+async def _custom_flow(client: Client, message: Message, url: str,
+                       status: Message, editor: ThrottledEditor,
+                       site) -> bool:
+    """A registered custom-site extractor (see site_registry).
+
+    Returns True when an unzip prompt is on screen (job pending),
+    else False. Resolves once for a size check, then downloads —
+    the download resolves again so the media URL it uses is
+    fresh (HLS tokens are short-lived; reusing an older one
+    would fail for the same reason a 1DM link fails).
+    """
+    async with JOB_SEMAPHORE:
+        job_dir = make_job_dir()
+        started = time.time()
+
+        async def progress(done, total):
+            await editor.edit(progress_text("Downloading…", done, total, started))
+
+        prompted = False
+        try:
+            info = await site.resolve(url)
+            if info.get("approx_size"):
+                check_size(info["approx_size"], info.get("title") or "file")
+            paths = await site.download(url, job_dir, progress_cb=progress)
+            prompted = await _maybe_unzip_prompt(
+                client, message.chat.id, paths, info.get("title", "")[:200],
+                status, job_dir)
+            if not prompted:
+                await editor.edit("Uploading…", force=True)
+                await send_files_routed(client, message.chat.id, paths,
+                                        "uploader",
+                                        caption=info.get("title", "")[:200],
+                                        status_msg=status)
                 await status.delete()
         finally:
             if not prompted:
@@ -471,6 +513,22 @@ async def _dispatch(client: Client, message: Message, url: str,
                 return "failed"
             except Exception as exc:
                 await status.edit_text(f"Terabox failed: {exc}")
+                return "failed"
+
+        # 1b) Custom-site extractors (luluvido etc.) — sites yt-dlp
+        # does not understand, before yt-dlp wastes a turn on them.
+        site = site_registry.match(url)
+        if site:
+            try:
+                prompted = await _custom_flow(client, message, url,
+                                              status, editor, site)
+                return "pending" if prompted else "done"
+            except SizeBlocked as exc:
+                await status.edit_text(f"❌ {exc}")
+                return "failed"
+            except Exception as exc:
+                await status.edit_text(
+                    f"{site.__name__.rsplit('.', 1)[-1]} failed: {exc}")
                 return "failed"
 
         is_post = "instagram.com/p/" in url

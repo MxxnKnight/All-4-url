@@ -52,7 +52,10 @@ server disk, no re-download, then delete the server copy.
 it and send the contents instead (caps: zip ≤ 500 MB, unzipped
 total ≤ 1 GB, ≤ 50 files — bigger zips get a plain "exceeds"
 message and are sent as-is). Or send me a zip and reply to it
-with `/unzip` and I'll unzip that one the same way."""
+with `/unzip` and I'll unzip that one the same way.
+**Custom sites**: sites yt-dlp doesn't understand get their own
+extractor here — currently luluvido.com. More sites can be added
+the same way, one module each."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
