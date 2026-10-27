@@ -55,7 +55,11 @@ message and are sent as-is). Or send me a zip and reply to it
 with `/unzip` and I'll unzip that one the same way.
 **Custom sites**: sites yt-dlp doesn't understand get their own
 extractor here — currently luluvido.com. More sites can be added
-the same way, one module each."""
+the same way, one module each.
+**Pipe**: `/pipe <direct file link>` streams a direct file
+straight to Telegram — nothing is saved on the server disk,
+so files that would fill it can still land (≤ 2 GB, sent as
+a document, no thumbnail; not playlists or video pages)."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
