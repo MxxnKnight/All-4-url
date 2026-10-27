@@ -51,6 +51,11 @@ async def sample_callback(client: Client, query):
         return
     dest = query.message.chat.id if query.message else chat_id
     status = query.message
+    if stats.bandwidth_blocked():
+        await status.edit_text(
+            stats.bandwidth_pause_text(),
+            reply_markup=filemenu.back_close_markup(chat_id, msg_id))
+        return
     job_dir = make_job_dir()
     try:
         try:
