@@ -51,6 +51,7 @@ BOT_COMMANDS = [
     BotCommand("batch", "Batch t.me links — or a first..last range"),
     BotCommand("cancel", "Stop the current batch"),
     BotCommand("mediainfo", "File metadata: reply, file, or link"),
+    BotCommand("convert", "Convert a replied video/document to the other type"),
     BotCommand("sdl", "Split-download an oversize video link"),
     BotCommand("pipe", "Stream a direct file to Telegram, no disk"),
     BotCommand("upage", "Private web upload link (owner only)"),

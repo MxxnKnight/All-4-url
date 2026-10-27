@@ -1,4 +1,11 @@
-"""File-to-link: send/forward a file to the bot, get expiring links.
+"""File-to-link: send/forward a file to the bot, get a file menu.
+
+The file no longer gets links dumped on it directly. Instead the
+bot replies with a menu (plugins/filemenu.py): Generate links,
+MediaInfo, Convert, Screenshots, Sample video, Unzip (zips only),
+Close — each button opens its own sub-menu or action, and the
+file reference is the message itself, so menus work after a
+restart as long as that message still exists.
 
 Default (PM) mode needs no setup beyond BASE_URL: the links simply point
 back at the message the owner sent in this chat — the bot re-reads the
@@ -7,7 +14,7 @@ anywhere. The catch follows naturally: delete that message and the
 links die with it.
 
 If STORAGE_CHANNEL_ID is set, the bot instead copies the file into that
-private channel first and the links point at the stored copy, which
+private channel first and the menu points at the stored copy, which
 survives the original message being deleted.
 
 Either way the links are served by our own web server (core/webserver),
@@ -17,13 +24,11 @@ no database is needed.
 """
 
 from pyrogram import Client, filters
-from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
-                            Message)
+from pyrogram.types import Message
 
 import config
-from core import stats
+from core import filemenu, stats
 from core.cookies import CONSUMED
-from core.linktoken import make_token
 from core.utils import human_bytes, admin_only, react
 
 MEDIA_FILTER = (filters.video | filters.document | filters.photo
@@ -66,20 +71,17 @@ async def file_to_link(client: Client, message: Message):
         return  # eaten by the /setcookies handler (group -1)
     if _is_image_message(message):
         return  # an image, not a file-to-link upload — see /phost
-    if not config.BASE_URL:
-        await message.reply_text(
-            "File-to-link needs one thing: BASE_URL must be this bot's "
-            "public web address (e.g. your https://….koyeb.app URL), so "
-            "the download/stream links have somewhere to point. Set it "
-            "and restart the bot — no channel or other setup is needed.")
-        return
+    # No BASE_URL gate here anymore: the menu itself works without
+    # it (Convert / Screenshots / Sample / Unzip / MediaInfo need
+    # no web address). Only the 🔗 Generate links button requires
+    # BASE_URL, and it says so when pressed without one.
 
     name, size, mime = _file_info(message)
     await react(message, "👀")
 
     if config.STORAGE_CHANNEL_ID:
         # Optional permanent mode: park a copy in the storage channel
-        # and point the links at that copy.
+        # and point the menu at that copy.
         status = await message.reply_text("Storing the file…")
         try:
             stored = await message.copy(config.STORAGE_CHANNEL_ID)
@@ -91,30 +93,15 @@ async def file_to_link(client: Client, message: Message):
                 "Is the bot an admin of STORAGE_CHANNEL_ID?")
             return
         token_chat, token_msg = config.STORAGE_CHANNEL_ID, stored.id
-        note = "Stored permanently in your storage channel."
     else:
-        # Default PM mode: the links read the file from *this* message.
-        status = await message.reply_text("Making your links…")
+        # Default PM mode: the menu points at *this* message.
+        status = await message.reply_text("Making your file menu…")
         token_chat, token_msg = message.chat.id, message.id
-        note = ("Links read the file from this chat — don't delete that "
-                "message or the links break.")
 
-    token = make_token(token_chat, token_msg, name or "file", size, mime)
-    download_url = f"{config.BASE_URL}/d/{token}"
-    stream_url = f"{config.BASE_URL}/stream/{token}"
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬇️ Download", url=download_url),
-         InlineKeyboardButton("▶️ Stream", url=stream_url)],
-        [InlineKeyboardButton(
-            "📊 MediaInfo",
-            callback_data=f"mi:{token_chat}:{token_msg}")],
-    ])
+    _n, _s, _m, _k, is_video, is_zip = filemenu.file_info(message)
     await status.edit_text(
-        f"**{name}** ({human_bytes(size)})\n\n"
-        f"⬇️ Download: {download_url}\n"
-        f"▶️ Stream: {stream_url}\n\n"
-        f"{note}\n"
-        f"Links expire in {config.LINK_EXPIRY_HOURS} hours.",
-        reply_markup=markup)
+        filemenu.menu_text(name, size),
+        reply_markup=filemenu.main_menu_markup(
+            token_chat, token_msg, is_video, is_zip))
     await react(message, "👍")
     stats.record_job("file-to-link", ok=True)

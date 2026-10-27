@@ -35,6 +35,8 @@ async def upage_cmd(client: Client, message):
         "each finished file gets its own download link. Send that link "
         "back here and I'll upload it to Telegram straight from the "
         "server disk — no re-download — then delete the server copy.\n\n"
+        "No matter who uploads here, the file lands in the admin's "
+        "bot PM — the admin never has to use the link himself.\n\n"
         "The page sets no cookies and logs nothing about you. Files "
         "left unused are deleted when the link expires.",
         reply_markup=InlineKeyboardMarkup(

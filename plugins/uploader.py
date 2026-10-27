@@ -32,11 +32,11 @@ from core.extractors.direct import (check_direct, download_file,
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
-from core.sender import send_files_routed
+from core.sender import send_files, send_files_routed
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
                         check_size, cleanup_dir, human_bytes, is_admin_id,
-                        list_files, make_job_dir, admin_only, progress_text,
-                        react, react_to)
+                        is_owner_id, list_files, make_job_dir, admin_only,
+                        progress_text, react, react_to)
 
 URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -463,11 +463,43 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
             "❌ The file is no longer on the server. Upload it again "
             "with /upage.")
         return "failed"
+    # Admin delivery (v1.24.0): no matter WHO uploads via /upage,
+    # the file lands in the OWNER's bot PM — not in the uploader's
+    # chat, and the owner never has to touch the link himself.
+    # The uploader still sends the link back (that is what triggers
+    # the upload), but the destination is the owner, not the sender.
+    # This bypasses /destination on purpose: the owner asked for
+    # "his bot pm", not Saved Messages, for upage files.
+    sender_is_owner = is_owner_id(
+        message.from_user.id if message.from_user else None)
+    if sender_is_owner:
+        target_chat = message.chat.id
+        note_to_sender = None
+    else:
+        target_chat = config.OWNER_ID
+        sender_name = (
+            (message.from_user.first_name or "")
+            if message.from_user else "")
+        note_to_sender = (
+            f"✅ {name} ({human_bytes(size)}) is now on Telegram "
+            f"in the admin's bot PM, and the server copy is deleted.")
     await status.edit_text(
         f"Uploading {name} ({human_bytes(size)}) from your web upload…")
     try:
-        await send_files_routed(client, message.chat.id, [path],
-                                "uploader", caption=name)
+        if sender_is_owner:
+            await send_files_routed(client, target_chat, [path],
+                                    "uploader", caption=name)
+        else:
+            # Tell the owner who sent it, before the file itself,
+            # so the file does not arrive anonymously.
+            try:
+                sender_label = sender_name or "a sudo user"
+                await client.send_message(
+                    target_chat,
+                    f"📤 Upage upload from {sender_label} — file below:")
+            except Exception:
+                pass
+            await send_files(client, target_chat, [path], caption=name)
     except Exception as exc:
         await status.edit_text(
             f"❌ Telegram upload failed: {exc}\nThe file is still on "
@@ -475,8 +507,9 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
         return "failed"
     upage.consume(fid)
     await status.edit_text(
+        note_to_sender or
         f"✅ {name} ({human_bytes(size)}) is now on Telegram, and the "
-        "server copy is deleted.")
+        f"server copy is deleted.")
     return "done"
 
 

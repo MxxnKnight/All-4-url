@@ -47,7 +47,13 @@ and restricted downloads.
 **Web upload**: `/upage` gives you a private, 1-hour upload page.
 Drop files there (max 750 MB each) and send the download link it
 gives you back here — I'll push it to Telegram straight from the
-server disk, no re-download, then delete the server copy.
+server disk, no re-download, then delete the server copy. No
+matter which sudo uploads, the file lands in the admin's bot PM.
+**Convert**: reply to a video/document with `/convert` to
+re-send it as the other type (video ↔ document, same file, no
+re-upload). Files sent to me also get a menu with links,
+MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
+(15/30/60s from the middle), Unzip (zips only), and Close.
 **Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
 it and send the contents instead (caps: zip ≤ 1 GB, unzipped
 total ≤ 8 GB, ≤ 50 files, extracted and sent one by one so
@@ -81,7 +87,9 @@ I react 👀 when I start on a link and 👍 when your file lands."""
 SECTION_FILETOLINK = """🔗 **File-to-Link**
 
 Send or forward any file **right here in this chat** and I'll reply
-with a direct-download link and a streaming link (buttons included).
+with a menu instead of dumping links directly: Generate links,
+MediaInfo, Convert (video ↔ document), Screenshots, Sample video,
+Unzip (zips only), Close — each button opens its own sub-menu.
 
 No channel needed: the links read the file back from the message you
 sent here — so don't delete that message, or the links break.
