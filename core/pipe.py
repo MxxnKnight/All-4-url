@@ -447,6 +447,28 @@ def inspect_playlist(url: str) -> dict:
     stripped = text.lstrip("\ufeff \t\r\n")
     base_name = final_url.rsplit("/", 1)[-1].split("?", 1)[0]
     stem = base_name.rsplit(".", 1)[0] if "." in base_name else base_name
+    # Bug fix (2026-10-27, reported as 1080p.av1.mp4.mp4): many
+    # playlists are named after the video file itself, e.g.
+    # "1080p.av1.mp4.m3u8". Stripping only .m3u8 leaves
+    # "1080p.av1.mp4", and adding ".mp4" again doubles it.
+    # The pipe output is always an mp4 container, so strip any
+    # trailing media extension(s) first, then add .mp4 once.
+    # "movie.mkv.mpd" -> "movie.mp4" (container-correct, not
+    # "movie.mkv"), "test.m3u8" -> "test.mp4" (unchanged).
+    from core.utils import AUDIO_EXTS, VIDEO_EXTS
+    _strip_exts = tuple(VIDEO_EXTS) + tuple(AUDIO_EXTS)
+    while True:
+        lower = stem.lower()
+        hit = None
+        for ext in _strip_exts:
+            if lower.endswith(ext):
+                hit = ext
+                break
+        if hit is None:
+            break
+        stem = stem[: -len(hit)]
+        if not stem:
+            break
     filename = (stem or "video") + ".mp4"
     if stripped.startswith("#EXTM3U"):
         variants = []
