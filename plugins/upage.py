@@ -27,7 +27,8 @@ async def upage_cmd(client: Client, message):
             "❌ BASE_URL is not set on the server, so I can't build an "
             "upload link. Set it to the Koyeb domain and redeploy.")
         return
-    link = upage.page_url()
+    link = upage.page_url(
+        message.from_user.id if message.from_user else None)
     await message.reply_text(
         "📤 **Private upload page** — valid for 1 hour.\n\n"
         f"{link}\n\n"
@@ -35,6 +36,10 @@ async def upage_cmd(client: Client, message):
         "each finished file gets its own download link. Send that link "
         "back here and I'll upload it to Telegram straight from the "
         "server disk — no re-download — then delete the server copy.\n\n"
+        "After each file finishes, the page shows three buttons: "
+        "Copy link, Upload to admin (sends it straight to the "
+        "admin's bot PM, no link needed), and Delete (removes the "
+        "server copy and kills its link at once).\n\n"
         "No matter who uploads here, the file lands in the admin's "
         "bot PM — the admin never has to use the link himself.\n\n"
         "The page sets no cookies and logs nothing about you. Files "

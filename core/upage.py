@@ -4,11 +4,16 @@ Flow: the owner (or a sudo user) runs /upage, the bot replies with a signed page
 valid for 1 hour. The page uploads files in 16 MB chunks (each chunk is
 its own short request, so a slow uplink or a Koyeb edge timeout can't
 kill a big upload, and a dropped connection resumes from the last
-byte the server actually wrote). When a file finishes, the page shows
-a signed download link; sending that link to the bot uploads the file
-to Telegram straight from the disk copy — it is NEVER downloaded
-again. The disk copy is deleted the moment the Telegram upload
-succeeds, and a used download link stops working.
+byte the server actually wrote). When a file finishes, the page shows a signed download link plus
+three buttons: Copy link, Upload to admin, Delete. Upload to admin
+uploads the file to the owner's bot PM straight from disk (no
+Telegram link step at all); Delete removes the disk copy and kills
+its link at once, but is refused while an admin upload is in
+progress, and the page asks for confirmation if the file has not
+been sent to the admin yet. Sending the link to the bot still
+works the old way, and also lands in the owner's bot PM no matter
+who uploaded. The disk copy is deleted the moment any Telegram
+upload succeeds, and a used download link stops working.
 
 Privacy: the page is fully self-contained (no external scripts,
 fonts or images), the server sets no cookies, and no route here ever
@@ -55,6 +60,22 @@ CHUNK_SIZE = 16 * 1024 * 1024
 HEADROOM = 256 * 1024 * 1024
 
 UPLOAD_DIR = os.path.join(config.BASE_DIR, "uploads")
+
+#: Bot client, set by webserver.start_web_server() via bind_bot().
+#: Needed for the page's "Upload to admin" button, which uploads a
+#: finished file to the owner's bot PM straight from disk — no
+#: Telegram link step at all. None until the bot is ready.
+_bot = None
+
+#: File ids currently being uploaded to the admin from the page.
+#: A delete for one of these must wait — deleting mid-upload
+#: would pull the file out from under the Telegram upload.
+_ADMIN_SENDING: set[str] = set()
+
+
+def bind_bot(client) -> None:
+    global _bot
+    _bot = client
 
 
 class TokenError(Exception):
@@ -106,9 +127,15 @@ def _verify(domain: str, token: str) -> dict:
     return payload
 
 
-def make_page_token() -> str:
-    return _sign("upage-page", {"exp": int(time.time()) + PAGE_TTL,
-                                "r": secrets.token_hex(8)})
+def make_page_token(user_id: int | None = None) -> str:
+    payload = {"exp": int(time.time()) + PAGE_TTL,
+               "r": secrets.token_hex(8)}
+    if user_id:
+        # So the admin-upload note can name the uploader when known.
+        # Old tokens without "uid" still verify — they just read as
+        # anonymous, which is how every page token worked before.
+        payload["uid"] = int(user_id)
+    return _sign("upage-page", payload)
 
 
 def verify_page_token(token: str) -> dict:
@@ -192,7 +219,7 @@ def _free_disk() -> int | None:
         return None
 
 
-def start_session(name: str, size: int) -> dict:
+def start_session(name: str, size: int, uid: int | None = None) -> dict:
     """Create (or resume) an upload session. Raises ValueError with a
     user-facing message when the file can't be accepted."""
     prune()
@@ -221,7 +248,8 @@ def start_session(name: str, size: int) -> dict:
     with open(tmp, "wb"):
         pass
     _SESSIONS[sid] = {"name": safe, "size": size, "received": 0,
-                      "tmp": tmp, "exp": int(time.time()) + PAGE_TTL}
+                      "tmp": tmp, "exp": int(time.time()) + PAGE_TTL,
+                      "uid": uid}
     return {"sid": sid, "received": 0}
 
 
@@ -275,7 +303,8 @@ def finish_session(sid: str) -> dict | None:
     os.replace(s["tmp"], final)
     expires = int(time.time()) + FILE_TTL
     _FILES[fid] = {"path": final, "name": s["name"], "size": s["size"],
-                   "exp": expires, "used": False}
+                   "exp": expires, "used": False,
+                   "uid": s.get("uid")}
     return {"fid": fid, "name": s["name"], "size": s["size"],
             "token": make_download_token(fid, expires)}
 
@@ -303,10 +332,10 @@ def consume(fid: str) -> dict | None:
     return f
 
 
-def page_url() -> str:
+def page_url(user_id: int | None = None) -> str:
     if not config.BASE_URL:
         return ""
-    return config.BASE_URL + "/up/" + make_page_token()
+    return config.BASE_URL + "/up/" + make_page_token(user_id)
 
 
 def download_url(token: str) -> str:
@@ -315,9 +344,11 @@ def download_url(token: str) -> str:
 
 # ---------------------------------------------------------------- routes
 
-async def _require_page(request: web.Request) -> None:
+async def _require_page(request: web.Request) -> dict:
+    """Verify the page token; returns its payload (with "uid" when
+    the /upage command knew who asked for the page)."""
     try:
-        verify_page_token(request.match_info["token"])
+        return verify_page_token(request.match_info["token"])
     except TokenError:
         raise web.HTTPGone(text="This upload link expired or is invalid. "
                                 "Ask the bot for a fresh one with /upage.\n")
@@ -339,11 +370,12 @@ async def _json_body(request: web.Request) -> dict:
 
 
 async def start(request: web.Request) -> web.Response:
-    await _require_page(request)
+    payload = await _require_page(request)
     body = await _json_body(request)
     try:
         out = start_session(body.get("name") or "file",
-                            body.get("size") or 0)
+                            body.get("size") or 0,
+                            uid=payload.get("uid"))
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"sid": out["sid"],
@@ -419,6 +451,147 @@ async def chunk(request: web.Request) -> web.Response:
     return web.json_response({"received": s["received"], "done": False})
 
 
+def _download_token_from_body(body: dict) -> str:
+    """The page JS sends the download token itself, or the full
+    download URL it was given when the upload finished — accept
+    either, so a future page change cannot break the button."""
+    raw = (body.get("download_token") or body.get("download_url")
+           or body.get("token") or "")
+    if "/u/" in raw:
+        raw = raw.rsplit("/u/", 1)[-1].split("?")[0].split("#")[0]
+    return raw.strip()
+
+
+async def to_admin(request: web.Request) -> web.Response:
+    """"Upload to admin" button: upload a finished file to the
+    owner's bot PM straight from disk, then delete the server
+    copy (exactly like a successful link-send does). No Telegram
+    link step is needed at all — that is the whole point.
+
+    Safety, in order:
+      * page token must be valid (link-holder only, 1 hour)
+      * download token must point at a live, unused file
+      * a second concurrent press for the same file is refused
+        (409) instead of uploading twice
+      * monthly bandwidth cap blocks the upload, WITHOUT
+        consuming the file — the user can retry later
+      * a failed Telegram upload leaves the file (and its link)
+        intact for a retry, by link or by this button again
+      * a successful upload consumes the file: disk copy deleted,
+        download link stops working immediately
+    """
+    await _require_page(request)
+    prune()
+    body = await _json_body(request)
+    try:
+        fid = verify_download_token(_download_token_from_body(body))
+    except TokenError:
+        return web.json_response(
+            {"error": "that download link is invalid or expired"},
+            status=410)
+    if fid in _ADMIN_SENDING:
+        return web.json_response(
+            {"error": "already uploading this file to the admin — "
+                      "wait for it to finish"},
+            status=409)
+    rec = lookup_file(fid)
+    if rec is None:
+        return web.json_response(
+            {"error": "that file is already sent, deleted, or expired"},
+            status=410)
+    if _bot is None:
+        return web.json_response(
+            {"error": "bot is not ready yet — try again in a moment"},
+            status=503)
+    from core import stats
+    if stats.bandwidth_blocked():
+        return web.json_response(
+            {"error": stats.bandwidth_pause_text()}, status=429)
+    path, name, size = rec["path"], rec["name"], rec["size"]
+    if not os.path.exists(path):
+        _drop_file(fid)
+        return web.json_response(
+            {"error": "that file is no longer on the server"}, status=410)
+    _ADMIN_SENDING.add(fid)
+    try:
+        # Tell the owner who sent it, when known — otherwise the
+        # file would arrive anonymously from a faceless page.
+        uid = rec.get("uid")
+        if uid and int(uid) != int(config.OWNER_ID):
+            sender_label = None
+            try:
+                chat = await _bot.get_chat(int(uid))
+                sender_label = getattr(chat, "first_name", None) \
+                    or getattr(chat, "username", None)
+            except Exception:
+                sender_label = None
+            try:
+                await _bot.send_message(
+                    config.OWNER_ID,
+                    f"📤 Upage upload from "
+                    f"{sender_label or 'a sudo user'} — file below:")
+            except Exception:
+                pass
+        from core.sender import send_files
+        await send_files(_bot, config.OWNER_ID, [path], caption=name)
+    except Exception as exc:
+        log.warning("page admin-upload failed for %s: %s", name, exc)
+        return web.json_response(
+            {"error": f"Telegram upload failed: {exc} — the file is "
+                      f"still on the server, try again"},
+            status=502)
+    finally:
+        _ADMIN_SENDING.discard(fid)
+    consume(fid)
+    log.info("page admin-upload sent: %s (%d bytes)", name, size)
+    return web.json_response({"ok": True, "sent": True,
+                              "name": name, "size": size})
+
+
+async def delete_file(request: web.Request) -> web.Response:
+    """Delete button: delete the disk file and expire its link
+    immediately (the record is dropped, so the download link
+    returns 410 from then on, even though its 1-hour token
+    has not technically expired yet).
+
+    Admin-send safety, as the owner asked:
+      * if an admin upload for this file is IN PROGRESS, delete
+        is refused (409) — deleting mid-upload would pull the
+        file out from under it
+      * if the file was already sent to the admin, it is already
+        gone (consume deleted it) — delete reports that plainly
+        instead of erroring
+      * if the file has NOT been sent yet, the page JS asks for
+        confirmation first, because deleting then means the
+        admin will never receive it — the server itself still
+        deletes on request, the confirmation is the guard
+    """
+    await _require_page(request)
+    prune()
+    body = await _json_body(request)
+    try:
+        fid = verify_download_token(_download_token_from_body(body))
+    except TokenError:
+        return web.json_response(
+            {"error": "that download link is invalid or expired"},
+            status=410)
+    if fid in _ADMIN_SENDING:
+        return web.json_response(
+            {"error": "upload to admin is in progress for this file — "
+                      "wait for it to finish, then delete if needed"},
+            status=409)
+    rec = _FILES.get(fid)
+    if rec is None:
+        return web.json_response(
+            {"ok": True, "deleted": True,
+             "note": "already sent to admin or expired — "
+                     "server copy already gone"})
+    name = rec["name"]
+    _drop_file(fid)
+    log.info("page delete: %s", name)
+    return web.json_response({"ok": True, "deleted": True, "name": name})
+
+
 async def serve_file(request: web.Request) -> web.Response:
     prune()
     try:
@@ -447,6 +620,8 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/up/{token}/status", status)
     app.router.add_post("/up/{token}/abort", abort)
     app.router.add_post("/up/{token}/chunk", chunk)
+    app.router.add_post("/up/{token}/to-admin", to_admin)
+    app.router.add_post("/up/{token}/delete", delete_file)
     app.router.add_get("/u/{token}", serve_file)
 
 
@@ -457,36 +632,48 @@ PAGE_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>All-4-url Upload</title>
 <style>
-body{margin:0;padding:16px;font-family:-apple-system,system-ui,Roboto,sans-serif;background:#0f1115;color:#e8e8e8}
-h1{font-size:20px;margin:0 0 6px}
-.hint{color:#9aa0a6;font-size:14px;margin:0 0 16px;line-height:1.5}
-#drop{border:2px dashed #3a3f4a;border-radius:12px;padding:28px 16px;text-align:center;color:#c8cdd4}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-system,system-ui,Roboto,sans-serif;background:#0f1115;color:#e8e8e8;font-size:16px;line-height:1.5}
+h1{font-size:24px;margin:0 0 6px}
+.hint{color:#9aa0a6;font-size:15px;margin:0 0 20px}
+.hint b{color:#e8e8e8}
+#drop{border:2px dashed #3a3f4a;border-radius:16px;padding:36px 16px;text-align:center;color:#c8cdd4;font-size:17px}
 #drop.over{border-color:#6a9bff;background:#1a2233}
-#drop button{margin-top:12px;padding:10px 18px;border:0;border-radius:8px;background:#2481cc;color:#fff;font-size:15px}
-.row{margin-top:14px;padding:12px;border-radius:10px;background:#1b1e24}
-.row .name{font-size:14px;word-break:break-all}
-.row .info{font-size:12px;color:#9aa0a6;margin-top:4px}
-.bar{height:8px;background:#2a2e37;border-radius:4px;margin-top:8px;overflow:hidden}
+#drop button{margin-top:16px;min-height:48px;padding:12px 24px;border:0;border-radius:12px;background:#2481cc;color:#fff;font-size:16px}
+.row{margin-top:16px;padding:16px;border-radius:14px;background:#1b1e24}
+.row .name{font-size:16px;font-weight:600;word-break:break-all}
+.row .info{font-size:13px;color:#9aa0a6;margin-top:4px}
+.bar{height:10px;background:#2a2e37;border-radius:5px;margin-top:10px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:#6a9bff}
-.row a{color:#6a9bff;word-break:break-all;font-size:13px}
-.row button{margin-top:8px;padding:6px 12px;border:0;border-radius:6px;background:#2a2e37;color:#e8e8e8}
-.row .err{color:#ff7b7b;font-size:13px;margin-top:6px}
-.foot{color:#777;font-size:12px;margin-top:20px}
+.linkbox{margin-top:12px;padding:10px 12px;border-radius:10px;background:#0f1115;color:#6a9bff;word-break:break-all;font-size:13px}
+.btnrow{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.btnrow button{min-height:44px;padding:10px 16px;border:0;border-radius:10px;font-size:15px}
+.btnrow button:disabled{opacity:.5}
+.btn-copy{background:#2a2e37;color:#e8e8e8}
+.btn-admin{background:#2481cc;color:#fff;font-weight:600}
+.btn-del{background:transparent;color:#ff7b7b;border:1px solid #ff7b7b}
+.msg{font-size:14px;margin-top:10px}
+.msg.ok{color:#7ee787}
+.msg.err{color:#ff7b7b}
+.msg.muted{color:#9aa0a6}
+.foot{color:#777;font-size:13px;margin-top:24px}
 </style>
 </head>
 <body>
 <h1>📤 Private upload</h1>
-<p class="hint">Drop files here or pick them. Each finished file gets its own
-download link — send that link to the bot and it uploads the file to
-Telegram straight from this server. Max <b>750 MB</b> per file. Uploads
-resume if your connection drops. This page sets no cookies, loads
+<p class="hint">Drop files here or pick them. Max <b>750 MB</b> per file.
+Uploads resume if your connection drops. When a file finishes, you get
+three buttons: <b>Copy link</b>, <b>Upload to admin</b> (sends it straight
+to the admin's bot PM — no link needed), and <b>Delete</b> (removes the
+server copy and kills its link at once). This page sets no cookies, loads
 nothing from anywhere else, and logs nothing about you.</p>
 <div id="drop">Drop files here
 <div><button id="pick">Choose files</button></div>
 <input type="file" id="file" multiple hidden></div>
 <div id="queue"></div>
-<p class="foot">Links from here live 1 hour. Once the bot uploads a file, its
-server copy is deleted and the link stops working.</p>
+<p class="foot">Links from here live 1 hour. Once a file is sent to the admin (or
+to the bot via its link), its server copy is deleted and the link stops
+working.</p>
 <script>
 const TOKEN = "__PAGE_TOKEN__";
 const CHUNK = 16 * 1024 * 1024;
@@ -506,6 +693,14 @@ async function api(path, opts){
   return j;
 }
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function setMsg(el, text, cls){
+  el.textContent = text;
+  el.className = "msg " + (cls || "");
+}
+function downloadToken(url){
+  const i = url.indexOf("/u/");
+  return i >= 0 ? url.slice(i + 3).split("?")[0].split("#")[0] : url;
+}
 
 async function uploadFile(file){
   const row = document.createElement("div");
@@ -518,7 +713,7 @@ async function uploadFile(file){
   const info = row.querySelector(".info");
   const out = row.querySelector(".out");
   if (file.size > MAX){
-    out.innerHTML = '<div class="err">Over the 750 MB limit — skipped.</div>';
+    out.innerHTML = '<div class="msg err">Over the 750 MB limit — skipped.</div>';
     return;
   }
   let sid = null, received = 0;
@@ -535,7 +730,7 @@ async function uploadFile(file){
         body: JSON.stringify({name: file.name, size: file.size})});
       sid = s.sid; received = s.received || 0;
     } catch (e) {
-      out.innerHTML = '<div class="err">' + e.message + '</div>';
+      out.innerHTML = '<div class="msg err">' + e.message + '</div>';
       return;
     }
   }
@@ -552,15 +747,56 @@ async function uploadFile(file){
       received = j.received;
       if (j.done){
         bar.style.width = "100%";
-        info.textContent = "Done — " + fmt(j.size);
-        const a = document.createElement("a");
-        a.href = j.download_url; a.textContent = j.download_url;
+        info.textContent = "Done ✓ — " + fmt(j.size) + " — pick what to do with it:";
+        const linkBox = document.createElement("div");
+        linkBox.className = "linkbox";
+        linkBox.textContent = j.download_url;
+        const msg = document.createElement("div");
+        msg.className = "msg";
+        const btnRow = document.createElement("div");
+        btnRow.className = "btnrow";
         const copy = document.createElement("button");
-        copy.textContent = "Copy link";
+        copy.className = "btn-copy"; copy.textContent = "Copy link";
         copy.onclick = () => navigator.clipboard.writeText(j.download_url)
-          .then(() => { copy.textContent = "Copied ✓"; });
-        out.appendChild(a); out.appendChild(document.createElement("br"));
-        out.appendChild(copy);
+          .then(() => { copy.textContent = "Copied ✓"; })
+          .catch(() => setMsg(msg, "Copy failed — long-press the link above to copy it.", "err"));
+        const toAdmin = document.createElement("button");
+        toAdmin.className = "btn-admin"; toAdmin.textContent = "Upload to admin";
+        let adminSent = false;
+        toAdmin.onclick = async () => {
+          copy.disabled = true; toAdmin.disabled = true; del.disabled = true;
+          setMsg(msg, "Sending to admin…", "muted");
+          try {
+            await api("/to-admin", {method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({download_token: downloadToken(j.download_url)})});
+            adminSent = true;
+            setMsg(msg, "✅ Sent to admin — server copy deleted, link expired.", "ok");
+          } catch (e) {
+            setMsg(msg, "❌ " + e.message, "err");
+            copy.disabled = false; toAdmin.disabled = false; del.disabled = false;
+          }
+        };
+        const del = document.createElement("button");
+        del.className = "btn-del"; del.textContent = "Delete";
+        del.onclick = async () => {
+          if (!adminSent && !confirm("Delete this file from the server?
+
+Its download link will stop working immediately, and the admin will NOT receive it unless you upload it again.")) return;
+          copy.disabled = true; toAdmin.disabled = true; del.disabled = true;
+          setMsg(msg, "Deleting…", "muted");
+          try {
+            const r = await api("/delete", {method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({download_token: downloadToken(j.download_url)})});
+            setMsg(msg, r.note ? "🗑 " + r.note : "🗑 Deleted — server copy gone, link expired.", "ok");
+          } catch (e) {
+            setMsg(msg, "❌ " + e.message, "err");
+            copy.disabled = false; toAdmin.disabled = false; del.disabled = false;
+          }
+        };
+        btnRow.appendChild(copy); btnRow.appendChild(toAdmin); btnRow.appendChild(del);
+        out.appendChild(linkBox); out.appendChild(btnRow); out.appendChild(msg);
         return;
       }
     } catch (e) {
@@ -574,9 +810,15 @@ async function uploadFile(file){
     const pct = Math.round(received / file.size * 100);
     bar.style.width = pct + "%";
     const secs = (Date.now() - t0) / 1000;
-    const speed = secs > 0 ? ((received - b0) / secs / 1024 / 1024).toFixed(1) : "0";
+    const speed = secs > 0 ? (received - b0) / secs : 0;
+    const speedText = (speed / 1024 / 1024).toFixed(1) + " MB/s";
+    let eta = "";
+    if (speed > 0){
+      const left = Math.round((file.size - received) / speed);
+      eta = left < 60 ? " · ~" + left + " s left" : " · ~" + Math.round(left / 60) + " min left";
+    }
     info.textContent = pct + "% · " + fmt(received) + " / " + fmt(file.size)
-      + " · " + speed + " MB/s";
+      + " · " + speedText + eta;
   }
 }
 
