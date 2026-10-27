@@ -639,7 +639,9 @@ h1{font-size:24px;margin:0 0 6px}
 .hint b{color:#e8e8e8}
 #drop{border:2px dashed #3a3f4a;border-radius:16px;padding:36px 16px;text-align:center;color:#c8cdd4;font-size:17px}
 #drop.over{border-color:#6a9bff;background:#1a2233}
-#drop button{margin-top:16px;min-height:48px;padding:12px 24px;border:0;border-radius:12px;background:#2481cc;color:#fff;font-size:16px}
+#drop{cursor:pointer}
+.pickbtn{display:inline-block;margin-top:16px;min-height:48px;padding:12px 24px;border:0;border-radius:12px;background:#2481cc;color:#fff;font-size:16px;cursor:pointer}
+.fileinput{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .row{margin-top:16px;padding:16px;border-radius:14px;background:#1b1e24}
 .row .name{font-size:16px;font-weight:600;word-break:break-all}
 .row .info{font-size:13px;color:#9aa0a6;margin-top:4px}
@@ -668,8 +670,8 @@ to the admin's bot PM — no link needed), and <b>Delete</b> (removes the
 server copy and kills its link at once). This page sets no cookies, loads
 nothing from anywhere else, and logs nothing about you.</p>
 <div id="drop">Drop files here
-<div><button id="pick">Choose files</button></div>
-<input type="file" id="file" multiple hidden></div>
+<div><label for="file" class="pickbtn">Choose files</label></div>
+<input type="file" id="file" multiple class="fileinput"></div>
 <div id="queue"></div>
 <p class="foot">Links from here live 1 hour. Once a file is sent to the admin (or
 to the bot via its link), its server copy is deleted and the link stops
@@ -780,9 +782,7 @@ async function uploadFile(file){
         const del = document.createElement("button");
         del.className = "btn-del"; del.textContent = "Delete";
         del.onclick = async () => {
-          if (!adminSent && !confirm("Delete this file from the server?
-
-Its download link will stop working immediately, and the admin will NOT receive it unless you upload it again.")) return;
+          if (!adminSent && !confirm("Delete this file from the server? Its download link will stop working immediately, and the admin will NOT receive it unless you upload it again.")) return;
           copy.disabled = true; toAdmin.disabled = true; del.disabled = true;
           setMsg(msg, "Deleting…", "muted");
           try {
@@ -836,13 +836,34 @@ function addFiles(list){
   for (const f of list) queue.push(f);
   runQueue();
 }
-$("pick").onclick = () => input.click();
 input.onchange = () => { addFiles(input.files); input.value = ""; };
+// Clicking the drop box itself (not just the label) also opens the
+// picker — a second way in, if a browser ever swallows the label click.
+drop.addEventListener("click", e => {
+  if (e.target === drop) input.click();
+});
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
 drop.addEventListener("drop", e => {
   e.preventDefault(); drop.classList.remove("over");
   addFiles(e.dataTransfer.files);
+});
+// Whole-page drop: on Windows, people often drop onto the page
+// generally, not precisely into the box. Without this, dropping
+// outside the box makes the browser navigate away to the file
+// itself (losing the page). With it, any drop on the page queues
+// the files, and the box lights up while dragging anywhere.
+window.addEventListener("dragover", e => {
+  e.preventDefault();
+  drop.classList.add("over");
+});
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  if (drop.contains(e.target)) return; // already handled above
+  if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length){
+    addFiles(e.dataTransfer.files);
+  }
 });
 </script>
 </body>
