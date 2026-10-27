@@ -56,10 +56,14 @@ with `/unzip` and I'll unzip that one the same way.
 **Custom sites**: sites yt-dlp doesn't understand get their own
 extractor here — currently luluvido.com. More sites can be added
 the same way, one module each.
-**Pipe**: `/pipe <direct file link>` streams a direct file
-straight to Telegram — nothing is saved on the server disk,
-so files that would fill it can still land (≤ 2 GB, sent as
-a document, no thumbnail; not playlists or video pages)."""
+**Pipe**: `/pipe <link>` streams a file straight to
+Telegram — nothing is saved on the server disk, so files
+that would fill it can still land (≤ 2 GB, sent as a
+document, no thumbnail). Direct file links pipe in one
+pass; HLS (.m3u8) / DASH (.mpd) playlist links pipe through
+ffmpeg in two passes (measure, then upload) and refuse
+live streams. Video pages are not piped — send those
+normally instead."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
