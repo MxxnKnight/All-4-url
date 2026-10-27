@@ -81,7 +81,7 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
                 f"over the {human_bytes(unzip.MAX_ZIP_BYTES)} unzip "
                 f"limit, so I can't unzip it here")
         info = unzip.zip_info(zip_path)
-        unzip.check_disk_room(zip_path, info["total"])
+        unzip.check_disk_room(zip_path, info["largest"])
     except unzip.ZipTooBig as exc:
         # Persistent message (status is deleted after a normal send).
         try:
@@ -667,16 +667,44 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             await status.edit_text("Unzipping…")
             extract_dir = os.path.join(job_dir, "extracted")
             try:
-                extracted, skipped = unzip.extract_zip(zip_path, extract_dir)
-            except unzip.ZipTooBig as exc:
-                await status.edit_text(
-                    f"❌ Can't unzip this one: {exc}\n"
-                    f"Sending the zip itself as-is instead.")
-                await send_files_routed(client, job["chat_id"], [zip_path],
-                                        "uploader", caption=job["caption"],
-                                        status_msg=status)
-                return
-            if not extracted:
+                info = unzip.zip_info(zip_path)
+            except Exception:
+                info = {"count": 0}
+            # One by one: extract one file, upload it, delete
+            # it, then extract the next — disk never holds
+            # more than the zip plus one file.
+            skipped: list[str] = []
+            failed: list[str] = []
+            sent_count = 0
+            bandwidth_stopped = False
+            gen = unzip.iter_extracted(zip_path, extract_dir, skipped)
+            try:
+                for path in gen:
+                    if stats.bandwidth_blocked():
+                        bandwidth_stopped = True
+                        break
+                    try:
+                        await status.edit_text(
+                            f"Uploading {sent_count + 1} of "
+                            f"{info['count']}: "
+                            f"{os.path.basename(path)}…")
+                    except Exception:
+                        pass
+                    try:
+                        await send_files_routed(
+                            client, job["chat_id"], [path],
+                            "uploader", caption=job["caption"],
+                            status_msg=status)
+                        sent_count += 1
+                    except Exception as exc:
+                        failed.append(f"{os.path.basename(path)} ({exc})")
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+            finally:
+                gen.close()
+            if sent_count == 0 and not bandwidth_stopped:
                 await status.edit_text(
                     "❌ Nothing could be unzipped from this file"
                     + (f" (skipped: {', '.join(skipped[:5])})"
@@ -686,11 +714,22 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                                         "uploader", caption=job["caption"],
                                         status_msg=status)
                 return
-            await status.edit_text(
-                f"Uploading {len(extracted)} unzipped file(s)…")
-            await send_files_routed(client, job["chat_id"], extracted,
-                                    "uploader", caption=job["caption"],
-                                    status_msg=status)
+            if bandwidth_stopped:
+                try:
+                    await client.send_message(
+                        job["chat_id"],
+                        "⚠️ Unzip stopped early: monthly bandwidth "
+                        "cap reached — remaining files were not sent.")
+                except Exception:
+                    pass
+            if failed:
+                try:
+                    await client.send_message(
+                        job["chat_id"],
+                        "⚠️ Failed to send while unzipping: "
+                        + ", ".join(failed[:5]))
+                except Exception:
+                    pass
             if skipped:
                 try:
                     await client.send_message(

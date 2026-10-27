@@ -49,8 +49,10 @@ Drop files there (max 750 MB each) and send the download link it
 gives you back here — I'll push it to Telegram straight from the
 server disk, no re-download, then delete the server copy.
 **Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
-it and send the contents instead (caps: zip ≤ 500 MB, unzipped
-total ≤ 1 GB, ≤ 50 files — bigger zips get a plain "exceeds"
+it and send the contents instead (caps: zip ≤ 1 GB, unzipped
+total ≤ 8 GB, ≤ 50 files, extracted and sent one by one so
+disk never holds more than the zip plus one file — bigger
+zips get a plain "exceeds"
 message and are sent as-is). Or send me a zip and reply to it
 with `/unzip` and I'll unzip that one the same way.
 **Custom sites**: sites yt-dlp doesn't understand get their own

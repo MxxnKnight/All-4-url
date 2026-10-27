@@ -11,11 +11,15 @@ half is the prompt plugins/uploader.py shows when a URL download
 turns out to be a zip. Both share core/unzip.py, so the caps
 and safety guards are identical.
 
-Limits (same as the URL prompt): zip ≤ 500 MB, extracted total
-≤ 1 GB, ≤ 50 files, password-protected entries skipped, unsafe
+Limits (same as the URL prompt): zip ≤ 1 GB, extracted total
+≤ 8 GB, ≤ 50 files, password-protected entries skipped, unsafe
 paths and symlinks skipped, nested zips extracted as files
-(not recursed). Anything over a cap gets a plain "exceeds"
-message and nothing is extracted.
+(not recursed). Files are extracted, uploaded, and deleted
+ONE AT A TIME, so disk only ever holds the zip plus one file —
+a zip that expands to several GB can still go through, as
+long as each single file fits Telegram's 2 GB cap and the
+largest file fits free disk. Anything over a cap gets a plain
+"exceeds" message and nothing is extracted.
 """
 
 import os
@@ -23,7 +27,7 @@ import os
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-from core import unzip
+from core import stats, unzip
 from core.sender import send_files_routed
 from core.utils import (admin_only, cleanup_dir, human_bytes, make_job_dir)
 
@@ -68,7 +72,7 @@ async def unzip_cmd(client: Client, message: Message):
             return
         try:
             info = unzip.zip_info(zip_path)
-            unzip.check_disk_room(zip_path, info["total"])
+            unzip.check_disk_room(zip_path, info["largest"])
         except unzip.ZipTooBig as exc:
             await status.edit_text(f"📦 Can't unzip this one: {exc}")
             return
@@ -77,29 +81,62 @@ async def unzip_cmd(client: Client, message: Message):
             return
         await status.edit_text(
             f"Unzipping {info['count']} file(s) "
-            f"({human_bytes(info['total'])})…")
+            f"({human_bytes(info['total'])}) — one by one…")
+        # One by one: extract one file, upload it, delete it,
+        # then extract the next. Disk never holds more than
+        # the zip plus one file, so a multi-GB total fits.
+        skipped = list(info["skipped"]) + info["encrypted"] \
+            + info["too_big"]
+        failed: list[str] = []
+        sent_count = 0
+        sent_bytes = 0
+        bandwidth_stopped = False
+        gen = unzip.iter_extracted(
+            zip_path, os.path.join(job_dir, "extracted"), skipped)
         try:
-            extracted, skipped = unzip.extract_zip(
-                zip_path, os.path.join(job_dir, "extracted"))
-        except unzip.ZipTooBig as exc:
-            await status.edit_text(f"📦 Can't unzip this one: {exc}")
-            return
-        except Exception as exc:
-            await status.edit_text(f"❌ Unzip failed: {exc}")
-            return
-        if not extracted:
+            for path in gen:
+                if stats.bandwidth_blocked():
+                    bandwidth_stopped = True
+                    break
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                try:
+                    await status.edit_text(
+                        f"Uploading {sent_count + 1} of "
+                        f"{info['count']}: {os.path.basename(path)}…")
+                except Exception:
+                    pass
+                try:
+                    await send_files_routed(
+                        client, message.chat.id, [path],
+                        "uploader", caption=f"Unzipped from {name}",
+                        status_msg=status)
+                    sent_count += 1
+                    sent_bytes += size
+                except Exception as exc:
+                    failed.append(f"{os.path.basename(path)} ({exc})")
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        finally:
+            gen.close()
+        if sent_count == 0 and not bandwidth_stopped:
             await status.edit_text(
                 "❌ Nothing could be unzipped from this file"
                 + (f" (skipped: {', '.join(skipped[:5])})"
                    if skipped else "")
                 + ".")
             return
-        await status.edit_text(f"Uploading {len(extracted)} file(s)…")
-        await send_files_routed(client, message.chat.id, extracted,
-                                "uploader", caption=f"Unzipped from {name}",
-                                status_msg=status)
-        summary = (f"✅ Unzipped {len(extracted)} file(s) "
-                   f"({human_bytes(info['total'])}) from {name}.")
+        summary = (f"✅ Unzipped {sent_count} file(s) "
+                   f"({human_bytes(sent_bytes)}) from {name}.")
+        if bandwidth_stopped:
+            summary += ("\n⚠️ Stopped early: monthly bandwidth cap "
+                        "reached — remaining files were not sent.")
+        if failed:
+            summary += "\n⚠️ Failed to send: " + ", ".join(failed[:5])
         if skipped:
             summary += "\n⚠️ Skipped: " + ", ".join(skipped[:10])
         await status.edit_text(summary)
