@@ -735,6 +735,8 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                         os.unlink(path)
                     except OSError:
                         pass
+                    # Pace one-by-one sends (see plugins/unzip.py).
+                    await asyncio.sleep(1)
             finally:
                 gen.close()
             if sent_count == 0 and not bandwidth_stopped:

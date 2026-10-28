@@ -68,10 +68,15 @@ MAX_ZIP_BYTES = 1024 * 1024 * 1024
 #: one-by-one extraction never holds the total on disk.
 #: 8 GB matches /sdl's total cap.
 MAX_EXTRACT_BYTES = 8 * 1024 * 1024 * 1024
-#: At most this many files out of one zip (each is a Telegram
-#: upload of its own — more than this is a slog, not a feature).
-#: This is now a time/bandwidth guard, not a disk guard.
-MAX_EXTRACT_FILES = 50
+#: At most this many files out of one zip. Count alone was a bad
+#: rule on its own: a 10 MB zip with 65 tiny files is easy, a
+#: 1 GB zip with 65 huge files is hard — so total (8 GB) and
+#: per-file (2 GB) caps are the real limits, and count is only
+#: a guard against hundreds of separate Telegram messages in
+#: one job (chat spam, FloodWait, job time), not a disk guard.
+#: 200 covers a 65-file zip with room to spare, while still
+#: refusing absurd 500+ file jobs that would flood the chat.
+MAX_EXTRACT_FILES = 200
 #: Free disk that must remain after extracting one entry
 #: (same margin the upage uploader reserves).
 HEADROOM_BYTES = 256 * 1024 * 1024

@@ -17,6 +17,7 @@ existing ``mi:<chat>:<msg>`` callback, so plugins/mediainfo.py
 handles it and sends its report as a separate message.
 """
 
+import asyncio
 import os
 
 from pyrogram import Client, filters
@@ -213,6 +214,8 @@ async def filemenu_callback(client: Client, query):
                         os.unlink(path)
                     except OSError:
                         pass
+                    # Pace one-by-one sends (see plugins/unzip.py).
+                    await asyncio.sleep(1)
             finally:
                 gen.close()
             summary = (f"✅ Unzipped {sent_count} file(s) "

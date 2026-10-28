@@ -12,7 +12,7 @@ turns out to be a zip. Both share core/unzip.py, so the caps
 and safety guards are identical.
 
 Limits (same as the URL prompt): zip ≤ 1 GB, extracted total
-≤ 8 GB, ≤ 50 files, password-protected entries skipped, unsafe
+≤ 8 GB, ≤ 200 files, password-protected entries skipped, unsafe
 paths and symlinks skipped, nested zips extracted as files
 (not recursed). Files are extracted, uploaded, and deleted
 ONE AT A TIME, so disk only ever holds the zip plus one file —
@@ -22,6 +22,7 @@ largest file fits free disk. Anything over a cap gets a plain
 "exceeds" message and nothing is extracted.
 """
 
+import asyncio
 import os
 
 from pyrogram import Client, filters
@@ -121,6 +122,11 @@ async def unzip_cmd(client: Client, message: Message):
                     os.unlink(path)
                 except OSError:
                     pass
+                # Pace one-by-one sends: 65+ tiny files in a row
+                # would otherwise hit Telegram's FloodWait. 1s per
+                # file is cheap (65 files = ~1 extra minute) and
+                # keeps a many-file job from failing halfway.
+                await asyncio.sleep(1)
         finally:
             gen.close()
         if sent_count == 0 and not bandwidth_stopped:

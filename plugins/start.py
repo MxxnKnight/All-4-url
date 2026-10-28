@@ -56,7 +56,7 @@ MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
 (15/30/60s from the middle), Unzip (zips only), and Close.
 **Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
 it and send the contents instead (caps: zip ≤ 1 GB, unzipped
-total ≤ 8 GB, ≤ 50 files, extracted and sent one by one so
+total ≤ 8 GB, ≤ 200 files, extracted and sent one by one so
 disk never holds more than the zip plus one file — bigger
 zips get a plain "exceeds"
 message and are sent as-is). Or send me a zip and reply to it
