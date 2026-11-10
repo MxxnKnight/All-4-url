@@ -122,8 +122,15 @@ async def convert_callback(client: Client, query):
                     InlineKeyboardButton(
                         "❌ Close",
                         callback_data=f"fm:{chat_id}:{msg_id}:close")]]))
-        except Exception:
-            pass
+        except Exception as edit_exc:
+            # Never die silently: if even the error message
+            # can't be shown, pop the error up instead.
+            try:
+                await query.answer(
+                    f"Convert failed: {str(edit_exc)[:150]}",
+                    show_alert=True)
+            except Exception:
+                pass
         stats.record_job("convert", ok=False)
         return
     if sent is None:
@@ -131,8 +138,13 @@ async def convert_callback(client: Client, query):
             await query.message.edit_text(
                 f"❌ Conversion returned nothing for {name}. "
                 f"The original file is untouched.")
-        except Exception:
-            pass
+        except Exception as edit_exc:
+            try:
+                await query.answer(
+                    f"Convert failed: {str(edit_exc)[:150]}",
+                    show_alert=True)
+            except Exception:
+                pass
         stats.record_job("convert", ok=False)
         return
     stats.record_job("convert", ok=True)
@@ -144,5 +156,10 @@ async def convert_callback(client: Client, query):
                 InlineKeyboardButton(
                     "❌ Close",
                     callback_data=f"fm:{chat_id}:{msg_id}:close")]]))
-    except Exception:
-        pass
+    except Exception as edit_exc:
+        try:
+            await query.answer(
+                f"Converted, but the menu couldn't update: "
+                f"{str(edit_exc)[:120]}", show_alert=True)
+        except Exception:
+            pass

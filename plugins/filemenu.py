@@ -40,6 +40,25 @@ def _parse(query):
         return None
 
 
+async def _edit_menu(query, text, markup=None):
+    """Edit the menu message, but never die silently. Until now
+    a failed edit (Telegram error, FloodWait, message gone…)
+    crashed the button handler after query.answer() had already
+    cleared the spinner — so from the user's side the button
+    just did nothing, with no clue why. Now a failed edit pops
+    up the actual error instead."""
+    try:
+        await query.message.edit_text(text, reply_markup=markup)
+        return True
+    except Exception as exc:
+        try:
+            await query.answer(
+                f"Button failed: {str(exc)[:150]}", show_alert=True)
+        except Exception:
+            pass
+        return False
+
+
 async def _main_menu(client, query, chat_id, msg_id):
     try:
         target = await client.get_messages(chat_id, msg_id)
@@ -50,10 +69,9 @@ async def _main_menu(client, query, chat_id, msg_id):
                            show_alert=True)
         return
     name, size, _mime, _kind, is_video, is_zip = filemenu.file_info(target)
-    await query.message.edit_text(
-        filemenu.menu_text(name, size),
-        reply_markup=filemenu.main_menu_markup(
-            chat_id, msg_id, is_video, is_zip))
+    await _edit_menu(
+        query, filemenu.menu_text(name, size),
+        filemenu.main_menu_markup(chat_id, msg_id, is_video, is_zip))
 
 
 @Client.on_callback_query(filters.regex(r"^fm:"))
@@ -94,9 +112,9 @@ async def filemenu_callback(client: Client, query):
             return
         await query.answer()
         text, markup = filemenu.convert_menu_markup(chat_id, msg_id, kind)
-        await query.message.edit_text(
-            f"🔄 **{name}** ({human_bytes(size)})\n\n{text}",
-            reply_markup=markup)
+        await _edit_menu(
+            query, f"🔄 **{name}** ({human_bytes(size)})\n\n{text}",
+            markup)
         return
     if action == "shot":
         if not is_video:
@@ -105,8 +123,7 @@ async def filemenu_callback(client: Client, query):
             return
         await query.answer()
         text, markup = filemenu.screenshot_menu_markup(chat_id, msg_id)
-        await query.message.edit_text(
-            f"📸 **{name}**\n\n{text}", reply_markup=markup)
+        await _edit_menu(query, f"📸 **{name}**\n\n{text}", markup)
         return
     if action == "samp":
         if not is_video:
@@ -115,8 +132,7 @@ async def filemenu_callback(client: Client, query):
             return
         await query.answer()
         text, markup = filemenu.sample_menu_markup(chat_id, msg_id)
-        await query.message.edit_text(
-            f"🎬 **{name}**\n\n{text}", reply_markup=markup)
+        await _edit_menu(query, f"🎬 **{name}**\n\n{text}", markup)
         return
     if action == "links":
         if not config.BASE_URL:
@@ -129,12 +145,13 @@ async def filemenu_callback(client: Client, query):
         download_url = f"{config.BASE_URL}/d/{token}"
         stream_url = f"{config.BASE_URL}/stream/{token}"
         from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-        await query.message.edit_text(
+        await _edit_menu(
+            query,
             f"**{name}** ({human_bytes(size)})\n\n"
             f"⬇️ Download: {download_url}\n"
             f"▶️ Stream: {stream_url}\n\n"
             f"Links expire in {config.LINK_EXPIRY_HOURS} hours.",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬇️ Download", url=download_url),
                  InlineKeyboardButton("▶️ Stream", url=stream_url)],
                 [InlineKeyboardButton("📊 MediaInfo",
