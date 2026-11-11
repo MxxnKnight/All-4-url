@@ -5,6 +5,9 @@
 > set in `OWNER_ID` — everyone else is silently ignored. Do not deploy it
 > as a public service.
 
+> **AI agents: read `AGENT.md` first** — the working contract, architecture,
+> hard lessons, and do-not-build list. Claude: see also `CLAUDE.md`.
+
 One bot, four jobs:
 
 1. **URL uploader** — send a link, get the file back in the chat.
