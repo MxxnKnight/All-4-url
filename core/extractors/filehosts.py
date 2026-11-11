@@ -156,7 +156,9 @@ async def _submit(session, form: dict, page_url: str):
                    "Content-Type": "application/x-www-form-urlencoded"}
         return await request(session, action, method="POST", data=fields,
                              headers=headers)
-    return await request(session, action, method="GET", data=fields,
+    # GET forms submit their fields as the query string — sending them
+    # as `data` puts them in the request body, which servers ignore.
+    return await request(session, action, method="GET", params=fields,
                          headers={"Referer": page_url})
 
 

@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.28.0** (2026-11-11).
+- **Current version: v1.28.2** (2026-11-12).
 
 ## How moon works — the contract
 
@@ -265,8 +265,14 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-11) — v1.28.1
+## Current status (2026-11-12) — v1.28.2
 
+- v1.28.2 fixes a bug found in review of freebuff's branch: GET download
+  gates sent their fields as a request body (which servers ignore) instead
+  of the query string — a GET gate could never open. `player_scan.request`
+  now takes `params` for query fields, and `filehosts._submit` uses it for
+  GET forms. Verified against a local GET-form replica. Also fixes the
+  AGENT.md version line, which the v1.28.1 commit left at v1.28.0.
 - v1.28.1 fixes `/phost`: Catbox stays first, freeimage.host is the
   fallback when Catbox refuses the bot's datacenter IP, and the reply
   names the host that served the file. Both hosts verified live from a

@@ -56,7 +56,8 @@ def _default_headers() -> dict:
 
 # ------------------------------------------------------------------ fetch
 
-def _curl_cffi_sync(url: str, headers: dict, data, method: str | None):
+def _curl_cffi_sync(url: str, headers: dict, data, method: str | None,
+                    params=None):
     """One request through curl_cffi (passes Cloudflare's TLS checks)."""
     try:
         from curl_cffi import requests as creq
@@ -64,7 +65,7 @@ def _curl_cffi_sync(url: str, headers: dict, data, method: str | None):
         return None
     try:
         resp = creq.request(method or ("POST" if data is not None else "GET"),
-                            url, headers=headers, data=data,
+                            url, headers=headers, data=data, params=params,
                             impersonate="chrome", timeout=35,
                             allow_redirects=True)
         return str(resp.url), resp.text, int(resp.status_code)
@@ -72,14 +73,16 @@ def _curl_cffi_sync(url: str, headers: dict, data, method: str | None):
         return None
 
 
-async def _curl_cffi(url: str, headers: dict, data, method: str | None):
+async def _curl_cffi(url: str, headers: dict, data, method: str | None,
+                     params=None):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _curl_cffi_sync, url, headers,
-                                      data, method)
+                                      data, method, params)
 
 
 async def request(session: aiohttp.ClientSession, url: str,
-                  method: str | None = None, data=None, headers: dict | None = None):
+                  method: str | None = None, data=None, headers: dict | None = None,
+                  params=None):
     """Fetch one page inside an existing session.
 
     Returns ``(final_url, text, status)``. A Cloudflare *TLS* check is
@@ -87,6 +90,11 @@ async def request(session: aiohttp.ClientSession, url: str,
     so it is only a rescue for stateless pages). A real interactive
     browser challenge is reported as an honest error — the bot cannot
     solve it without a browser.
+
+    `params` are query-string fields (what a GET form submits); `data`
+    is the request body (what a POST form submits). They are different
+    things — a GET form's fields sent as `data` arrive in the body,
+    which servers ignore, so the gate silently never opens.
     """
     hdrs = _default_headers()
     if headers:
@@ -94,6 +102,7 @@ async def request(session: aiohttp.ClientSession, url: str,
     method = method or ("POST" if data is not None else "GET")
     try:
         async with session.request(method, url, headers=hdrs, data=data,
+                                   params=params,
                                    allow_redirects=True) as resp:
             status = resp.status
             final = str(resp.url)
@@ -101,7 +110,7 @@ async def request(session: aiohttp.ClientSession, url: str,
     except Exception as exc:
         raise HostError(f"couldn't reach the site ({exc})") from exc
     if status >= 400 and looks_challenged(status, body):
-        alt = await _curl_cffi(url, hdrs, data, method)
+        alt = await _curl_cffi(url, hdrs, data, method, params)
         if alt and alt[2] < 400:
             return alt
         raise HostError(
