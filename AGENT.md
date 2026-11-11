@@ -204,7 +204,8 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   everywhere is bad idea!").
 - `/sdl`: oversize **direct videos only**, time-split playable parts
   (≤1 GB/part, total ≤8 GB, one part on disk).
-- `/phost`: reply to a photo/image → Catbox upload, temp deleted in `finally`.
+- `/phost`: reply to a photo/image → Catbox upload, then freeimage.host as
+  fallback (FREEIMAGE_KEY overrides its public key), temp deleted in `finally`.
 - File menu (`core/filemenu.py`, `plugins/filemenu.py`): sending a file
   replies with a menu — Generate links, MediaInfo, Convert, Screenshots,
   Sample, Unzip, Close. Menu edits use the `_edit_menu` helper so a failed
@@ -264,8 +265,12 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-11) — v1.28.0
+## Current status (2026-11-11) — v1.28.1
 
+- v1.28.1 fixes `/phost`: Catbox stays first, freeimage.host is the
+  fallback when Catbox refuses the bot's datacenter IP, and the reply
+  names the host that served the file. Both hosts verified live from a
+  data-centre IP on 2026-11-11.
 - v1.28.0 adds custom extractors for the video hosts and file hosts /
   shorteners moon uses: Streamtape (+ tapeadsenjoyer mirror), Vidara
   (+ its mirrored panels), and a generic browser-free "gate walker" for

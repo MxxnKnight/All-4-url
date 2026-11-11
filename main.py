@@ -46,7 +46,7 @@ log = logging.getLogger("all4url")
 BOT_COMMANDS = [
     BotCommand("start", "Show the main menu"),
     BotCommand("status", "Server + usage status"),
-    BotCommand("phost", "Host a replied image on Catbox (reply to image)"),
+    BotCommand("phost", "Host a replied image, get a direct link"),
     BotCommand("help", "How each feature works"),
     BotCommand("batch", "Batch t.me links — or a first..last range"),
     BotCommand("cancel", "Stop the current batch"),
