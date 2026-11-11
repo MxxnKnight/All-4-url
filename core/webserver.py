@@ -308,6 +308,8 @@ def make_app() -> web.Application:
     webapp.add_routes(app)
     from core import upage
     upage.add_routes(app)
+    from core import sendlink
+    sendlink.add_routes(app)
     app.router.add_get("/d/{token}", _download)
     app.router.add_get("/stream/{token}", _stream)
     return app
@@ -330,11 +332,13 @@ class _SilentAccessLog(AbstractAccessLogger):
 
 
 async def start_web_server() -> web.AppRunner:
-    from core import upage
+    from core import sendlink, upage
     upage.startup_cleanup()
     if _bot is not None:
         # The page's "Upload to admin" button needs the bot client.
         upage.bind_bot(_bot)
+        # The link-upload page needs it to deliver files to the owner.
+        sendlink.bind_bot(_bot)
     runner = web.AppRunner(make_app(), access_log_class=_SilentAccessLog)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", config.PORT)

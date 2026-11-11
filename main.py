@@ -55,6 +55,7 @@ BOT_COMMANDS = [
     BotCommand("sdl", "Split-download an oversize video link"),
     BotCommand("pipe", "Stream a direct file to Telegram, no disk"),
     BotCommand("upage", "Private web upload link (owner only)"),
+    BotCommand("sendlink", "Permanent private link-upload page"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),
     BotCommand("addsudo", "Add a sudo user (owner only)"),
     BotCommand("delsudo", "Remove a sudo user (owner only)"),
