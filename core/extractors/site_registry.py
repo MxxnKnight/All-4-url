@@ -21,9 +21,15 @@ and add its flow to the uploader's dispatch (the custom flow
 there is site-agnostic — it only needs the module).
 """
 
-from core.extractors import luluvido
+from core.extractors import filehosts, luluvido, streamtape, vidara
 
 SITES = [
+    # Player pages that need their own JS replayed (no yt-dlp extractor).
+    streamtape,
+    vidara,
+    # File hosts / shorteners whose page hides the file behind a gate.
+    filehosts,
+    # LuluStream's packed-jwplayer pages.
     luluvido,
 ]
 

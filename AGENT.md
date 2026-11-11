@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.27.0** (commit `48cf668`, 2026-11-11).
+- **Current version: v1.28.0** (2026-11-11).
 
 ## How moon works — the contract
 
@@ -110,7 +110,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | `core/filemenu.py` | File-menu builders (`fm:` callbacks) |
 | `core/videotools.py` | Screenshots / sample clips (ffprobe/ffmpeg) |
 | `core/mediainfo.py` | Partial probe (head chunks + MP4/MOV moov tail, ~16 MB max) |
-| `core/extractors/` | `direct.py`, `ytdlp_engine.py`, `gallery_engine.py`, `scrape.py`, `terabox.py`, `filesnag.py`, `site_registry.py` (+ `luluvido.py`) |
+| `core/extractors/` | `direct.py`, `ytdlp_engine.py`, `gallery_engine.py`, `scrape.py`, `terabox.py`, `filesnag.py`, `site_registry.py`, `player_scan.py` (shared browser-free helpers), `streamtape.py`, `vidara.py`, `filehosts.py` (gate walker), `luluvido.py` |
 | `plugins/` | Pyrogram handlers. **NOT a package** (no `__init__.py`, `plugins=dict(root="plugins")`) — no plugin-to-plugin imports; shared logic lives in `core/` |
 
 ### Sudo model
@@ -264,9 +264,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-11) — v1.27.0
+## Current status (2026-11-11) — v1.28.0
 
-- `/sendlink` one-tap rebuild is the latest change (v1.27.0). Before it:
+- v1.28.0 adds custom extractors for the video hosts and file hosts /
+  shorteners moon uses: Streamtape (+ tapeadsenjoyer mirror), Vidara
+  (+ its mirrored panels), and a generic browser-free "gate walker" for
+  streamfile.net, luluvid.com, torupload.com, d.torupload.com,
+  upfiles/upfilesgo, cloudfam.io, myupload.us, flash-files.com and
+  imagetwist.com. New files: `player_scan.py`, `streamtape.py`,
+  `vidara.py`, `filehosts.py`; one registry line each. Verified live:
+  Streamtape page → get_video → tapecontent.net 302 (title + size), and
+  Vidara's `/api/stream` JSON endpoint. Every template shape (XFileSharing
+  gate, YetiShare `submitted` form, Laravel `_token` form, jwplayer page,
+  meta-refresh shortlink, `<img>` image page) is covered by local-replica
+  tests, not by live files — no public file code existed for those hosts,
+  so moon should retest with a real link and send back the exact error if
+  one fails.
+- `/sendlink` one-tap rebuild (v1.27.0). Before it:
   v1.25.2 (unzip count cap 50→200), v1.25.3 (menu/convert failures show as
   popups instead of silent nothing), v1.26.0 (first `/sendlink` with a
   quality picker — superseded by v1.27.0's no-picker flow).

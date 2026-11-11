@@ -123,10 +123,17 @@ def best_formats(info: dict) -> list[dict]:
 
 
 async def download(url: str, dest_dir: str, format_id: str | None = None,
-                   audio_only: bool = False, progress_cb=None) -> list[str]:
-    """Download and return the list of new file paths in dest_dir."""
+                   audio_only: bool = False, progress_cb=None,
+                   headers: dict | None = None) -> list[str]:
+    """Download and return the list of new file paths in dest_dir.
+
+    `headers` are sent with every request (custom extractors that found
+    an HLS playlist behind a Referer check pass them here).
+    """
     state: dict = {}
     opts = _base_opts(dest_dir, url, state)
+    if headers:
+        opts["http_headers"] = dict(headers)
     if audio_only:
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [{
