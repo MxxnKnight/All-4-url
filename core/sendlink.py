@@ -17,19 +17,23 @@ and Fetch button are at the TOP, above everything else — no
 hero text to scroll past. The explanation sits below the work
 area, short.
 
-Flow: paste link -> Fetch (server resolves it, no download yet)
--> pick a quality (best is pre-selected, so one tap on Upload
-is enough) -> Upload to Owner -> the server downloads it
-(best quality by default, or the picked format) and sends it
-to the owner's bot PM, then deletes the server copy. The page
-polls for progress; the job runs in the background, so a slow
-download never hits an HTTP timeout.
+Flow (one tap, the way the owner actually uses it — he grabs
+direct links from the browser and does not want to switch to
+Telegram each time): paste link -> Fetch -> the job card drops
+below and works through Probe -> Check -> Download -> Upload,
+then lands in the owner's bot PM. No quality picker, no second
+button: best quality, always. The textbox clears the moment a
+job is accepted, so the next link can be pasted straight away.
+At most 5 jobs at once per page link (2 really downloading —
+the bot's JOB_SEMAPHORE — the rest queue); a 6th submit is
+refused plainly until one finishes. Job cards are the history:
+they live 1 hour, then the record is deleted (the file itself
+is deleted much sooner — the moment its upload finishes).
+The page polls the job list, so it never needs a refresh.
 
-No quality picker exists for links with no formats to pick
-from (direct files, Terabox, custom sites): those offer Best
-quality + Document only. Terabox shares with several files
-take the largest file. Zips are sent as-is (the owner can
-unzip them with the bot later).
+Terabox shares with several files take the largest file.
+Zips are sent as-is (the owner can unzip them with the bot
+later).
 
 Same download logic as the bot's chat uploader, in the same
 order (plugins/uploader.py::_dispatch): Terabox -> custom
@@ -64,15 +68,22 @@ from core.extractors.ytdlp_engine import (
     YtdlpError, best_formats, carousel_image_urls,
     download as ytdlp_download, extract_info)
 from core.utils import (
-    JOB_SEMAPHORE, SizeBlocked, check_size, cleanup_dir, human_bytes,
+    JOB_SEMAPHORE, SizeBlocked, check_size, cleanup_dir,
     make_job_dir)
 
 log = logging.getLogger("all4url.sendlink")
 
-#: Job records live 1 hour; a fetched link waits 10 minutes for a
-#: format pick before the job is dropped (resubmit the link then).
+#: Job records (the on-page history) live 1 hour, then the record
+#: is deleted. The downloaded file itself is deleted much sooner:
+#: the moment its Telegram upload finishes, success or fail.
 JOB_TTL = 3600
-PICK_TTL = 600
+#: At most this many jobs at once per page link. Two really
+#: download at a time (the bot's JOB_SEMAPHORE); the rest queue.
+#: A submit past this is refused plainly until one finishes.
+MAX_ACTIVE_JOBS = 5
+#: Stages a job walks through, in order.
+ACTIVE_STAGES = ("probing", "checking", "queued", "downloading",
+                 "uploading")
 
 _bot = None  # set by webserver.start_web_server() via bind_bot()
 
@@ -146,14 +157,13 @@ def page_url(user_id: int | None = None) -> str:
 _JOBS: dict[str, dict] = {}  # job_id -> job record (see _new_job)
 
 
-def _new_job(url: str, uid: int | None) -> dict:
+def _new_job(url: str, uid: int | None, token_r: str | None) -> dict:
     job_id = secrets.token_hex(8)
     _JOBS[job_id] = {
-        "id": job_id, "url": url, "uid": uid,
-        "stage": "resolving", "title": "", "done": 0, "total": 0,
-        "formats": [], "picked": None, "result": None, "error": None,
+        "id": job_id, "url": url, "uid": uid, "token_r": token_r,
+        "stage": "probing", "title": "", "done": 0, "total": 0,
+        "result": None, "error": None, "failed_at": None,
         "created": int(time.time()),
-        "pick_event": asyncio.Event(),
         "resolved": None,
     }
     return _JOBS[job_id]
@@ -164,43 +174,32 @@ def _prune() -> None:
     for job_id, job in list(_JOBS.items()):
         if job["created"] + JOB_TTL <= now:
             _JOBS.pop(job_id, None)
-        elif job["stage"] == "awaiting_pick" \
-                and job["created"] + PICK_TTL <= now:
-            job["stage"] = "failed"
-            job["error"] = ("nobody picked a format in time — "
-                            "paste the link again")
 
 
 def _public(job: dict) -> dict:
-    """What the page is allowed to see — no internal state, no uid."""
-    return {"stage": job["stage"], "title": job.get("title") or "",
+    """What the page is allowed to see — no internal state, no uid.
+    The url is shown back to the same link-holder who pasted it."""
+    return {"id": job["id"], "url": job.get("url") or "",
+            "stage": job["stage"], "title": job.get("title") or "",
             "done": job.get("done") or 0, "total": job.get("total") or 0,
-            "formats": job.get("formats") or [],
             "result": job.get("result"),
-            "error": job.get("error")}
+            "error": job.get("error"), "failed_at": job.get("failed_at"),
+            "created": job.get("created") or 0}
 
 
-def _fmt_choices(formats: list[dict], ytdlp: bool) -> list[dict]:
-    """Picker choices for the page. Best is always first (and the
-    page pre-selects it); Document is a send-mode, not a format —
-    the file is downloaded at best quality and sent as a document
-    instead of a video."""
-    choices = [{"id": "best", "label": "⭐ Best quality"}]
-    for fmt in (formats or [])[:5]:
-        size = f" · {human_bytes(fmt['filesize'])}" if fmt.get("filesize") else ""
-        choices.append({"id": fmt["format_id"],
-                        "label": f"{fmt['height']}p{size}"})
-    if ytdlp:
-        choices.append({"id": "audio", "label": "🎧 Audio only (mp3)"})
-    choices.append({"id": "doc", "label": "📄 Document"})
-    return choices
+def _active_count(token_r: str | None) -> int:
+    return sum(1 for job in _JOBS.values()
+               if job.get("token_r") == token_r
+               and job["stage"] in ACTIVE_STAGES)
 
 
-async def _resolve(url: str) -> dict:
+async def _probe(url: str) -> dict:
     """Work out what a link is WITHOUT downloading it yet. Returns
-    {kind, title, size, formats, ...} for the download step, or
-    raises RuntimeError with the plain reason. Order mirrors the
-    bot's resolver chain in plugins/uploader.py."""
+    {kind, title, size, formats, ...} for the download step.
+    It does NOT enforce any size cap — the Check step does that,
+    so the page can honestly show Probe, then Check, as two
+    separate steps. Order mirrors the bot's resolver chain in
+    plugins/uploader.py."""
     errors: list[str] = []
     # 1) Terabox — largest file wins (no picker on a web page).
     if terabox.is_terabox_url(url):
@@ -209,14 +208,12 @@ async def _resolve(url: str) -> dict:
             if not files:
                 raise RuntimeError("that Terabox share looks empty")
             biggest = max(files, key=lambda f: f.get("size") or 0)
-            check_size(biggest.get("size") or 0,
-                       biggest.get("name") or "file")
             return {"kind": "terabox", "url": url,
                     "title": biggest.get("name") or "file",
                     "size": biggest.get("size") or 0,
                     "index": files.index(biggest),
                     "via": biggest.get("via")}
-        except (SizeBlocked, RuntimeError):
+        except RuntimeError:
             raise
         except Exception as exc:
             errors.append(f"terabox: {exc}")
@@ -225,14 +222,9 @@ async def _resolve(url: str) -> dict:
     if site:
         try:
             info = await site.resolve(url)
-            if info.get("approx_size"):
-                check_size(info["approx_size"],
-                           info.get("title") or "file")
             return {"kind": "custom", "url": url, "site": site,
                     "title": info.get("title") or "file",
                     "size": info.get("approx_size") or 0}
-        except SizeBlocked:
-            raise
         except Exception as exc:
             errors.append(f"{site.__name__.rsplit('.', 1)[-1]}: {exc}")
     # 2b) Instagram photo posts — same as the bot's _instagram_carousel:
@@ -257,11 +249,6 @@ async def _resolve(url: str) -> dict:
         direct_info = None
         errors.append(f"direct: {exc}")
     if direct_info:
-        try:
-            check_size(direct_info.get("size") or 0,
-                       direct_info.get("filename") or "file")
-        except SizeBlocked:
-            raise
         return {"kind": "direct", "url": url,
                 "final_url": direct_info.get("final_url") or url,
                 "title": direct_info.get("filename") or "file",
@@ -271,13 +258,9 @@ async def _resolve(url: str) -> dict:
         info = await extract_info(url)
         title = info.get("title") or "Download"
         formats = best_formats(info) if info.get("formats") else []
-        if formats:
-            check_size(formats[0].get("filesize") or 0, title)
         size = formats[0].get("filesize") or 0 if formats else 0
         return {"kind": "ytdlp", "url": url, "title": title,
                 "size": size, "formats": formats}
-    except SizeBlocked:
-        raise
     except Exception as exc:
         errors.append(f"yt-dlp: {exc}")
     # 5) gallery-dl covers image hosts and galleries yt-dlp does
@@ -289,11 +272,10 @@ async def _resolve(url: str) -> dict:
             "errors": errors}
 
 
-async def _download_resolved(resolved: dict, picked: str, job_dir: str,
+async def _download_resolved(resolved: dict, job_dir: str,
                              progress) -> list[str]:
-    """Download the resolved link with the picked choice. `picked`
-    is a format id, "best", "audio" (yt-dlp only) or "doc"
-    (best quality, sent as a document — handled at send time)."""
+    """Download the probed link — best quality, always. There is
+    no format choice on this page by design (one tap)."""
     kind = resolved["kind"]
     url = resolved["url"]
     if kind == "terabox":
@@ -320,12 +302,7 @@ async def _download_resolved(resolved: dict, picked: str, job_dir: str,
                                    filename=resolved.get("title"))
         return [path]
     if kind == "ytdlp":
-        if picked == "audio":
-            return await ytdlp_download(url, job_dir, audio_only=True,
-                                        progress_cb=progress)
-        fmt = None if picked in ("best", "doc") else picked
-        return await ytdlp_download(url, job_dir, format_id=fmt,
-                                    progress_cb=progress)
+        return await ytdlp_download(url, job_dir, progress_cb=progress)
     if kind == "gallery":
         # gallery-dl first (Reddit, Imgur, image boards…); if it
         # finds nothing, the page-scrape is the last resort — same
@@ -352,7 +329,7 @@ async def _download_resolved(resolved: dict, picked: str, job_dir: str,
 
 
 async def _send_to_owner(paths: list[str], title: str,
-                         uid: int | None, as_document: bool) -> None:
+                         uid: int | None) -> None:
     """Deliver finished files to the owner's bot PM, bypassing
     /destination — same rule as upage admin delivery."""
     if _bot is None:
@@ -370,17 +347,6 @@ async def _send_to_owner(paths: list[str], title: str,
                 f"📤 Link upload from {label} — file below:")
         except Exception:
             pass
-    if as_document:
-        sent_any = False
-        for i, path in enumerate(paths):
-            sent = await _bot.send_document(
-                config.OWNER_ID, path,
-                caption=title[:200] if i == 0 else "")
-            sent_any = sent_any or sent is not None
-        if not sent_any:
-            raise RuntimeError("Telegram returned nothing for the file")
-        stats.record_paths("uploaded", paths)
-        return
     from core.sender import send_files
     sent = await send_files(_bot, config.OWNER_ID, paths,
                             caption=title[:200])
@@ -388,47 +354,59 @@ async def _send_to_owner(paths: list[str], title: str,
         raise RuntimeError("Telegram returned nothing for the file")
 
 
+def _fail(job: dict, exc: Exception) -> None:
+    """Mark a job failed, remembering WHICH step it died on — the
+    page tells them apart: a link that could not be probed or
+    downloaded is a link failure, a failure while sending is a
+    Telegram upload failure."""
+    job["stage"] = "failed"
+    job["failed_at"] = job.get("stage") or "probing"
+    job["error"] = str(exc)[:500]
+    stats.record_job("sendlink", ok=False)
+
+
 async def _run_job(job_id: str) -> None:
-    """Background job: resolve -> wait for a format pick -> download
-    -> send to owner -> delete the server copy. The page polls the
-    job record; this task never holds an HTTP request open."""
+    """Background job: probe -> check -> (queue) -> download ->
+    upload -> delete the server copy. One tap starts it; the page
+    polls the job list, so this task never holds an HTTP request
+    open and the textbox is free for the next link at once."""
     job = _JOBS.get(job_id)
     if job is None:
         return
     url, uid = job["url"], job["uid"]
     try:
-        if stats.bandwidth_blocked():
-            raise RuntimeError(stats.bandwidth_pause_text())
-        job["stage"] = "resolving"
-        resolved = await _resolve(url)
+        # 1) Probe — what is this link, and how big is it?
+        job["stage"] = "probing"
+        resolved = await _probe(url)
         job["resolved"] = resolved
         job["title"] = resolved.get("title") or "Download"
         job["total"] = resolved.get("size") or 0
-        job["formats"] = _fmt_choices(resolved.get("formats") or [],
-                                      resolved["kind"] == "ytdlp")
-        job["stage"] = "awaiting_pick"
-        try:
-            await asyncio.wait_for(job["pick_event"].wait(),
-                                   timeout=PICK_TTL)
-        except asyncio.TimeoutError:
-            raise RuntimeError("nobody picked a format in time — "
-                               "paste the link again")
-        picked = job["picked"] or "best"
-        job["stage"] = "downloading"
+        # 2) Check — monthly bandwidth left? File within the
+        # Telegram/disk limits? Refusing here costs nothing yet.
+        job["stage"] = "checking"
+        if stats.bandwidth_blocked():
+            raise RuntimeError(stats.bandwidth_pause_text())
+        check_size(resolved.get("size") or 0, job["title"])
 
         async def progress(done, total):
             job["done"] = done
             job["total"] = total or job["total"]
 
-        async with JOB_SEMAPHORE:
+        # 3) Queue, then download — at most 2 really download at
+        # once (JOB_SEMAPHORE, shared with the bot's own jobs).
+        job["stage"] = "queued"
+        await JOB_SEMAPHORE.acquire()
+        try:
+            job["stage"] = "downloading"
             job_dir = make_job_dir()
             try:
-                paths = await _download_resolved(resolved, picked,
-                                                 job_dir, progress)
+                paths = await _download_resolved(resolved, job_dir,
+                                                 progress)
+                # 4) Upload to the owner's bot PM, then the server
+                # copy is deleted (cleanup_dir, in the finally).
                 job["stage"] = "uploading"
                 job["done"] = job["total"]
-                await _send_to_owner(paths, job["title"], uid,
-                                     as_document=(picked == "doc"))
+                await _send_to_owner(paths, job["title"], uid)
                 total_bytes = sum(
                     os.path.getsize(p) for p in paths
                     if os.path.exists(p))
@@ -440,15 +418,13 @@ async def _run_job(job_id: str) -> None:
                 stats.record_job("sendlink", ok=True)
             finally:
                 cleanup_dir(job_dir)
+        finally:
+            JOB_SEMAPHORE.release()
     except (SizeBlocked, RuntimeError, YtdlpError) as exc:
-        job["stage"] = "failed"
-        job["error"] = str(exc)[:500]
-        stats.record_job("sendlink", ok=False)
+        _fail(job, exc)
     except Exception as exc:
         log.warning("sendlink job %s failed: %s", job_id, exc)
-        job["stage"] = "failed"
-        job["error"] = str(exc)[:500]
-        stats.record_job("sendlink", ok=False)
+        _fail(job, exc)
 
 
 # ---------------------------------------------------------------- routes
@@ -500,7 +476,17 @@ async def submit(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "bot is not ready yet — try again in a moment"},
             status=503)
-    job = _new_job(url, payload.get("uid"))
+    # Too many at once? The page lets the owner paste the next
+    # link immediately, so the cap has to live here: at most
+    # MAX_ACTIVE_JOBS per page link, then a plain refusal.
+    token_r = payload.get("r")
+    if _active_count(token_r) >= MAX_ACTIVE_JOBS:
+        return web.json_response(
+            {"error": f"too many jobs running already "
+                      f"(max {MAX_ACTIVE_JOBS} at once) — wait for "
+                      f"one to finish, then paste again"},
+            status=429)
+    job = _new_job(url, payload.get("uid"), token_r)
     asyncio.create_task(_run_job(job["id"]))
     return web.json_response({"job": job["id"]})
 
@@ -516,25 +502,20 @@ async def status(request: web.Request) -> web.Response:
     return web.json_response(_public(job))
 
 
-async def pick(request: web.Request) -> web.Response:
-    await _require_page(request)
+async def jobs(request: web.Request) -> web.Response:
+    """The page's job history: every job this page link started,
+    newest first, each with its stage and error. Records older
+    than JOB_TTL (1 hour) are pruned away — the history deletes
+    itself, while the files were already deleted at upload time.
+    Jobs are scoped to this link's token, so one link-holder
+    never sees another link's jobs."""
+    payload = await _require_page(request)
     _prune()
-    body = await _json_body(request)
-    job = _JOBS.get(body.get("job") or "")
-    if job is None:
-        return web.json_response({"error": "job not found"}, status=404)
-    if job["stage"] != "awaiting_pick":
-        return web.json_response(
-            {"error": "that job isn't waiting for a format pick"},
-            status=409)
-    choice = body.get("choice") or "best"
-    valid = {f["id"] for f in job.get("formats") or []} | {"best"}
-    if choice not in valid:
-        return web.json_response({"error": "unknown format choice"},
-                                 status=400)
-    job["picked"] = choice
-    job["pick_event"].set()
-    return web.json_response({"ok": True})
+    token_r = payload.get("r")
+    mine = [job for job in _JOBS.values()
+            if job.get("token_r") == token_r]
+    mine.sort(key=lambda job: job.get("created") or 0, reverse=True)
+    return web.json_response({"jobs": [_public(job) for job in mine]})
 
 
 async def robots(request: web.Request) -> web.Response:
@@ -552,7 +533,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/sendlink/{token}", page)
     app.router.add_post("/sendlink/{token}/submit", submit)
     app.router.add_get("/sendlink/{token}/status", status)
-    app.router.add_post("/sendlink/{token}/pick", pick)
+    app.router.add_get("/sendlink/{token}/jobs", jobs)
 
 
 PAGE_HTML = r"""<!DOCTYPE html>
@@ -565,7 +546,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
 <style>
 *{box-sizing:border-box}
 body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-system,system-ui,Roboto,sans-serif;background:#0f1115;color:#e8e8e8;font-size:16px;line-height:1.5}
-.top{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:12px}
 .logo{width:44px;height:44px;border-radius:12px;background:#e8e8e8;color:#0f1115;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700}
 .top h1{font-size:20px;margin:0}
 .top .sub{font-size:13px;color:#9aa0a6}
@@ -576,21 +557,28 @@ body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-sys
 .card label{display:block;font-size:13px;letter-spacing:.08em;color:#9aa0a6;margin-bottom:8px}
 .urlrow{display:flex;gap:8px}
 .urlrow input{flex:1;min-width:0;height:52px;padding:0 14px;border:1px solid #3a3f4a;border-radius:12px;background:#0f1115;color:#e8e8e8;font-size:16px}
-.urlrow button{height:52px;padding:0 16px;border:1px solid #3a3f4a;border-radius:12px;background:#2a2e37;color:#e8e8e8;font-size:15px}
+.urlrow button{height:52px;padding:0 14px;border:1px solid #3a3f4a;border-radius:12px;background:#2a2e37;color:#e8e8e8;font-size:15px}
+.urlrow button.clear{padding:0 12px;color:#9aa0a6}
 .fetch{width:100%;margin-top:12px;min-height:52px;border:0;border-radius:12px;background:#2481cc;color:#fff;font-size:17px;font-weight:600}
 .fetch:disabled{opacity:.5}
-.fmt{margin-top:14px;display:none}
-.fmt .t{font-size:14px;color:#9aa0a6;margin-bottom:8px}
-.fmt .opts{display:flex;flex-wrap:wrap;gap:8px}
-.fmt button{padding:10px 14px;border:1px solid #3a3f4a;border-radius:999px;background:#0f1115;color:#e8e8e8;font-size:14px}
-.fmt button.sel{background:#2481cc;border-color:#2481cc;color:#fff}
-.upload{width:100%;margin-top:14px;min-height:52px;border:0;border-radius:12px;background:#2ea043;color:#fff;font-size:17px;font-weight:600;display:none}
-.upload:disabled{opacity:.5}
-.bar{height:10px;background:#2a2e37;border-radius:5px;margin-top:14px;overflow:hidden;display:none}
+.formmsg{font-size:14px;color:#ff7b7b;margin-top:10px;min-height:20px}
+.job{background:#1b1e24;border-radius:16px;padding:14px 16px;margin-top:12px}
+.job .title{font-size:15px;font-weight:600;word-break:break-all}
+.job .url{font-size:13px;color:#9aa0a6;word-break:break-all}
+.job .time{font-size:12px;color:#777;margin-top:2px}
+.steps{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.steps span{font-size:13px;padding:5px 10px;border-radius:999px;background:#2a2e37;color:#9aa0a6}
+.steps span.done{background:#123324;color:#7ee787}
+.steps span.active{background:#123a5c;color:#7db8ff}
+.steps span.failed{background:#3a1d1d;color:#ff7b7b}
+.steps span.wait{background:#2a2e37;color:#e8b93e}
+.bar{height:10px;background:#2a2e37;border-radius:5px;margin-top:10px;overflow:hidden}
 .bar i{display:block;height:100%;width:0;background:#6a9bff}
-.stage{font-size:14px;color:#9aa0a6;margin-top:10px;min-height:20px}
-.result{margin-top:14px;padding:12px;border-radius:12px;background:#123324;color:#7ee787;display:none}
-.result.err{background:#3a1d1d;color:#ff7b7b}
+.job .status{font-size:14px;margin-top:8px}
+.job .status.ok{color:#7ee787}
+.job .status.err{color:#ff7b7b}
+.job .status.muted{color:#9aa0a6}
+.empty{color:#777;font-size:14px;margin-top:16px;text-align:center}
 .explain{margin-top:24px;font-size:14px;color:#9aa0a6}
 .explain b{color:#e8e8e8}
 .explain li{margin-bottom:6px}
@@ -602,31 +590,30 @@ body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-sys
 <div class="badges"><span class="perm">Permanent page</span><span>Link-only access</span><span>Not indexed by Google</span></div>
 <div class="card">
 <label for="url">VIDEO / FILE URL</label>
-<div class="urlrow"><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false"><button id="paste" type="button">Paste</button></div>
+<div class="urlrow"><input id="url" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false"><button id="clear" type="button" class="clear" title="Clear">&#10005;</button><button id="paste" type="button">Paste</button></div>
 <button id="fetch" class="fetch" type="button">Fetch</button>
-<div id="fmt" class="fmt"><div class="t" id="fmttitle">Pick a quality:</div><div class="opts" id="opts"></div></div>
-<button id="upload" class="upload" type="button">Upload to Owner</button>
-<div id="bar" class="bar"><i id="barfill"></i></div>
-<div id="stage" class="stage"></div>
-<div id="result" class="result"></div>
+<div id="formmsg" class="formmsg"></div>
 </div>
+<div id="jobs"></div>
+<div id="empty" class="empty">No links yet — paste one above and hit Fetch.</div>
 <div class="explain">
 <b>How it works:</b>
 <ul>
-<li>Paste a link, pick a quality, hit Upload to Owner. Nothing downloads to your phone — the bot fetches the file and uploads it straight to the owner's Telegram PM.</li>
-<li>Best quality is pre-selected, so one tap on Upload is enough. Audio-only and Document are there when you want them.</li>
-<li>Direct links, YouTube and 1000+ video sites, Terabox (largest file in a share wins), and custom sites all work. Images too: direct image links, Instagram posts, Reddit and Imgur pages. Files over 2 GB are refused, same as in chat.</li>
+<li>Paste a link and hit Fetch — that's the only tap. The job card below walks through Probe, Check, Download, Upload, and the file lands in the owner's Telegram PM. Best quality, always.</li>
+<li>The box clears itself after each Fetch, so paste the next link straight away. Up to 5 jobs at once (2 downloading, the rest queue).</li>
+<li>Direct links, YouTube and 1000+ video sites, Terabox (largest file in a share wins), custom sites, and images too: direct image links, Instagram posts, Reddit and Imgur pages. Files over 2 GB are refused, same as in chat.</li>
+<li>Job history here deletes itself after 1 hour. The downloaded file itself is deleted much sooner — the moment it lands on Telegram.</li>
 <li>This page never expires and only people with the link can open it — treat the link like a password.</li>
 </ul>
 </div>
-<p class="foot">No cookies, nothing loaded from anywhere else, nothing logged about you. Server copy is deleted the moment the file lands on Telegram.</p>
+<p class="foot">No cookies, nothing loaded from anywhere else, nothing logged about you.</p>
 <script>
 const TOKEN = "__PAGE_TOKEN__";
 const $ = id => document.getElementById(id);
-const urlInput = $("url"), pasteBtn = $("paste"), fetchBtn = $("fetch");
-const fmtBox = $("fmt"), optsBox = $("opts"), uploadBtn = $("upload");
-const bar = $("bar"), barFill = $("barfill"), stageEl = $("stage"), resultEl = $("result");
-let jobId = null, choice = "best", timer = null, formats = [];
+const urlInput = $("url"), pasteBtn = $("paste"), clearBtn = $("clear"), fetchBtn = $("fetch");
+const formMsg = $("formmsg"), jobsEl = $("jobs"), emptyEl = $("empty");
+const STEPS = ["probing", "checking", "downloading", "uploading"];
+const LABELS = {probing: "Probe", checking: "Check", downloading: "Download", uploading: "Upload"};
 
 function fmt(n){
   if (!n) return "";
@@ -634,77 +621,112 @@ function fmt(n){
   if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
   return Math.round(n / 1024) + " KB";
 }
+function ago(ts){
+  if (!ts) return "";
+  const s = Math.max(0, Math.round(Date.now() / 1000) - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + " min ago";
+  return Math.floor(s / 3600) + " h ago";
+}
 async function api(path, opts){
   const r = await fetch("/sendlink/" + TOKEN + path, opts);
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
   return j;
 }
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-function setStage(t){ stageEl.textContent = t; }
-function showResult(text, ok){
-  resultEl.style.display = "block";
-  resultEl.className = "result" + (ok ? "" : " err");
-  resultEl.textContent = text;
+function stepState(job, step){
+  const order = {probing: 0, checking: 1, queued: 2, downloading: 2, uploading: 3, done: 4, failed: -1};
+  const cur = order[job.stage] === undefined ? 0 : order[job.stage];
+  const idx = STEPS.indexOf(step);
+  if (job.stage === "done") return "done";
+  if (job.stage === "failed"){
+    const failedIdx = order[job.failed_at] === undefined ? -1 : order[job.failed_at];
+    if (idx === failedIdx) return "failed";
+    return idx < failedIdx ? "done" : "";
+  }
+  if (job.stage === "queued"){
+    if (idx < 2) return "done";
+    if (idx === 2) return "wait";
+    return "";
+  }
+  if (idx < cur) return "done";
+  if (idx === cur) return "active";
+  return "";
 }
-function reset(){
-  jobId = null; choice = "best"; formats = [];
-  fmtBox.style.display = "none"; uploadBtn.style.display = "none";
-  bar.style.display = "none"; barFill.style.width = "0";
-  resultEl.style.display = "none"; setStage("");
-  fetchBtn.disabled = false; fetchBtn.textContent = "Fetch";
-  urlInput.disabled = false;
-}
-function renderFormats(){
-  optsBox.innerHTML = "";
-  formats.forEach(f => {
-    const b = document.createElement("button");
-    b.type = "button"; b.textContent = f.label;
-    if (f.id === choice) b.classList.add("sel");
-    b.onclick = () => { choice = f.id; renderFormats(); };
-    optsBox.appendChild(b);
-  });
-  fmtBox.style.display = "block";
-  uploadBtn.style.display = "block";
-  uploadBtn.disabled = false;
-}
-async function poll(){
-  if (!jobId) return;
-  try {
-    const j = await api("/status?job=" + encodeURIComponent(jobId));
-    if (j.title) $("fmttitle").textContent = "Pick a quality for: " + j.title.slice(0, 80);
-    if (j.stage === "awaiting_pick" && j.formats && j.formats.length){
-      formats = j.formats;
-      if (!formats.some(f => f.id === choice)) choice = "best";
-      renderFormats();
-      setStage("Fetched — pick a quality, then Upload to Owner.");
-    } else if (j.stage === "resolving"){
-      setStage("Contacting the site…");
-    } else if (j.stage === "downloading"){
-      bar.style.display = "block";
-      const pct = j.total ? Math.round(j.done / j.total * 100) : 0;
-      barFill.style.width = pct + "%";
-      setStage("Downloading… " + pct + "% · " + fmt(j.done) + (j.total ? " / " + fmt(j.total) : ""));
-    } else if (j.stage === "uploading"){
-      bar.style.display = "block"; barFill.style.width = "100%";
-      setStage("Uploading to the owner's Telegram…");
-    } else if (j.stage === "done"){
-      clearInterval(timer); timer = null;
-      bar.style.display = "block"; barFill.style.width = "100%";
-      setStage("");
-      const r = j.result || {};
-      showResult("Sent to the owner's Telegram: " + (r.name || j.title) + (r.size ? " (" + fmt(r.size) + ")" : "") + (r.count > 1 ? " — " + r.count + " files" : ""), true);
-      fetchBtn.disabled = false; fetchBtn.textContent = "Send another link";
-      fetchBtn.onclick = () => { reset(); urlInput.value = ""; urlInput.focus(); };
-    } else if (j.stage === "failed"){
-      clearInterval(timer); timer = null;
-      setStage("");
-      showResult("Failed: " + (j.error || "unknown error"), false);
-      fetchBtn.disabled = false; fetchBtn.textContent = "Try again";
-      fetchBtn.onclick = () => reset();
+function renderJobs(list){
+  jobsEl.innerHTML = "";
+  emptyEl.style.display = list.length ? "none" : "block";
+  list.forEach(job => {
+    const card = document.createElement("div");
+    card.className = "job";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = job.title || job.url;
+    card.appendChild(title);
+    if (job.title && job.url){
+      const u = document.createElement("div");
+      u.className = "url";
+      u.textContent = job.url.length > 100 ? job.url.slice(0, 100) + "…" : job.url;
+      card.appendChild(u);
     }
+    const t = document.createElement("div");
+    t.className = "time";
+    t.textContent = ago(job.created);
+    card.appendChild(t);
+    const steps = document.createElement("div");
+    steps.className = "steps";
+    STEPS.forEach(step => {
+      const chip = document.createElement("span");
+      const st = stepState(job, step);
+      if (st) chip.className = st;
+      chip.textContent = (st === "done" ? "✓ " : st === "failed" ? "✗ " : "") + LABELS[step] + (st === "wait" ? " — waiting…" : st === "active" ? "…" : "");
+      steps.appendChild(chip);
+    });
+    card.appendChild(steps);
+    if (job.stage === "downloading" && job.total){
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      const fill = document.createElement("i");
+      fill.style.width = Math.round(job.done / job.total * 100) + "%";
+      bar.appendChild(fill);
+      card.appendChild(bar);
+    }
+    const status = document.createElement("div");
+    status.className = "status";
+    if (job.stage === "done"){
+      status.classList.add("ok");
+      const r = job.result || {};
+      status.textContent = "Sent to the owner's Telegram: " + (r.name || job.title) + (r.size ? " (" + fmt(r.size) + ")" : "") + (r.count > 1 ? " — " + r.count + " files" : "");
+    } else if (job.stage === "failed"){
+      status.classList.add("err");
+      const where = job.failed_at === "uploading" ? "Telegram upload failed" : "Link failed";
+      status.textContent = where + ": " + (job.error || "unknown error");
+    } else if (job.stage === "queued"){
+      status.classList.add("muted");
+      status.textContent = "Waiting for a free slot…";
+    } else if (job.stage === "downloading"){
+      status.classList.add("muted");
+      status.textContent = "Downloading… " + (job.total ? Math.round(job.done / job.total * 100) + "% · " + fmt(job.done) + " / " + fmt(job.total) : fmt(job.done));
+    } else if (job.stage === "uploading"){
+      status.classList.add("muted");
+      status.textContent = "Uploading to the owner's Telegram…";
+    } else if (job.stage === "checking"){
+      status.classList.add("muted");
+      status.textContent = "Checking size and bandwidth…";
+    } else {
+      status.classList.add("muted");
+      status.textContent = "Probing the link…";
+    }
+    card.appendChild(status);
+    jobsEl.appendChild(card);
+  });
+}
+async function refresh(){
+  try {
+    const r = await api("/jobs");
+    renderJobs(r.jobs || []);
   } catch (e) {
-    setStage("Lost contact with the server — retrying… (" + e.message + ")");
+    /* keep the old list on a blip; next poll retries */
   }
 }
 pasteBtn.onclick = async () => {
@@ -714,38 +736,27 @@ pasteBtn.onclick = async () => {
   } catch (e) { /* clipboard blocked — fall through */ }
   urlInput.focus(); urlInput.select();
 };
+clearBtn.onclick = () => { urlInput.value = ""; formMsg.textContent = ""; urlInput.focus(); };
 fetchBtn.onclick = async () => {
   const url = urlInput.value.trim();
-  if (!url){ setStage("Paste a link first."); return; }
+  if (!url){ formMsg.textContent = "Paste a link first."; return; }
   fetchBtn.disabled = true; fetchBtn.textContent = "Fetching…";
-  urlInput.disabled = true; resultEl.style.display = "none";
-  setStage("Contacting the site…");
+  formMsg.textContent = "";
   try {
-    const r = await api("/submit", {method: "POST",
+    await api("/submit", {method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({url: url})});
-    jobId = r.job;
-    timer = setInterval(poll, 2000);
-    poll();
+    urlInput.value = "";
+    urlInput.focus();
+    refresh();
   } catch (e) {
-    showResult("Failed: " + e.message, false);
+    formMsg.textContent = e.message;
+  } finally {
     fetchBtn.disabled = false; fetchBtn.textContent = "Fetch";
-    urlInput.disabled = false;
   }
 };
-uploadBtn.onclick = async () => {
-  if (!jobId) return;
-  uploadBtn.disabled = true;
-  setStage("Starting the upload…");
-  try {
-    await api("/pick", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({job: jobId, choice: choice})});
-  } catch (e) {
-    showResult("Failed: " + e.message, false);
-    uploadBtn.disabled = false;
-  }
-};
+refresh();
+setInterval(refresh, 2000);
 </script>
 </body>
 </html>

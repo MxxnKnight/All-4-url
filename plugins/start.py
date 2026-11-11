@@ -50,10 +50,12 @@ gives you back here — I'll push it to Telegram straight from the
 server disk, no re-download, then delete the server copy. No
 matter which sudo uploads, the file lands in the admin's bot PM.
 **Link upload page**: `/sendlink` gives you a permanent, unlisted
-page instead — paste a link there, pick a quality, and I'll
-download it and upload it to the admin's bot PM. Same download
-logic as pasting a link here, images included; the link never
-expires, so treat it like a password.
+page instead — paste a link there and hit Fetch, one tap, and
+I'll download it at best quality and upload it to the admin's
+bot PM. The job card below shows Probe, Check, Download,
+Upload; up to 5 jobs at once, history deletes itself after an
+hour. Same download logic as pasting a link here, images
+included; the link never expires, so treat it like a password.
 **Convert**: reply to a video/document with `/convert` to
 re-send it as the other type (video ↔ document, same file, no
 re-upload). Files sent to me also get a menu with links,
