@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.28.2** (2026-11-12).
+- **Current version: v1.28.3** (2026-11-13).
 
 ## How moon works — the contract
 
@@ -265,8 +265,15 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-12) — v1.28.2
+## Current status (2026-11-13) — v1.28.3
 
+- v1.28.3 adds live speed + ETA to the `/sendlink` job cards, both steps:
+  download shows average MB/s since the step started and time left, upload
+  shows the same via a new cumulative `progress_cb` on `sender.send_files`
+  (optional, backward-compatible; media groups have no live hook, so photo
+  sets report each finished group). The done card shows how long the job
+  took. Speeds appear only after 1 s of data, so the card never shows a
+  wild first-half-second number.
 - v1.28.2 fixes a bug found in review of freebuff's branch: GET download
   gates sent their fields as a request body (which servers ignore) instead
   of the query string — a GET gate could never open. `player_scan.request`

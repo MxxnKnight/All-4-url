@@ -24,6 +24,11 @@ below and works through Probe -> Check -> Download -> Upload,
 then lands in the owner's bot PM. No quality picker, no second
 button: best quality, always. The textbox clears the moment a
 job is accepted, so the next link can be pasted straight away.
+Download and upload show live speed (average since the step
+started) and time left; the done card shows how long the job
+took. Upload progress comes from sender.send_files' cumulative
+progress callback — media groups have no live hook, so photo
+sets only report each finished group.
 At most 5 jobs at once per page link (2 really downloading —
 the bot's JOB_SEMAPHORE — the rest queue); a 6th submit is
 refused plainly until one finishes. Job cards are the history:
@@ -162,6 +167,8 @@ def _new_job(url: str, uid: int | None, token_r: str | None) -> dict:
     _JOBS[job_id] = {
         "id": job_id, "url": url, "uid": uid, "token_r": token_r,
         "stage": "probing", "title": "", "done": 0, "total": 0,
+        "up_done": 0, "up_total": 0,
+        "dl_started": None, "up_started": None, "finished": None,
         "result": None, "error": None, "failed_at": None,
         "created": int(time.time()),
         "resolved": None,
@@ -176,12 +183,51 @@ def _prune() -> None:
             _JOBS.pop(job_id, None)
 
 
+def _speed(done: int, started) -> float | None:
+    """Average bytes/second since a stage started — None until there
+    is at least a second of data, so the card never shows a wild
+    number from the first half-second."""
+    if not started or not done:
+        return None
+    elapsed = time.time() - started
+    if elapsed < 1:
+        return None
+    return done / elapsed
+
+
+def _eta(done: int, total: int, speed) -> float | None:
+    """Seconds left at the current average speed — None when the
+    total size is unknown or the job is already done."""
+    if not speed or not total or done >= total:
+        return None
+    return (total - done) / speed
+
+
 def _public(job: dict) -> dict:
     """What the page is allowed to see — no internal state, no uid.
-    The url is shown back to the same link-holder who pasted it."""
+    The url is shown back to the same link-holder who pasted it.
+    Speeds are averages since each stage started; ETAs are the
+    remaining bytes at that average speed."""
+    dl_speed = _speed(job.get("done") or 0, job.get("dl_started"))
+    up_speed = _speed(job.get("up_done") or 0, job.get("up_started"))
+    duration = None
+    if job.get("finished") and job.get("created"):
+        duration = int(job["finished"] - job["created"])
     return {"id": job["id"], "url": job.get("url") or "",
             "stage": job["stage"], "title": job.get("title") or "",
             "done": job.get("done") or 0, "total": job.get("total") or 0,
+            "up_done": job.get("up_done") or 0,
+            "up_total": job.get("up_total") or 0,
+            "dl_speed": dl_speed,
+            "dl_eta": _eta(job.get("done") or 0, job.get("total") or 0,
+                           dl_speed),
+            "up_speed": up_speed,
+            "up_eta": _eta(job.get("up_done") or 0,
+                           job.get("up_total") or 0, up_speed),
+            "up_elapsed": (int(time.time() - job["up_started"])
+                           if job.get("up_started")
+                           and job["stage"] == "uploading" else None),
+            "duration": duration,
             "result": job.get("result"),
             "error": job.get("error"), "failed_at": job.get("failed_at"),
             "created": job.get("created") or 0}
@@ -329,9 +375,11 @@ async def _download_resolved(resolved: dict, job_dir: str,
 
 
 async def _send_to_owner(paths: list[str], title: str,
-                         uid: int | None) -> None:
+                         uid: int | None, progress_cb=None) -> None:
     """Deliver finished files to the owner's bot PM, bypassing
-    /destination — same rule as upage admin delivery."""
+    /destination — same rule as upage admin delivery. `progress_cb`
+    gets (sent_so_far, total) across all files, for the page's
+    upload speed + ETA."""
     if _bot is None:
         raise RuntimeError("bot is not ready yet — try again in a moment")
     if uid and int(uid) != int(config.OWNER_ID):
@@ -349,7 +397,7 @@ async def _send_to_owner(paths: list[str], title: str,
             pass
     from core.sender import send_files
     sent = await send_files(_bot, config.OWNER_ID, paths,
-                            caption=title[:200])
+                            caption=title[:200], progress_cb=progress_cb)
     if not sent:
         raise RuntimeError("Telegram returned nothing for the file")
 
@@ -398,6 +446,7 @@ async def _run_job(job_id: str) -> None:
         await JOB_SEMAPHORE.acquire()
         try:
             job["stage"] = "downloading"
+            job["dl_started"] = time.time()
             job_dir = make_job_dir()
             try:
                 paths = await _download_resolved(resolved, job_dir,
@@ -406,7 +455,17 @@ async def _run_job(job_id: str) -> None:
                 # copy is deleted (cleanup_dir, in the finally).
                 job["stage"] = "uploading"
                 job["done"] = job["total"]
-                await _send_to_owner(paths, job["title"], uid)
+                job["up_started"] = time.time()
+                job["up_total"] = sum(
+                    os.path.getsize(p) for p in paths
+                    if os.path.exists(p))
+
+                async def up_progress(done, total):
+                    job["up_done"] = done
+                    job["up_total"] = total or job["up_total"]
+
+                await _send_to_owner(paths, job["title"], uid,
+                                     progress_cb=up_progress)
                 total_bytes = sum(
                     os.path.getsize(p) for p in paths
                     if os.path.exists(p))
@@ -415,6 +474,7 @@ async def _run_job(job_id: str) -> None:
                     "size": total_bytes,
                     "count": len(paths)}
                 job["stage"] = "done"
+                job["finished"] = time.time()
                 stats.record_job("sendlink", ok=True)
             finally:
                 cleanup_dir(job_dir)
@@ -599,7 +659,7 @@ body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-sys
 <div class="explain">
 <b>How it works:</b>
 <ul>
-<li>Paste a link and hit Fetch — that's the only tap. The job card below walks through Probe, Check, Download, Upload, and the file lands in the owner's Telegram PM. Best quality, always.</li>
+<li>Paste a link and hit Fetch — that's the only tap. The job card below walks through Probe, Check, Download, Upload, and the file lands in the owner's Telegram PM. Best quality, always. Download and upload show live speed and time left.</li>
 <li>The box clears itself after each Fetch, so paste the next link straight away. Up to 5 jobs at once (2 downloading, the rest queue).</li>
 <li>Direct links, YouTube and 1000+ video sites, Terabox (largest file in a share wins), custom sites, and images too: direct image links, Instagram posts, Reddit and Imgur pages. Files over 2 GB are refused, same as in chat.</li>
 <li>Job history here deletes itself after 1 hour. The downloaded file itself is deleted much sooner — the moment it lands on Telegram.</li>
@@ -620,6 +680,19 @@ function fmt(n){
   if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
   if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
   return Math.round(n / 1024) + " KB";
+}
+function fmtSpeed(bps){
+  if (!bps) return "";
+  if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+  if (bps >= 1024) return Math.round(bps / 1024) + " KB/s";
+  return Math.round(bps) + " B/s";
+}
+function fmtEta(sec){
+  if (sec === null || sec === undefined) return "";
+  sec = Math.round(sec);
+  if (sec < 60) return sec + "s";
+  if (sec < 3600) return Math.floor(sec / 60) + "m " + String(sec % 60).padStart(2, "0") + "s";
+  return Math.floor(sec / 3600) + "h " + String(Math.floor(sec / 60) % 60).padStart(2, "0") + "m";
 }
 function ago(ts){
   if (!ts) return "";
@@ -683,11 +756,13 @@ function renderJobs(list){
       steps.appendChild(chip);
     });
     card.appendChild(steps);
-    if (job.stage === "downloading" && job.total){
+    const barStage = job.stage === "downloading" ? {done: job.done, total: job.total}
+      : job.stage === "uploading" ? {done: job.up_done, total: job.up_total} : null;
+    if (barStage && barStage.total){
       const bar = document.createElement("div");
       bar.className = "bar";
       const fill = document.createElement("i");
-      fill.style.width = Math.round(job.done / job.total * 100) + "%";
+      fill.style.width = Math.round(barStage.done / barStage.total * 100) + "%";
       bar.appendChild(fill);
       card.appendChild(bar);
     }
@@ -696,7 +771,7 @@ function renderJobs(list){
     if (job.stage === "done"){
       status.classList.add("ok");
       const r = job.result || {};
-      status.textContent = "Sent to the owner's Telegram: " + (r.name || job.title) + (r.size ? " (" + fmt(r.size) + ")" : "") + (r.count > 1 ? " — " + r.count + " files" : "");
+      status.textContent = "Sent to the owner's Telegram: " + (r.name || job.title) + (r.size ? " (" + fmt(r.size) + ")" : "") + (r.count > 1 ? " — " + r.count + " files" : "") + (job.duration ? " · took " + fmtEta(job.duration) : "");
     } else if (job.stage === "failed"){
       status.classList.add("err");
       const where = job.failed_at === "uploading" ? "Telegram upload failed" : "Link failed";
@@ -706,10 +781,21 @@ function renderJobs(list){
       status.textContent = "Waiting for a free slot…";
     } else if (job.stage === "downloading"){
       status.classList.add("muted");
-      status.textContent = "Downloading… " + (job.total ? Math.round(job.done / job.total * 100) + "% · " + fmt(job.done) + " / " + fmt(job.total) : fmt(job.done));
+      let t = "Downloading… " + (job.total ? Math.round(job.done / job.total * 100) + "% · " + fmt(job.done) + " / " + fmt(job.total) : fmt(job.done));
+      if (job.dl_speed) t += " · " + fmtSpeed(job.dl_speed);
+      if (job.dl_eta !== null && job.dl_eta !== undefined) t += " · ~" + fmtEta(job.dl_eta) + " left";
+      status.textContent = t;
     } else if (job.stage === "uploading"){
       status.classList.add("muted");
-      status.textContent = "Uploading to the owner's Telegram…";
+      let t = "Uploading to the owner's Telegram…";
+      if (job.up_total){
+        t = "Uploading… " + Math.round(job.up_done / job.up_total * 100) + "% · " + fmt(job.up_done) + " / " + fmt(job.up_total);
+        if (job.up_speed) t += " · " + fmtSpeed(job.up_speed);
+        if (job.up_eta !== null && job.up_eta !== undefined) t += " · ~" + fmtEta(job.up_eta) + " left";
+      } else if (job.up_elapsed){
+        t += " " + fmtEta(job.up_elapsed);
+      }
+      status.textContent = t;
     } else if (job.stage === "checking"){
       status.classList.add("muted");
       status.textContent = "Checking size and bandwidth…";

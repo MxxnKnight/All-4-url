@@ -63,10 +63,13 @@ def _progress_callback(editor: ThrottledEditor, action: str):
 
 
 async def send_file(client, chat_id: int, path: str, caption: str = "",
-                    status_msg=None):
+                    status_msg=None, progress_cb=None):
     """Send one local file as video / photo / audio / document.
 
-    Returns the sent Message (or None if the client returned nothing)."""
+    Returns the sent Message (or None if the client returned nothing).
+    `progress_cb`, when given, is awaited with (current, total) bytes
+    as Telegram reports them — in addition to the status-message
+    editor, not instead of it."""
     kind = guess_kind(path)
     meta: dict = {}
     if kind == "document":
@@ -77,7 +80,17 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
         if meta.get("duration") or meta.get("width"):
             kind = "video"
     editor = ThrottledEditor(status_msg) if status_msg is not None else None
-    progress = _progress_callback(editor, "Uploading…") if editor else None
+    callbacks = []
+    if editor is not None:
+        callbacks.append(_progress_callback(editor, "Uploading…"))
+    if progress_cb is not None:
+        callbacks.append(progress_cb)
+
+    async def progress(current: int, total: int):
+        for cb in callbacks:
+            await cb(current, total)
+
+    progress = progress if callbacks else None
 
     sent = None
     if kind == "video":
@@ -127,7 +140,8 @@ async def _attach_mediainfo_button(sent) -> None:
 
 
 async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
-                     status_msg=None, mediainfo_button: bool = False) -> list:
+                     status_msg=None, mediainfo_button: bool = False,
+                     progress_cb=None) -> list:
     """Send a job's resulting files; returns the sent Messages.
 
     Photo sets (carousels, gallery dumps) go out as media groups of up to
@@ -136,12 +150,37 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     With mediainfo_button=True and exactly one resulting message, a
     📊 MediaInfo callback button is attached under it.
+
+    `progress_cb`, when given, is awaited with (sent_so_far, total)
+    across ALL files — cumulative, so a caller can show one bar and one
+    speed for the whole upload. Media groups report no live progress
+    (Telegram's API has no progress hook for them), so the callback
+    fires once per finished group instead of streaming.
     """
     sent_all: list = []
     if not paths:
         return sent_all
+
+    total_all = 0
+    sizes: dict[str, int] = {}
+    if progress_cb is not None:
+        for path in paths:
+            try:
+                sizes[path] = os.path.getsize(path)
+            except OSError:
+                sizes[path] = 0
+        total_all = sum(sizes.values())
+    sent_bytes = 0
+
+    def _per_file(base: int):
+        async def cb(current: int, total: int):
+            await progress_cb(base + current, total_all)
+        return cb
+
     if len(paths) == 1:
-        sent = await send_file(client, chat_id, paths[0], caption, status_msg)
+        sent = await send_file(client, chat_id, paths[0], caption, status_msg,
+                               progress_cb=_per_file(0)
+                               if progress_cb is not None else None)
         if sent is not None:
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
@@ -157,7 +196,9 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         chunk = photos[i:i + 10]
         if len(chunk) == 1:
             sent = await send_file(client, chat_id, chunk[0],
-                                   caption if first else "", status_msg)
+                                   caption if first else "", status_msg,
+                                   progress_cb=_per_file(sent_bytes)
+                                   if progress_cb is not None else None)
             if sent is not None:
                 sent_all.append(sent)
         else:
@@ -168,14 +209,25 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             group = await client.send_media_group(chat_id, media)
             if group:
                 sent_all.extend(group)
+            # No live progress for a media group — report it as done
+            # in one jump once the group is sent.
+            if progress_cb is not None:
+                sent_bytes += sum(sizes.get(p, 0) for p in chunk)
+                await progress_cb(sent_bytes, total_all)
+        if progress_cb is not None and len(chunk) == 1:
+            sent_bytes += sizes.get(chunk[0], 0)
         first = False
         await asyncio.sleep(1)
 
     for path in others:
         sent = await send_file(client, chat_id, path,
-                               caption if first else "", status_msg)
+                               caption if first else "", status_msg,
+                               progress_cb=_per_file(sent_bytes)
+                               if progress_cb is not None else None)
         if sent is not None:
             sent_all.append(sent)
+        if progress_cb is not None:
+            sent_bytes += sizes.get(path, 0)
         first = False
         await asyncio.sleep(1)
 
