@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.28.3** (2026-11-13).
+- **Current version: v1.28.4** (2026-11-13).
 
 ## How moon works — the contract
 
@@ -265,8 +265,24 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-13) — v1.28.3
+## Current status (2026-11-13) — v1.28.4
 
+- v1.28.4 fixes the gate walker against a REAL UpFiles link (anonymous
+  upload https://upfiles.com/oe1RxuAu, sample.mp4): (1) `gate_form` scored
+  forms on gate fields alone, so the locale-switcher form tied with the
+  free-download form (both only carry `_token`) and won as first in the
+  HTML — the walker would have submitted it and looped. It now scores
+  download signals (form id, download field names like `download_type`,
+  button text, posting back to the same page). (2) The free-download
+  form leads to a Cloudflare Turnstile captcha, which a browser-free
+  walker can never pass — the walk now detects captcha markers
+  (Turnstile / reCAPTCHA / hCaptcha) and fails fast with an honest
+  "needs a captcha, download it in your browser" error instead of
+  looping to the step limit. UpFiles free downloads are NOT bypassable
+  by the bot; the captcha is a hard wall. Verified by replaying the
+  real saved pages through the walker locally (sandbox aiohttp cannot
+  reach the live site — SSL interception — so the real HTML was
+  fetched with curl and replayed).
 - v1.28.3 adds live speed + ETA to the `/sendlink` job cards, both steps:
   download shows average MB/s since the step started and time left, upload
   shows the same via a new cumulative `progress_cb` on `sender.send_files`

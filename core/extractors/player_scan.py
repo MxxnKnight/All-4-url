@@ -409,12 +409,16 @@ _GATE_FIELDS = {
     "op", "id", "rand", "referer", "method_free", "method_premium",
     "submitted", "k", "d", "sess_id", "utype", "token", "_token", "csrf",
     "csrf_token", "_csrf", "step", "file_code", "filecode", "down_direct",
-    "download", "submit", "hash", "nonce", "auth", "src",
+    "download", "download_type", "submit", "hash", "nonce", "auth", "src",
 }
 
 
 def forms(page: str) -> list[dict]:
-    """Every <form> as {action, method, fields{name: value}}."""
+    """Every <form> as {action, method, fields{name: value}, id, text}.
+
+    `id` is the form's id attribute and `text` its visible text
+    (tags stripped, lowercased) — gate_form uses both to tell the
+    download form apart from unrelated forms on the same page."""
     out = []
     for raw_attrs, inner in _FORM_RE.findall(page or ""):
         attributes = attrs(raw_attrs)
@@ -427,16 +431,31 @@ def forms(page: str) -> list[dict]:
             # Submit inputs are kept: file hosts carry the button's value
             # as data (XFileSharing's method_free=Free Download).
             fields[name] = field.get("value", "")
+        text = re.sub(r"<[^>]+>", " ", inner or "")
+        text = re.sub(r"\s+", " ", html_lib.unescape(text)).strip().lower()
         out.append({
             "action": attributes.get("action", ""),
             "method": (attributes.get("method") or "get").lower(),
             "fields": fields,
+            "id": (attributes.get("id") or "").lower(),
+            "text": text,
         })
     return out
 
 
 def gate_form(page: str, base_url: str) -> dict | None:
-    """The download-gate form on a page, if it has one."""
+    """The download-gate form on a page, if it has one.
+
+    A page often carries several POST forms that all share one gate
+    field (a Laravel page's locale switcher and its download form
+    both carry only _token) — scoring on gate fields alone ties,
+    and the first form in the HTML wins the tie even when it is not
+    the download form (proven on a real UpFiles page, 2026-11-13:
+    the walker picked the locale form and would have looped on it).
+    So download signals break the tie: a download id, a download
+    field name, a download button label, and posting back to the
+    page itself, which is what download gates do.
+    """
     best = None
     for form in forms(page):
         names = {name.lower() for name in form["fields"]}
@@ -446,6 +465,14 @@ def gate_form(page: str, base_url: str) -> dict | None:
         form["action"] = action
         # Prefer POST gates: that is what file hosts use.
         score = len(names & _GATE_FIELDS) + (2 if form["method"] == "post" else 0)
+        if "download" in form["id"]:
+            score += 3
+        if any("download" in name for name in names):
+            score += 3
+        if "download" in form["text"]:
+            score += 2
+        if action.rstrip("/") == base_url.rstrip("/"):
+            score += 2
         if best is None or score > best[0]:
             best = (score, form)
     return best[1] if best else None

@@ -201,6 +201,22 @@ async def _walk(url: str, *, images: bool = False) -> dict:
                 result["approx_size"] = await _size_of(media, page_url)
                 return result
 
+            # A captcha is a hard wall for a browser-free walker —
+            # Turnstile / reCAPTCHA / hCaptcha all need JavaScript in
+            # a real browser, which this host can never run. Fail
+            # honestly here instead of submitting forms at it and
+            # looping until the step limit (proven on a real UpFiles
+            # page, 2026-11-13: the free-download form leads to a
+            # Cloudflare Turnstile).
+            low = page.lower()
+            if ("cf-turnstile" in low or "g-recaptcha" in low
+                    or "h-captcha" in low):
+                raise HostError(
+                    f"{profile['name']}: this link needs a captcha "
+                    f"check before the download — the bot can't do "
+                    f"those, so download it in your browser and send "
+                    f"the file to the bot")
+
             form = gate_form(page, page_url)
             if form:
                 final, body, status = await _submit(session, form, page_url)
