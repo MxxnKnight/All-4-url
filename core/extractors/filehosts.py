@@ -43,8 +43,8 @@ import aiohttp
 
 from core.extractors.direct import (BROWSER_UA, download_file, safe_filename)
 from core.extractors.player_scan import (HostError, download_links, find_media,
-                                         gate_form, media_kind, next_page,
-                                         page_title, request)
+                                         gate_form, iframe_srcs, media_kind,
+                                         next_page, page_title, request)
 
 #: Host -> what the walker should know about it.
 HOSTS = {
@@ -129,7 +129,7 @@ def _jar_cookies(jar) -> dict:
 
 
 def _result(media_url: str, page: str, page_url: str, jar, profile: dict) -> dict:
-    is_playlist = media_url.lower().split("?")[0].endswith(".m3u8")
+    is_playlist = media_url.lower().split("?")[0].endswith((".m3u8", ".mpd"))
     return {
         "title": page_title(page) or f"{profile['name']} file",
         "media_url": media_url,
@@ -216,6 +216,26 @@ async def _walk(url: str, *, images: bool = False) -> dict:
                     f"check before the download — the bot can't do "
                     f"those, so download it in your browser and send "
                     f"the file to the bot")
+
+            # The player is often a separate document: the page holds
+            # an <iframe> and the video link lives inside the framed
+            # page. Open the promising frames (at most 3) and scan
+            # each one before falling through to the gate form.
+            for src in iframe_srcs(page, page_url):
+                try:
+                    _final, iframe_page, _status = await request(
+                        session, src, headers={"Referer": page_url})
+                except HostError:
+                    continue
+                if _status >= 400:
+                    continue
+                media = find_media(
+                    iframe_page, src,
+                    images=images or profile.get("images", False))
+                if media:
+                    result = _result(media, page, page_url, jar, profile)
+                    result["approx_size"] = await _size_of(media, page_url)
+                    return result
 
             form = gate_form(page, page_url)
             if form:

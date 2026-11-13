@@ -16,9 +16,12 @@ never run code inside the bot.
 """
 
 import asyncio
+import base64
+import binascii
 import html as html_lib
+import json
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import aiohttp
 
@@ -327,11 +330,19 @@ _IMAGE_PATTERNS = (
 )
 
 
-def _plausible(found: str) -> bool:
+def _plausible(found: str, *, images: bool = False) -> bool:
     low = found.lower()
     if not found or low.startswith(("data:", "blob:", "javascript:")):
         return False
-    if any(hint in low for hint in _SKIP_HINTS):
+    if images:
+        # When the image itself is the prize, "poster"/"thumb" hints
+        # must not disqualify it — only ads and code files are skipped.
+        hints = ("jwplayer", "player.js", "hls.js", "hls.min",
+                 "doubleclick", "googlesyndication", "adsystem",
+                 "banner", "pixel", ".css", ".js", ".woff")
+    else:
+        hints = _SKIP_HINTS
+    if any(hint in low for hint in hints):
         return False
     return True
 
@@ -349,7 +360,7 @@ def scan_media(text: str, base_url: str, *, images: bool = False) -> str | None:
         for pattern in _IMAGE_PATTERNS:
             for match in re.finditer(pattern, text, re.I):
                 found = normalise_url(match.group(1), base_url)
-                if _plausible(found):
+                if _plausible(found, images=True):
                     return found
     return None
 
@@ -361,9 +372,28 @@ def find_media(page: str, base_url: str, *, images: bool = False) -> str | None:
         return found
     # Client-rendered apps (Next.js, Vue) ship the same JSON with escaped
     # quotes/slashes: \"url\":\"https:\/\/host\/video.mp4\". Scan that too.
+    unescaped = None
     if '\\"' in page or "\\/" in page:
         unescaped = page.replace('\\"', '"').replace("\\/", "/")
         found = scan_media(unescaped, base_url, images=images)
+        if found:
+            return found
+    found = scan_json_media(page, base_url, images=images)
+    if found:
+        return found
+    if unescaped:
+        found = scan_json_media(unescaped, base_url, images=images)
+        if found:
+            return found
+    # srcdoc iframes carry the player document inline — scan it directly.
+    for doc in re.findall(r'<iframe[^>]+srcdoc=(["\'])(.*?)\1',
+                          page or "", re.S | re.I):
+        doc = html_lib.unescape(doc[1])
+        if "<" not in doc:
+            continue
+        found = scan_media(doc, base_url, images=images)
+        if not found:
+            found = scan_json_media(doc, base_url, images=images)
         if found:
             return found
     for body in scripts(page):
@@ -373,6 +403,205 @@ def find_media(page: str, base_url: str, *, images: bool = False) -> str | None:
             if found:
                 return found
     return None
+
+
+# ------------------------------------------------- JSON config scanning
+# Ghost/CatCatch's idea, done statically: players bury their stream URL
+# in a JSON config ({"sources": [{"file": "..."}]}) where a flat regex
+# can miss it — the URL may have no media extension at all (tokenised
+# stream links), with only the key name saying what it is.
+
+#: Keys whose value is the media itself, even with no file extension.
+_MEDIA_KEYS = (
+    "file", "source", "hls", "m3u8", "mp4", "stream", "playbackurl",
+    "videourl", "streamurl", "downloadurl", "contenturl",
+)
+
+#: Same idea as a flat regex, for configs that are not valid JSON
+#: (JS object literals with trailing commas, single quotes, ...).
+_KEY_HINT_RE = re.compile(
+    r"""["']?(file|source|hls|m3u8|mp4|stream|playbackUrl|videoUrl|streamUrl|downloadUrl|contentUrl)["']?\s*:\s*["'](https?://[^"'\s<>\\]+)["']""",
+    re.I)
+
+_JSON_SCRIPT_RE = re.compile(
+    r'<script[^>]+type=["\']application/(?:ld\+)?json["\'][^>]*>(.*?)</script>',
+    re.S | re.I)
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+
+
+def _json_media_walk(node, base_url: str, *, images: bool = False,
+                     depth: int = 0, budget: list | None = None) -> str | None:
+    """Walk a parsed JSON value looking for a media URL.
+
+    A string value counts when its path ends with a media extension, or
+    when its key names it as media (a tokenised stream link has no
+    extension to match on). `budget` caps the nodes visited so a huge
+    config cannot burn CPU on the free tier.
+    """
+    if budget is None:
+        budget = [2000]
+    if budget[0] <= 0 or depth > 8:
+        return None
+    budget[0] -= 1
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str) and value.startswith(
+                    ("http://", "https://", "//")):
+                url = normalise_url(value, base_url)
+                path = urlparse(url).path.lower()
+                if _plausible(url):
+                    if any(path.endswith(ext)
+                           for ext in MEDIA_EXTS + (".mpd",)):
+                        return url
+                    if str(key).lower() in _MEDIA_KEYS:
+                        return url
+                if (images and _plausible(url, images=True)
+                        and any(path.endswith(ext) for ext in _IMAGE_EXTS)):
+                    return url
+            elif isinstance(value, (dict, list)):
+                found = _json_media_walk(value, base_url, images=images,
+                                         depth=depth + 1, budget=budget)
+                if found:
+                    return found
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, (dict, list)):
+                found = _json_media_walk(item, base_url, images=images,
+                                         depth=depth + 1, budget=budget)
+                if found:
+                    return found
+            elif isinstance(item, str) and item.startswith(
+                    ("http://", "https://", "//")):
+                url = normalise_url(item, base_url)
+                path = urlparse(url).path.lower()
+                if (_plausible(url) and any(
+                        path.endswith(ext) for ext in MEDIA_EXTS + (".mpd",))):
+                    return url
+                if (images and _plausible(url, images=True) and any(
+                        path.endswith(ext) for ext in _IMAGE_EXTS)):
+                    return url
+    return None
+
+
+def scan_json_media(page: str, base_url: str, *,
+                    images: bool = False) -> str | None:
+    """Media URL buried in the page's JSON configs, or None."""
+    if not page:
+        return None
+    for body in _JSON_SCRIPT_RE.findall(page):
+        try:
+            data = json.loads(html_lib.unescape(body.strip()))
+        except (ValueError, TypeError):
+            continue
+        found = _json_media_walk(data, base_url, images=images)
+        if found:
+            return found
+    for match in _KEY_HINT_RE.finditer(page):
+        url = normalise_url(match.group(2), base_url)
+        if _plausible(url):
+            return url
+    return None
+
+
+# ------------------------------------------------- data: playlist URIs
+# Some players embed the whole HLS playlist as a data: URI instead of
+# a link (Ghost decodes these in the browser). The bot can decode the
+# same text and hand it to ffmpeg — no browser needed.
+
+_DATA_URI_RE = re.compile(r"data:([^,;]+)(;base64)?,([A-Za-z0-9+/=_%\-.]+)",
+                          re.I)
+
+
+def extract_data_playlist(page: str) -> str | None:
+    """Decoded ``#EXTM3U`` text from a data: playlist URI, or None."""
+    if not page or "data:" not in page:
+        return None
+    for mime, b64, payload in _DATA_URI_RE.findall(page):
+        if "mpegurl" not in mime.lower():
+            continue
+        if len(payload) > 200_000:
+            continue
+        try:
+            if b64:
+                raw = base64.b64decode(payload + "=" * (-len(payload) % 4))
+                text = raw.decode("utf-8", "replace")
+            else:
+                text = unquote(payload)
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            continue
+        text = text.strip().lstrip("\ufeff")
+        if text[:7].upper() == "#EXTM3U":
+            return text
+    return None
+
+
+def resolve_playlist_urls(text: str, base_url: str) -> str:
+    """Rewrite a playlist's relative segment/key URLs against `base_url`."""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if "URI=" in line:
+                def _abs(match):
+                    uri = match.group(1)
+                    if uri.startswith(("http://", "https://", "data:")):
+                        return match.group(0)
+                    return f'URI="{urljoin(base_url, uri)}"'
+                line = re.sub(r'URI="([^"]+)"', _abs, line)
+            out.append(line)
+            continue
+        if line.startswith(("http://", "https://", "data:")):
+            out.append(line)
+        else:
+            out.append(urljoin(base_url, line))
+    return "\n".join(out) + "\n"
+
+
+# ------------------------------------------------------------ iframes
+# The player is often a separate document: the page holds an <iframe>
+# and the video link lives inside the framed page, which the bot never
+# fetched. These helpers find the frames worth opening (at most 3, ads
+# and social widgets skipped — each fetch costs time on the free tier).
+
+_IFRAME_BLOCK = (
+    "googlesyndication", "doubleclick", "googleadservices",
+    "googletagmanager", "facebook.com/plugins", "platform.twitter",
+    "youtube.com/embed", "player.vimeo.com", "tiktok.com/embed",
+    "instagram.com/embed",
+)
+
+_IFRAME_SRC_RE = re.compile(r'<iframe[^>]+src=["\']([^"\']+)["\']', re.I)
+
+
+def iframe_srcs(page: str, base_url: str, *, limit: int = 3) -> list[str]:
+    """Player-ish <iframe> URLs from a page, most promising first."""
+    if not page:
+        return []
+    found: list[str] = []
+    for raw in _IFRAME_SRC_RE.findall(page):
+        raw = (raw or "").strip()
+        if not raw or raw.startswith(
+                ("javascript:", "data:", "about:", "blob:", "#")):
+            continue
+        url = normalise_url(raw, base_url)
+        if not url.startswith(("http://", "https://")):
+            continue
+        low = url.lower()
+        if any(host in low for host in _IFRAME_BLOCK):
+            continue
+        if url not in found:
+            found.append(url)
+
+    def _player_first(url: str) -> int:
+        low = url.lower()
+        return 0 if any(h in low for h in
+                        ("player", "embed", "video", "stream", "watch")) else 1
+
+    found.sort(key=_player_first)
+    return found[:limit]
 
 
 # ------------------------------------------------------------ page pieces

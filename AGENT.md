@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.28.4** (2026-11-13).
+- **Current version: v1.29.0** (2026-11-13).
 
 ## How moon works — the contract
 
@@ -265,8 +265,28 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-13) — v1.28.4
+## Current status (2026-11-13) — v1.29.0
 
+- v1.29.0 adds three static media-finding tricks adapted from the Ghost
+  Downloader extension's CatCatch scripts (no browser needed): (1) a
+  recursive JSON scan (`player_scan.scan_json_media`) — parses
+  `application/json` / `ld+json` blocks and walks them for media URLs,
+  including tokenised stream links with no file extension, identified
+  by their key name (`file`, `hls`, `playbackUrl`, ...); a key-hint
+  regex covers JS object literals that are not valid JSON. (2) Hidden
+  `data:` HLS playlists (`extract_data_playlist` + `resolve_playlist_urls`)
+  — decoded and handed to ffmpeg, which copies the segments into an
+  mp4 (`scrape.download_playlist`); ffmpeg needs `-protocol_whitelist
+  file,http,https,tcp,tls,crypto,data` because a local playlist may
+  only reference file:// segments by default, and http `-headers` are
+  REJECTED when the playlist input is a local file. (3) Player-iframe
+  scanning (`iframe_srcs`, max 3 frames, ads/social/YouTube/Vimeo
+  embeds skipped) — the video link often lives in the framed document,
+  not the embedding page; wired into both the scrape fallback and the
+  gate walker (after the captcha check, before the gate form).
+  Also: `.mpd` now counts as a playlist in `filehosts._result`, and
+  `_plausible` is images-aware (a "poster"/"thumb" URL is the prize
+  itself on image hosts, not a skip signal).
 - v1.28.4 fixes the gate walker against a REAL UpFiles link (anonymous
   upload https://upfiles.com/oe1RxuAu, sample.mp4): (1) `gate_form` scored
   forms on gate fields alone, so the locale-switcher form tied with the

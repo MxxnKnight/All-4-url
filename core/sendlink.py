@@ -366,6 +366,12 @@ async def _download_resolved(resolved: dict, job_dir: str,
                                              progress_cb=progress)
                 return [path]
             except Exception as scrape_exc:
+                try:
+                    path = await scrape.download_playlist(
+                        url, job_dir, progress_cb=progress)
+                    return [path]
+                except Exception:
+                    pass
                 prior = "; ".join(resolved.get("errors") or [])
                 raise RuntimeError(
                     "Couldn't figure out that link — "

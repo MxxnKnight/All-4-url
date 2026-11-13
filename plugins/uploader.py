@@ -363,20 +363,28 @@ async def _scrape_flow(client, message, url, status, editor):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
         try:
-            media_url = await scrape.find_media_url(url)
-            if is_playlist_url(media_url):
-                # The page embeds a stream manifest, not a file — let
-                # yt-dlp fetch the real segments instead of saving the
-                # playlist text.
-                await status.edit_text(
-                    "Found a stream playlist — downloading the video…")
-                paths = await download(media_url, job_dir,
-                                       progress_cb=progress)
-            else:
-                path = await download_file(media_url, job_dir,
-                                           progress_cb=progress,
-                                           headers={"Referer": url})
+            try:
+                media_url = await scrape.find_media_url(url)
+            except scrape.ScrapeError:
+                # No link on the page — but the playlist itself may
+                # hide in a data: URI, which ffmpeg can still play.
+                path = await scrape.download_playlist(
+                    url, job_dir, progress_cb=progress)
                 paths = [path]
+            else:
+                if is_playlist_url(media_url):
+                    # The page embeds a stream manifest, not a file — let
+                    # yt-dlp fetch the real segments instead of saving the
+                    # playlist text.
+                    await status.edit_text(
+                        "Found a stream playlist — downloading the video…")
+                    paths = await download(media_url, job_dir,
+                                           progress_cb=progress)
+                else:
+                    path = await download_file(media_url, job_dir,
+                                               progress_cb=progress,
+                                               headers={"Referer": url})
+                    paths = [path]
             await editor.edit("Uploading…", force=True)
             await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
