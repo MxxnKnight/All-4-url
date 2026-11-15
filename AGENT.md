@@ -49,7 +49,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.29.0** (2026-11-13).
+- **Current version: v1.29.1** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -265,8 +265,22 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-13) — v1.29.0
+## Current status (2026-11-16) — v1.29.1
 
+- v1.29.1 adapts the bot for Hugging Face Spaces (moon accepted the
+  account-risk and ordered the move on 2026-11-16; the Stremio bot's
+  grandfathered Docker Space becomes this bot's home — see
+  `HF_DEPLOY.md` for the full checklist). Changes: Dockerfile runs as
+  UID 1000 (`useradd -m -u 1000 user`, `WORKDIR $HOME/app`,
+  `COPY --chown=user`, `pip install --user` — HF runs containers as
+  UID 1000, so a root-owned /app would leave the bot unable to write);
+  `config.PORT` defaults to 7860 (HF's routed port; Koyeb sets
+  PORT=8080 explicitly, so it is unaffected); README.md carries the HF
+  YAML frontmatter (`sdk: docker`, `app_port: 7860`) — never remove it
+  or the Space forgets it is a Docker Space; `.dockerignore` added
+  (.git, caches, data/downloads/uploads). The same image still runs on
+  Koyeb. Full HF rules (secrets, BASE_URL, pinger, stop-Koyeb-first)
+  live in `HF_DEPLOY.md`, not here.
 - v1.29.0 adds three static media-finding tricks adapted from the Ghost
   Downloader extension's CatCatch scripts (no browser needed): (1) a
   recursive JSON scan (`player_scan.scan_json_media`) — parses

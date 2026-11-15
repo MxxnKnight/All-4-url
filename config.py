@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.29.0"
+BOT_VERSION = "1.29.1"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -107,8 +107,9 @@ if BASE_URL.endswith("/app"):
 #: Full Mini App control-panel URL ("" when BASE_URL is unset).
 PANEL_URL = (BASE_URL + "/app") if BASE_URL else ""
 
-# Port the small web server listens on (Koyeb injects PORT automatically).
-PORT = _int("PORT", 8080)
+# Port the small web server listens on. Hosts set PORT themselves
+# (Koyeb injects it; HF Spaces route 7860, so that is the default).
+PORT = _int("PORT", 7860)
 
 # How long file-to-link URLs stay valid.
 LINK_EXPIRY_HOURS = _int("LINK_EXPIRY_HOURS", 72)

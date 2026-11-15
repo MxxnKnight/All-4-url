@@ -1,3 +1,18 @@
+---
+title: All-4-URL
+emoji: 📦
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+<!-- The YAML block above is the Hugging Face Space config: it tells HF
+this repo is a Docker Space served on port 7860. Do NOT remove it —
+without `sdk: docker` the Space forgets what it is. GitHub renders it
+as plain text; that is cosmetic only. -->
+
 # All-4-URL
 
 > **Personal use only.** A private, owner-locked Telegram bot built for one
