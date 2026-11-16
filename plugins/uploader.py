@@ -9,6 +9,10 @@ For any non-Telegram URL the owner sends, engines try in this order:
   Direct file URL     -> streamed straight down (core/extractors/direct)
   Everything else     -> yt-dlp (with format buttons when it finds
                          several resolutions) -> gallery-dl -> scrape
+  Oversize downloads  -> split into ~1.95 GB .001/.002 parts
+                         (core/splitter) instead of being refused
+  Scrape last resort  -> static HTML, then a data: playlist, then a
+                         real headless browser (browser_scan)
 
 Only one engine's success is needed; failures cascade to the next, and
 the final error message tells the owner what each engine said.
@@ -25,8 +29,9 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
                             InlineKeyboardMarkup, Message)
 
 import config
-from core.extractors import gallery_engine, scrape, site_registry, terabox
-from core import stats, unzip, upage
+from core.extractors import (browser_scan, gallery_engine, scrape,
+                             site_registry, terabox)
+from core import splitter, stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
@@ -146,9 +151,11 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     """Returns True when a file picker was shown (job not finished yet)."""
     files = await terabox.list_files(url)
     if len(files) == 1:
-        check_size(files[0].get("size") or 0, files[0].get("name") or "file")
-        return await _terabox_download(client, message, url, 0, files[0],
-                                       status, editor)
+        check_size(files[0].get("size") or 0, files[0].get("name") or "file",
+                   allow_split=True)
+        return await _terabox_download(
+            client, message, url, 0, files[0], status, editor,
+            big_file=(files[0].get("size") or 0) > config.MAX_FILE_SIZE)
     job_id = _next_job_id()
     PENDING[job_id] = {"type": "terabox", "url": url, "chat_id": message.chat.id,
                        "origin_chat": message.chat.id, "origin_msg": message.id}
@@ -167,7 +174,8 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     return True
 
 
-async def _terabox_download(client, message, url, index, info, status, editor):
+async def _terabox_download(client, message, url, index, info, status, editor,
+                          big_file=False):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
@@ -182,15 +190,17 @@ async def _terabox_download(client, message, url, index, info, status, editor):
                                             done, total, started))
         prompted = False
         try:
-            path = await terabox.download(url, job_dir, index=index,
-                                          progress_cb=progress)
+            async with splitter.big_file_guard(big_file):
+                path = await terabox.download(url, job_dir, index=index,
+                                              progress_cb=progress)
+                paths = await splitter.maybe_split([path], editor=editor)
             prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, [path],
+                client, message.chat.id, paths,
                 f"Terabox · {info['name'] if info else ''}", status, job_dir)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
                 await send_files_routed(
-                    client, message.chat.id, [path], "uploader",
+                    client, message.chat.id, paths, "uploader",
                     caption=f"Terabox · {info['name'] if info else ''}",
                     status_msg=status)
                 await status.delete()
@@ -224,8 +234,12 @@ async def _custom_flow(client: Client, message: Message, url: str,
         try:
             info = await site.resolve(url)
             if info.get("approx_size"):
-                check_size(info["approx_size"], info.get("title") or "file")
-            paths = await site.download(url, job_dir, progress_cb=progress)
+                check_size(info["approx_size"], info.get("title") or "file",
+                           allow_split=True)
+            big = (info.get("approx_size") or 0) > config.MAX_FILE_SIZE
+            async with splitter.big_file_guard(big):
+                paths = await site.download(url, job_dir, progress_cb=progress)
+                paths = await splitter.maybe_split(paths, editor=editor)
             prompted = await _maybe_unzip_prompt(
                 client, message.chat.id, paths, info.get("title", "")[:200],
                 status, job_dir)
@@ -278,13 +292,17 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
 
     if formats:
         # No picker (reels / single format): still refuse a giant file
-        # before spending the download on it.
-        check_size(formats[0].get("filesize") or 0, title)
-    return await _ytdlp_download(client, message, url, title, status, editor)
+        # before spending the download on it — unless it fits the
+        # splitter, in which case it goes out in parts.
+        check_size(formats[0].get("filesize") or 0, title, allow_split=True)
+    return await _ytdlp_download(
+        client, message, url, title, status, editor,
+        big_file=bool(formats)
+        and (formats[0].get("filesize") or 0) > config.MAX_FILE_SIZE)
 
 
 async def _ytdlp_download(client, message, url, title, status, editor,
-                          format_id=None, audio_only=False):
+                          format_id=None, audio_only=False, big_file=False):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
@@ -294,8 +312,11 @@ async def _ytdlp_download(client, message, url, title, status, editor,
 
         prompted = False
         try:
-            paths = await download(url, job_dir, format_id=format_id,
-                                   audio_only=audio_only, progress_cb=progress)
+            async with splitter.big_file_guard(big_file):
+                paths = await download(url, job_dir, format_id=format_id,
+                                       audio_only=audio_only,
+                                       progress_cb=progress)
+                paths = await splitter.maybe_split(paths, editor=editor)
             prompted = await _maybe_unzip_prompt(
                 client, message.chat.id, paths, title[:200], status, job_dir)
             if not prompted:
@@ -318,6 +339,10 @@ async def _gallery_flow(client, message, url, status):
         try:
             await status.edit_text("Fetching with gallery-dl…")
             paths = await gallery_engine.download(url, job_dir)
+            # gallery-dl never tells us the size up front, so a big
+            # file only shows itself here — maybe_split's own disk
+            # check is what keeps the split safe.
+            paths = await splitter.maybe_split(paths, status_msg=status)
             await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
             await status.delete()
@@ -335,15 +360,18 @@ async def _direct_flow(client, message, url, info, status, editor):
 
         prompted = False
         try:
-            path = await download_file(info.get("final_url") or url, job_dir,
-                                       progress_cb=progress,
-                                       filename=info.get("filename"))
+            big = (info.get("size") or 0) > config.MAX_FILE_SIZE
+            async with splitter.big_file_guard(big):
+                path = await download_file(info.get("final_url") or url, job_dir,
+                                           progress_cb=progress,
+                                           filename=info.get("filename"))
+                paths = await splitter.maybe_split([path], editor=editor)
             prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, [path], info.get("filename", ""),
+                client, message.chat.id, paths, info.get("filename", ""),
                 status, job_dir)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
-                await send_files_routed(client, message.chat.id, [path],
+                await send_files_routed(client, message.chat.id, paths,
                                         "uploader",
                                         caption=info.get("filename", ""),
                                         status_msg=status)
@@ -362,29 +390,48 @@ async def _scrape_flow(client, message, url, status, editor):
         async def progress(done, total):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
+        async def _download_media(media_url):
+            """A found media URL -> downloaded paths (a stream playlist
+            goes to yt-dlp, not to a text file)."""
+            if is_playlist_url(media_url):
+                # The page embeds a stream manifest, not a file — let
+                # yt-dlp fetch the real segments instead of saving the
+                # playlist text.
+                await status.edit_text(
+                    "Found a stream playlist — downloading the video…")
+                return await download(media_url, job_dir,
+                                      progress_cb=progress)
+            path = await download_file(media_url, job_dir,
+                                       progress_cb=progress,
+                                       headers={"Referer": url})
+            return [path]
+
         try:
             try:
                 media_url = await scrape.find_media_url(url)
             except scrape.ScrapeError:
-                # No link on the page — but the playlist itself may
-                # hide in a data: URI, which ffmpeg can still play.
-                path = await scrape.download_playlist(
-                    url, job_dir, progress_cb=progress)
-                paths = [path]
-            else:
-                if is_playlist_url(media_url):
-                    # The page embeds a stream manifest, not a file — let
-                    # yt-dlp fetch the real segments instead of saving the
-                    # playlist text.
-                    await status.edit_text(
-                        "Found a stream playlist — downloading the video…")
-                    paths = await download(media_url, job_dir,
-                                           progress_cb=progress)
-                else:
-                    path = await download_file(media_url, job_dir,
-                                               progress_cb=progress,
-                                               headers={"Referer": url})
+                # No link in the static HTML — but the playlist itself
+                # may hide in a data: URI, which ffmpeg can still play.
+                try:
+                    path = await scrape.download_playlist(
+                        url, job_dir, progress_cb=progress)
                     paths = [path]
+                except scrape.ScrapeError:
+                    # Last resort: render the page in a real browser —
+                    # some players only reveal the video URL once their
+                    # JavaScript has run.
+                    await status.edit_text(
+                        "Opening the page in a browser to find the video…")
+                    try:
+                        media_url = await browser_scan.find_media_url(url)
+                    except browser_scan.BrowserError as exc:
+                        raise scrape.ScrapeError(
+                            "no embedded media URL found in the page "
+                            f"(browser: {exc})") from exc
+                    paths = await _download_media(media_url)
+            else:
+                paths = await _download_media(media_url)
+            paths = await splitter.maybe_split(paths, editor=editor)
             await editor.edit("Uploading…", force=True)
             await send_files_routed(client, message.chat.id, paths, "uploader",
                              caption=url, status_msg=status)
@@ -590,7 +637,8 @@ async def _dispatch(client: Client, message: Message, url: str,
         if direct_info:
             try:
                 check_size(direct_info.get("size") or 0,
-                           direct_info.get("filename") or "file")
+                           direct_info.get("filename") or "file",
+                           allow_split=True)
             except SizeBlocked as exc:
                 await status.edit_text(f"❌ {exc}")
                 return "failed"
@@ -617,13 +665,23 @@ async def _dispatch(client: Client, message: Message, url: str,
             try:
                 await _gallery_flow(client, message, url, status)
                 return "done"
+            except SizeBlocked as exc:
+                # A file gallery-dl downloaded turned out too big to
+                # split — retrying it through the scrape would just
+                # download the same giant file a second time.
+                await status.edit_text(f"❌ {exc}")
+                return "failed"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
 
-        # 6) Last resort: scrape the page's meta tags.
+        # 6) Last resort: scrape the page's meta tags — and, if the
+        # static HTML holds nothing, a real browser.
         try:
             await _scrape_flow(client, message, url, status, editor)
             return "done"
+        except SizeBlocked as exc:
+            await status.edit_text(f"❌ {exc}")
+            return "failed"
         except Exception as exc:
             errors.append(f"scrape: {exc}")
 
@@ -658,22 +716,25 @@ async def _dispatch(client: Client, message: Message, url: str,
         return "failed"
 
 
-def _check_picked_format(job: dict, choice: str) -> None:
+def _check_picked_format(job: dict, choice: str) -> dict | None:
     """Refuse a quality-button tap when that format is too big.
 
     Raises SizeBlocked; the callback's except turns it into a
-    "Download failed: …" message on the status line.
+    "Download failed: …" message on the status line. Returns the
+    picked format dict (None for audio-only / no formats) so the
+    caller can tell a big-file download from a normal one.
     """
     formats = job.get("formats") or []
     if not formats or choice == "audio":
-        return  # audio-only size is unknown until the mp3 exists
+        return None  # audio-only size is unknown until the mp3 exists
     if choice == "best":
         picked = formats[0]
     else:
         picked = next((f for f in formats if f["format_id"] == choice), None)
     if picked:
         check_size(picked.get("filesize") or 0,
-                   job.get("title") or "file")
+                   job.get("title") or "file", allow_split=True)
+    return picked
 
 
 # ---------------------------------------------------------------- callbacks
@@ -827,17 +888,23 @@ async def format_callback(client: Client, query: CallbackQuery):
             files = await terabox.list_files(job["url"])
             info = files[index] if index < len(files) else None
             if info:
-                check_size(info.get("size") or 0, info.get("name") or "file")
-            prompted = await _terabox_download(client, fake_message, job["url"],
-                                               index, info, status, editor)
+                check_size(info.get("size") or 0, info.get("name") or "file",
+                           allow_split=True)
+            prompted = await _terabox_download(
+                client, fake_message, job["url"],
+                index, info, status, editor,
+                big_file=bool(info)
+                and (info.get("size") or 0) > config.MAX_FILE_SIZE)
         else:
             choice = parts[2]
-            _check_picked_format(job, choice)
+            picked = _check_picked_format(job, choice)
             prompted = await _ytdlp_download(
                 client, fake_message, job["url"], job.get("title", "Download"),
                 status, editor,
                 format_id=None if choice in ("best", "audio") else choice,
-                audio_only=choice == "audio")
+                audio_only=choice == "audio",
+                big_file=bool(picked)
+                and (picked.get("filesize") or 0) > config.MAX_FILE_SIZE)
         if prompted:
             # Unzip prompt is on screen; the unzip callback will
             # finish (and react to) the job. Do not mark it done yet.

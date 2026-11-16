@@ -217,10 +217,12 @@ never a requirement.
 
 Outbound traffic (uploads to Telegram + file-to-link serves) is what
 free hosts meter. The bot watches this month's outbound against
-`OUTBOUND_CAP_GB` (default 100): at `BANDWIDTH_WARN_PCT` (80%) it PMs
-the owner a warning; at `BANDWIDTH_STOP_PCT` (95%) it pauses new
-download jobs (uploader + restricted + batch) until the 1st —
-streaming links keep working. Thresholds are env-tunable.
+`OUTBOUND_CAP_GB` (default 1000 — Hugging Face publishes no egress cap,
+so this is a runaway safety; Koyeb free included 100): at
+`BANDWIDTH_WARN_PCT` (80%) it PMs the owner a warning; at
+`BANDWIDTH_STOP_PCT` (95%) it pauses new download jobs (uploader +
+restricted + batch) until the 1st — streaming links keep working.
+Thresholds are env-tunable.
 
 ## Updating yt-dlp
 

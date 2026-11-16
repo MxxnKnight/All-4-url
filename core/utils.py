@@ -87,19 +87,33 @@ class SizeBlocked(Exception):
 _DISK_HEADROOM = 256 * 1024 * 1024
 
 
-def check_size(size: int | None, name: str = "file") -> None:
+def check_size(size: int | None, name: str = "file",
+               allow_split: bool = False) -> None:
     """Raise SizeBlocked if `size` bytes cannot be downloaded here.
 
     `size` of 0/None means "unknown" — nothing to check, the download
     streams in chunks so RAM is never the problem, only disk.
+    With allow_split, files over MAX_FILE_SIZE are allowed up to the
+    splitter's total cap — they go out as .001/.002 parts instead of
+    being refused — but the disk check then needs room for the file
+    AND its parts at once (the split briefly holds both).
     """
     size = int(size or 0)
     if size <= 0:
         return
     if size > config.MAX_FILE_SIZE:
-        raise SizeBlocked(
-            f"{name} is {human_bytes(size)} — over the "
-            f"{human_bytes(config.MAX_FILE_SIZE)} limit.")
+        if not allow_split:
+            raise SizeBlocked(
+                f"{name} is {human_bytes(size)} — over the "
+                f"{human_bytes(config.MAX_FILE_SIZE)} limit.")
+        if size > config.SPLIT_MAX_TOTAL_BYTES:
+            raise SizeBlocked(
+                f"{name} is {human_bytes(size)} — over the "
+                f"{human_bytes(config.SPLIT_MAX_TOTAL_BYTES)} split "
+                f"limit, so I can't send it even in parts.")
+        needed = 2 * size  # the file, then the file AND its parts
+    else:
+        needed = size
     try:
         free = shutil.disk_usage(config.BASE_DIR).free
     except Exception:
@@ -115,7 +129,7 @@ def check_size(size: int | None, name: str = "file") -> None:
         reserved = upage.pending_bytes()
     except Exception:
         reserved = 0
-    if size + _DISK_HEADROOM + reserved > free:
+    if needed + _DISK_HEADROOM + reserved > free:
         hint = (" (a web upload is waiting on disk — send its link "
                 "to the bot first)") if reserved else ""
         raise SizeBlocked(

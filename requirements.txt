@@ -12,6 +12,11 @@ gallery-dl
 aiohttp
 curl-cffi
 python-dotenv
+# Headless browser scraper (core/extractors/browser_scan.py). The
+# Dockerfile also installs this as root so `playwright install` can
+# fetch the Chromium binary at build time; the --user copy here is
+# what the bot imports at runtime. Keep both pins in sync.
+playwright==1.65.2
 # Async MongoDB driver (sudo users + usage stats when DB_URI is set).
 motor
 Pillow

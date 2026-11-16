@@ -40,7 +40,7 @@ HF PRO ($9/mo).
    - Variables: `OWNER_ID`, `SUDO_USERS` (if any), `DB_NAME=all4url`,
      `PORT=7860`, `BASE_URL=https://<user>-<space>.hf.space`
      (no trailing slash, no `/app`), `LINK_EXPIRY_HOURS=72`,
-     `OUTBOUND_CAP_GB`, `MAX_JOBS=2`.
+     `OUTBOUND_CAP_GB=1000`, `MAX_JOBS=2`.
    - `BASE_URL` must be the Space's own `*.hf.space` address, or
      file-to-link / Mini App / upage / sendlink URLs will point at
      the wrong host.

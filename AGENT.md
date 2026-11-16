@@ -35,21 +35,23 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 - Remotes: GitLab `origin` (`gitlab.com/MxxnKnight/all-4-url`) and GitHub
   `github` (`MxxnKnight/All-4-url`). **Push every release to BOTH and verify
   with `git ls-remote`** — Koyeb deploys from GitHub.
-- Hosting: **Koyeb free tier** — 512 MB RAM, 0.1 vCPU, 2 GB ephemeral disk
-  (wiped on redeploy/restart, no Volumes on free), 100 GB/month outbound
-  (uploads count, downloads don't), scales to zero after 1 hour without
-  inbound web traffic; a cron-job.org `/health` pinger keeps it awake.
-  `BASE_URL`: `https://splendid-dorothea-adarshdarsh-de7fd969.koyeb.app`
-  (bare domain, no `/app`, no trailing slash). ffmpeg is on the Koyeb image
-  (Dockerfile). Headless browsers cannot run on this tier — do not propose
-  browser-based extractors.
+- Hosting: **Hugging Face Spaces** (since 2026-11-16, moon ordered the
+  move and accepted the account risk) — grandfathered free Docker Space
+  `Adak2b5/Strom`, app `https://adak2b5-strom.hf.space`, 2 vCPU, 16 GB
+  RAM, 50 GB ephemeral disk, no published egress cap; sleeps after
+  inactivity, a cron-job.org `/health` pinger keeps it awake. Deploy by
+  pushing the repo to the Space (see `HF_DEPLOY.md`); the Space rebuilds
+  on every push. Koyeb free is the stopped fallback only (512 MB RAM,
+  0.1 vCPU, 2 GB disk, 100 GB/month outbound) — never run both at once,
+  two instances polling one bot token fight over updates.
 - Telegram cap: 2 GB per file (`MAX_FILE_SIZE` = 2,000,000,000).
 - Release ritual: bump `BOT_VERSION` in `config.py` → test (see Testing) →
-  descriptive commit → push both remotes → verify with `git ls-remote`.
+  descriptive commit → push both remotes → verify with `git ls-remote` →
+  deploy to the HF Space (push the repo files there; the Space rebuilds).
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.29.1** (2026-11-16).
+- **Current version: v1.30.0** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -95,7 +97,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | Path | What it is |
 |---|---|
 | `main.py` | Startup, `BOT_COMMANDS`, version-notify hook, `webserver.bind_bot` |
-| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (2), `OUTBOUND_CAP_GB` (100), `TERABOX_NDUS`, `STORAGE_CHANNEL_ID` |
+| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (2), `OUTBOUND_CAP_GB` (1000), `SPLIT_PART_BYTES` (1.95 GB), `SPLIT_MAX_TOTAL_BYTES` (20 GB), `TERABOX_NDUS`, `STORAGE_CHANNEL_ID` |
 | `core/utils.py` | `JOB_SEMAPHORE`, `ThrottledEditor`, `check_size` / `SizeBlocked`, `make_job_dir`, `cleanup_dir`, `progress_text`, `human_bytes`, `admin_only`, `is_admin_id` |
 | `core/sender.py` | `send_files`, `send_files_routed`, `send_file` (re-probes document-typed videos with ffprobe) |
 | `core/sudo.py` | Sudo model (below) |
@@ -265,8 +267,41 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.29.1
+## Current status (2026-11-16) — v1.30.0
 
+- v1.30.0 adds two HF-only features (both were impossible on Koyeb's
+  2 GB disk / 512 MB RAM). (1) **Byte-split downloads**
+  (`core/splitter.py`): a finished download over the 2 GB Telegram cap
+  is chopped into ~1.95 GB `.001`/`.002` parts (7-Zip naming) and sent
+  as documents, up to a 20 GB total (`SPLIT_MAX_TOTAL_BYTES`). Parts
+  are NOT playable — they must be joined back (7-Zip, `cat`) before
+  watching, unlike /sdl's time segments. `check_size(allow_split=True)`
+  admits oversize files only when 2x the file fits on disk (the split
+  briefly holds file + parts); `BIG_FILE_LOCK` serialises the
+  download+split window of oversize jobs; `maybe_split` re-checks disk
+  room for flows that never knew the size (gallery-dl, scrape).
+  Wired into every uploader flow and sendlink (Check step + after
+  download). `sender.send_file` never ffprobe-reclassifies a `.001`
+  part as video — the first part still carries the video header.
+  `OUTBOUND_CAP_GB` default is now 1000 (HF publishes no egress cap;
+  the 100 GB number was Koyeb's — the guard stays as a runaway
+  safety). NOTE: the HF Space still has the OLD `OUTBOUND_CAP_GB=100`
+  variable set, which overrides the new default until moon updates it.
+  (2) **Headless browser scraper** (`core/extractors/browser_scan.py`,
+  Playwright + Chromium baked into the Docker image as root with
+  `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` so UID 1000 can read the
+  binaries; `playwright==1.65.2` pinned in both Dockerfile and
+  requirements.txt — keep them in sync): last resort after the static
+  scrape and the data: playlist, in both the chat uploader and
+  sendlink. Watches the page's own network requests (manifest first,
+  then biggest file), falls back to DOM video/audio srcs, then
+  `player_scan.find_media` on the rendered HTML. Fails fast and
+  honestly on captcha markers — a headless browser on a datacenter IP
+  does NOT beat Turnstile/Cloudflare. One browser at a time
+  (`BROWSER_LOCK`), 75 s overall cap, `--no-sandbox` +
+  `--disable-dev-shm-usage` (non-root container, tiny /dev/shm).
+  Playwright is optional at import: without it the module reports
+  `BROWSER_AVAILABLE = False` and the bot works as before.
 - v1.29.1 adapts the bot for Hugging Face Spaces (moon accepted the
   account-risk and ordered the move on 2026-11-16; the Stremio bot's
   grandfathered Docker Space becomes this bot's home — see

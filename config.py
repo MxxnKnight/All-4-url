@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.29.1"
+BOT_VERSION = "1.30.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -77,10 +77,12 @@ DB_NAME = (os.environ.get("DB_NAME") or "all4url").strip() or "all4url"
 
 # --- Bandwidth guard --------------------------------------------------------
 # Monthly outbound (uploads to Telegram + file-to-link serves) is what
-# the host meters — Koyeb free includes 100 GB/month. The guard warns
-# the owner at BANDWIDTH_WARN_PCT and pauses new download jobs at
+# a host meters. Koyeb free included 100 GB/month; Hugging Face
+# publishes no egress cap, so the default here is a runaway safety
+# (1 TB), not a real constraint. The guard still warns the owner at
+# BANDWIDTH_WARN_PCT and pauses new download jobs at
 # BANDWIDTH_STOP_PCT (streaming links keep working either way).
-OUTBOUND_CAP_GB = _int("OUTBOUND_CAP_GB", 100)
+OUTBOUND_CAP_GB = _int("OUTBOUND_CAP_GB", 1000)
 OUTBOUND_CAP_BYTES = OUTBOUND_CAP_GB * 1024 ** 3
 BANDWIDTH_WARN_PCT = _int("BANDWIDTH_WARN_PCT", 80)
 BANDWIDTH_STOP_PCT = _int("BANDWIDTH_STOP_PCT", 95)
@@ -142,6 +144,17 @@ SEGMENT_MAX_MIN = max(1, _int("SEGMENT_MAX_MIN", 45))
 SEGMENT_MAX_MB = max(50, _int("SEGMENT_MAX_MB", 1000))
 SEGMENT_MAX_TOTAL_GB = max(1, _int("SEGMENT_MAX_TOTAL_GB", 8))
 SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
+
+# Byte-split downloads (core/splitter.py): a finished download over
+# MAX_FILE_SIZE is chopped into ~1.95 GB .001/.002 parts instead of
+# being refused, then sent as documents. Parts are NOT playable —
+# they must be joined back (7-Zip, or `cat`) before watching, unlike
+# /sdl's time segments. The split briefly holds the file AND its
+# parts (2x on disk), so the total cap stays well under the host's
+# disk (50 GB on HF).
+SPLIT_PART_BYTES = max(100_000_000, _int("SPLIT_PART_BYTES", 1_950_000_000))
+SPLIT_MAX_TOTAL_GB = max(1, _int("SPLIT_MAX_TOTAL_GB", 20))
+SPLIT_MAX_TOTAL_BYTES = SPLIT_MAX_TOTAL_GB * 1000 * 1000 * 1000
 
 # Biggest message range a single /batch may expand (first-link..last-link).
 BATCH_RANGE_LIMIT = max(2, _int("BATCH_RANGE_LIMIT", 100))

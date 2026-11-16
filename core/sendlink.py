@@ -66,8 +66,9 @@ from urllib.parse import urlparse
 from aiohttp import web
 
 import config
-from core import stats
-from core.extractors import gallery_engine, scrape, site_registry, terabox
+from core import splitter, stats
+from core.extractors import (browser_scan, gallery_engine, scrape,
+                             site_registry, terabox)
 from core.extractors.direct import check_direct, download_file, is_playlist_url
 from core.extractors.ytdlp_engine import (
     YtdlpError, best_formats, carousel_image_urls,
@@ -372,11 +373,25 @@ async def _download_resolved(resolved: dict, job_dir: str,
                     return [path]
                 except Exception:
                     pass
-                prior = "; ".join(resolved.get("errors") or [])
-                raise RuntimeError(
-                    "Couldn't figure out that link — "
-                    + (prior + "; " if prior else "")
-                    + f"gallery-dl: {gal_exc}; scrape: {scrape_exc}")
+                # Last resort, same as the bot's chain: render the
+                # page in a real browser — some players only reveal
+                # the video URL once their JavaScript has run.
+                try:
+                    media_url = await browser_scan.find_media_url(url)
+                    if is_playlist_url(media_url):
+                        return await ytdlp_download(media_url, job_dir,
+                                                    progress_cb=progress)
+                    path = await download_file(
+                        media_url, job_dir, progress_cb=progress,
+                        headers={"Referer": url})
+                    return [path]
+                except Exception as browser_exc:
+                    prior = "; ".join(resolved.get("errors") or [])
+                    raise RuntimeError(
+                        "Couldn't figure out that link — "
+                        + (prior + "; " if prior else "")
+                        + f"gallery-dl: {gal_exc}; scrape: {scrape_exc}; "
+                        f"browser: {browser_exc}")
     raise RuntimeError(f"unknown resolved kind: {kind}")
 
 
@@ -437,10 +452,13 @@ async def _run_job(job_id: str) -> None:
         job["total"] = resolved.get("size") or 0
         # 2) Check — monthly bandwidth left? File within the
         # Telegram/disk limits? Refusing here costs nothing yet.
+        # Oversize files pass the check when they fit the splitter —
+        # they go out as .001/.002 parts instead of being refused.
         job["stage"] = "checking"
         if stats.bandwidth_blocked():
             raise RuntimeError(stats.bandwidth_pause_text())
-        check_size(resolved.get("size") or 0, job["title"])
+        check_size(resolved.get("size") or 0, job["title"],
+                   allow_split=True)
 
         async def progress(done, total):
             job["done"] = done
@@ -455,8 +473,13 @@ async def _run_job(job_id: str) -> None:
             job["dl_started"] = time.time()
             job_dir = make_job_dir()
             try:
-                paths = await _download_resolved(resolved, job_dir,
-                                                 progress)
+                big = (resolved.get("size") or 0) > config.MAX_FILE_SIZE
+                async with splitter.big_file_guard(big):
+                    paths = await _download_resolved(resolved, job_dir,
+                                                     progress)
+                    # The card sits on Downloading while a big file
+                    # splits (no separate stage on the page yet).
+                    paths = await splitter.maybe_split(paths)
                 # 4) Upload to the owner's bot PM, then the server
                 # copy is deleted (cleanup_dir, in the finally).
                 job["stage"] = "uploading"
@@ -667,7 +690,7 @@ body{margin:0 auto;max-width:720px;padding:20px 16px 32px;font-family:-apple-sys
 <ul>
 <li>Paste a link and hit Fetch — that's the only tap. The job card below walks through Probe, Check, Download, Upload, and the file lands in the owner's Telegram PM. Best quality, always. Download and upload show live speed and time left.</li>
 <li>The box clears itself after each Fetch, so paste the next link straight away. Up to 5 jobs at once (2 downloading, the rest queue).</li>
-<li>Direct links, YouTube and 1000+ video sites, Terabox (largest file in a share wins), custom sites, and images too: direct image links, Instagram posts, Reddit and Imgur pages. Files over 2 GB are refused, same as in chat.</li>
+<li>Direct links, YouTube and 1000+ video sites, Terabox (largest file in a share wins), custom sites, and images too: direct image links, Instagram posts, Reddit and Imgur pages. Files over 2 GB arrive as .001/.002 parts — join them back (7-Zip on a PC) to watch.</li>
 <li>Job history here deletes itself after 1 hour. The downloaded file itself is deleted much sooner — the moment it lands on Telegram.</li>
 <li>This page never expires and only people with the link can open it — treat the link like a password.</li>
 </ul>

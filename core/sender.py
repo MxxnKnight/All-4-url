@@ -9,6 +9,7 @@ from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             InputMediaPhoto)
 
 from core import stats
+from core.splitter import is_split_part
 from core.utils import ThrottledEditor, guess_kind, progress_text, run_blocking
 
 
@@ -76,9 +77,15 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
         # A video wearing a wrong/no extension (or an unknown MIME in
         # this container) would leave as a document. Trust the CONTENT
         # instead: if ffprobe finds a video stream, send it as video.
-        meta = await run_blocking(_ffprobe, path)
-        if meta.get("duration") or meta.get("width"):
-            kind = "video"
+        # Split parts (.001/.002) are the exception: they are byte
+        # ranges, not videos — even though the FIRST part still
+        # carries the video header ffprobe would happily recognise.
+        # Sending it as video would show a broken clip with a wrong
+        # duration, so parts always stay documents.
+        if not is_split_part(path):
+            meta = await run_blocking(_ffprobe, path)
+            if meta.get("duration") or meta.get("width"):
+                kind = "video"
     editor = ThrottledEditor(status_msg) if status_msg is not None else None
     callbacks = []
     if editor is not None:
