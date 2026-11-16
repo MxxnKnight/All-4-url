@@ -1,6 +1,6 @@
-"""Private web-upload page (the /upage command).
+"""Private web-upload page (the /fileuploadpage command).
 
-Flow: the owner (or a sudo user) runs /upage, the bot replies with a signed page link
+Flow: the owner (or a sudo user) runs /fileuploadpage, the bot replies with a signed page link
 valid for 1 hour. The page uploads files in 16 MB chunks (each chunk is
 its own short request, so a slow uplink or a Koyeb edge timeout can't
 kill a big upload, and a dropped connection resumes from the last
@@ -346,12 +346,12 @@ def download_url(token: str) -> str:
 
 async def _require_page(request: web.Request) -> dict:
     """Verify the page token; returns its payload (with "uid" when
-    the /upage command knew who asked for the page)."""
+    the /fileuploadpage command knew who asked for the page)."""
     try:
         return verify_page_token(request.match_info["token"])
     except TokenError:
         raise web.HTTPGone(text="This upload link expired or is invalid. "
-                                "Ask the bot for a fresh one with /upage.\n")
+                                "Ask the bot for a fresh one with /fileuploadpage.\n")
 
 
 async def page(request: web.Request) -> web.Response:

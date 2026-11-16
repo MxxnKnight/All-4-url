@@ -51,10 +51,10 @@ def _file_info(message: Message):
 def _is_image_message(message: Message) -> bool:
     """True for photos and image files — which are NOT file-to-link
     material. Sending an image used to instantly produce download /
-    stream links, which is exactly the confusion /phost exists to
+    stream links, which is exactly the confusion /imghost exists to
     avoid: an image is a picture waiting for a host, not a file
     waiting for a download link. Images stay silent until the owner
-    replies /phost to one. Videos, audio, animations, stickers and
+    replies /imghost to one. Videos, audio, animations, stickers and
     non-image documents are unaffected."""
     if message.photo is not None:
         return True
@@ -70,7 +70,7 @@ async def file_to_link(client: Client, message: Message):
         CONSUMED.discard(message.id)
         return  # eaten by the /setcookies handler (group -1)
     if _is_image_message(message):
-        return  # an image, not a file-to-link upload — see /phost
+        return  # an image, not a file-to-link upload — see /imghost
     # No BASE_URL gate here anymore: the menu itself works without
     # it (Convert / Screenshots / Sample / Unzip / MediaInfo need
     # no web address). Only the 🔗 Generate links button requires

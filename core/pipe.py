@@ -204,7 +204,7 @@ def _check_size(size: int) -> None:
             f"that file is {human_bytes(size)} — over Telegram's "
             f"{human_bytes(config.MAX_FILE_SIZE)} cap for bots, "
             f"so even a pipe can't send it as one file. "
-            f"Use /sdl for a split upload instead.")
+            f"Use /vidsplit for a split upload instead.")
 
 
 class RemoteFile(io.RawIOBase):

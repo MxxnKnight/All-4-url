@@ -1,8 +1,8 @@
-"""Permanent private link-upload page (the /sendlink command).
+"""Permanent private link-upload page (the /linkuploadpage command).
 
-Different from /upage on purpose:
-  * /upage = upload a FILE from your device, link expires in 1 hour.
-  * /sendlink = paste a URL on a web page, the server downloads it
+Different from /fileuploadpage on purpose:
+  * /fileuploadpage = upload a FILE from your device, link expires in 1 hour.
+  * /linkuploadpage = paste a URL on a web page, the server downloads it
     and uploads it to the owner's bot PM. The page link NEVER
     expires — it is a permanent, unlisted page: only people who
     have the link can open it, and it is marked noindex/nofollow
@@ -49,7 +49,7 @@ prompt. Images work the same way too: direct image links
 come down as photos, Instagram posts as their carousel
 images, Reddit / Imgur / image-board pages via gallery-dl.
 No cookies, no external resources, no IP/user-agent logging
-— same privacy as /upage.
+— same privacy as /fileuploadpage.
 """
 
 import asyncio
@@ -523,7 +523,7 @@ async def _require_page(request: web.Request) -> dict:
         return verify_page_token(request.match_info["token"])
     except TokenError:
         raise web.HTTPGone(text="This page link is invalid. Ask the bot "
-                                "for a fresh one with /sendlink.\n")
+                                "for a fresh one with /linkuploadpage.\n")
 
 
 def _noindex_headers() -> dict:

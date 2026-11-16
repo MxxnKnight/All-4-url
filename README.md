@@ -276,12 +276,12 @@ report arrives as a `mediainfo.txt` document instead.
 
 ---
 
-## Split downloads (`/sdl`)
+## Split downloads (`/vidsplit`)
 
 For a direct-link video that's too big to fetch whole (Telegram's
 2 GB cap — and this host's small disk):
 
-    /sdl <direct video link>
+    /vidsplit <direct video link>
 
 The bot **probes first and downloads nothing**: it checks the link
 is really a direct file, reads the video's duration/resolution/

@@ -1,4 +1,4 @@
-"""Split downloads (/sdl): watchable segments of an oversized video.
+"""Split downloads (/vidsplit): watchable segments of an oversized video.
 
 A direct-link video too big for Telegram's 2 GB cap is cut into
 complete, playable parts — each uploaded as a real video — instead
@@ -23,7 +23,7 @@ but a boundary can sit a few seconds off the planned time. All
 audio/subtitle tracks are kept (-map 0).
 
 Only ONE segment job runs at a time (SEGMENT_LOCK) — these jobs are
-long and disk-bound; the /sdl callback refuses a second start.
+long and disk-bound; the /vidsplit callback refuses a second start.
 """
 
 import asyncio
@@ -102,7 +102,7 @@ def plan_part_duration(remaining: float, bitrate: float,
 def estimate_plan(duration: float, bitrate: float,
                   max_seconds: float, max_bytes: int) -> list[dict]:
     """[{start, duration, est_bytes}] for the whole video — the
-    /sdl report card's plan. Mirrors the runner's planner, including
+    /vidsplit report card's plan. Mirrors the runner's planner, including
     absorbing a stub tail into the last part."""
     plan = []
     start = 0.0
@@ -209,7 +209,7 @@ async def run_segment_job(client, message, url: str, info: dict,
                           probed: dict, status, editor) -> dict:
     """Cut + upload the whole video, part by part.
 
-    Caller has already probed (the /sdl card). Returns
+    Caller has already probed (the /vidsplit card). Returns
     {"parts": n, "lines": [summary lines]}. Raises SegmentError
     with a user-facing message."""
     async with SEGMENT_LOCK, JOB_SEMAPHORE:

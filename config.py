@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.32.0"
+BOT_VERSION = "1.33.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -150,7 +150,7 @@ MAX_JOBS = max(1, _int("MAX_JOBS", 2))
 # limited to 2 GB anyway; keep a little headroom below that.
 MAX_FILE_SIZE = _int("MAX_FILE_SIZE", 2_000_000_000)
 
-# Split downloads (/sdl, core/segmenter.py): an oversized direct-link
+# Split downloads (/vidsplit, core/segmenter.py): an oversized direct-link
 # VIDEO is cut into watchable parts instead of being refused. Each
 # part obeys BOTH caps; the whole file must fit under the total cap.
 SEGMENT_MAX_MIN = max(1, _int("SEGMENT_MAX_MIN", 45))
@@ -163,7 +163,7 @@ SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
 # most ~1.95 GB each instead of being refused, then sent as
 # documents. Parts are NOT playable —
 # they must be joined back (7-Zip, or `cat`) before watching, unlike
-# /sdl's time segments. The split briefly holds the file AND its
+# /vidsplit's time segments. The split briefly holds the file AND its
 # parts (2x on disk), so the total cap stays well under the host's
 # disk (50 GB on HF).
 SPLIT_PART_BYTES = max(100_000_000, _int("SPLIT_PART_BYTES", 1_950_000_000))

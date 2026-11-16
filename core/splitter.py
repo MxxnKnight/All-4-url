@@ -9,7 +9,7 @@ them from disk.
 
 Parts are NOT playable on their own: they are chopped byte ranges
 and must be joined back first (7-Zip, or `cat part1 part2 > file`)
-before watching. That is the difference from /sdl (core/segmenter.py),
+before watching. That is the difference from /vidsplit (core/segmenter.py),
 whose time segments ARE watchable videos. MoonStream already knows
 `.001`/`.002` files and shows them as Part 1, Part 2.
 

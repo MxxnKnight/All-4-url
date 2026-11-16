@@ -504,22 +504,22 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
     except upage.TokenError:
         await status.edit_text(
             "❌ That upload link is invalid or expired. Make a fresh "
-            "one with /upage.")
+            "one with /fileuploadpage.")
         return "failed"
     rec = upage.lookup_file(fid)
     if rec is None:
         await status.edit_text(
             "❌ That upload link was already used or expired — the "
-            "file is gone from the server. Upload it again with /upage.")
+            "file is gone from the server. Upload it again with /fileuploadpage.")
         return "failed"
     path, name, size = rec["path"], rec["name"], rec["size"]
     if not os.path.exists(path):
         upage.consume(fid)
         await status.edit_text(
             "❌ The file is no longer on the server. Upload it again "
-            "with /upage.")
+            "with /fileuploadpage.")
         return "failed"
-    # Admin delivery (v1.24.0): no matter WHO uploads via /upage,
+    # Admin delivery (v1.24.0): no matter WHO uploads via /fileuploadpage,
     # the file lands in the OWNER's bot PM — not in the uploader's
     # chat, and the owner never has to touch the link himself.
     # The uploader still sends the link back (that is what triggers

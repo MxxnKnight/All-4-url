@@ -16,7 +16,7 @@ accounts, subscriptions, or payments.
 
 Four jobs:
 
-1. **URL uploader** — paste a link in chat (or on the `/sendlink` web page),
+1. **URL uploader** — paste a link in chat (or on the `/linkuploadpage` web page),
    get the file back in Telegram.
 2. **File-to-link** — send a file, get an expiring download/stream link.
 3. **Restricted downloader** — send a `t.me` link to a post the owner can see
@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.32.0** (2026-11-16).
+- **Current version: v1.33.0** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -105,8 +105,8 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | `core/db.py` | MongoDB when `DB_URI` set, JSON fallback. Collections: `sudo`, `usage`, `cookies`, `settings` |
 | `core/linktoken.py` | Signed expiring tokens (HMAC keyed by `BOT_TOKEN`; 43-char signature, **can legitimately start with `-`** — a "bad signature" is usually a truncated copy) |
 | `core/webserver.py` | aiohttp server: `/stream/<token>`, `/d/<token>`, `/health`, routes from `webapp`/`upage`/`sendlink` |
-| `core/upage.py` | `/upage` 1-hour upload page (see below) |
-| `core/sendlink.py` | `/sendlink` permanent link-upload page (see below) |
+| `core/upage.py` | `/fileuploadpage` 1-hour upload page (see below) |
+| `core/sendlink.py` | `/linkuploadpage` permanent link-upload page (see below) |
 | `core/pipe.py` | `/pipe` Telegram-direct chunked pipe |
 | `core/unzip.py` | One-by-one zip extraction (`zip_info`, `iter_extracted`; caps: zip ≤1 GB, total ≤8 GB, ≤200 files) |
 | `core/filemenu.py` | File-menu builders (`fm:` callbacks) |
@@ -173,7 +173,7 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 
 ### Web pages — shared rules
 
-- `/upage` (`core/upage.py`, `plugins/upage.py`): **1-hour** page for
+- `/fileuploadpage` (`core/upage.py`, `plugins/upage.py`): **1-hour** page for
   uploading files to the server. Page token carries `uid`. Uploads in 16 MB
   chunks with auto-resume; each finished file gets a single-use signed
   download link (`/u/<token>`). Limits: 750 MB advertised per file, 1 GB
@@ -181,7 +181,7 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   admin" (delivers to OWNER_ID bot PM, bypassing `/destination`) and Delete
   buttons. When any sudo sends a `/u/` link back to the bot, the file goes
   to the owner's bot PM with a preceding note — the sudo gets no copy.
-- `/sendlink` (`core/sendlink.py`, `plugins/sendlink.py`): **permanent**
+- `/linkuploadpage` (`core/sendlink.py`, `plugins/sendlink.py`): **permanent**
   (no expiry), unlisted page for uploading by pasting a link. One tap:
   paste → Fetch → job card walks Probe → Check → Download → Upload →
   lands in the owner's bot PM. Best quality always, no picker. Textbox
@@ -204,9 +204,9 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   pick still open). Pipe is NOT used inside the normal uploaders — moon
   decided that explicitly ("since i want upload as videos, using pipe
   everywhere is bad idea!").
-- `/sdl`: oversize **direct videos only**, time-split playable parts
+- `/vidsplit`: oversize **direct videos only**, time-split playable parts
   (≤1 GB/part, total ≤8 GB, one part on disk).
-- `/phost`: reply to a photo/image → Catbox upload, then freeimage.host as
+- `/imghost`: reply to a photo/image → Catbox upload, then freeimage.host as
   fallback (FREEIMAGE_KEY overrides its public key), temp deleted in `finally`.
 - File menu (`core/filemenu.py`, `plugins/filemenu.py`): sending a file
   replies with a menu — Generate links, MediaInfo, Convert, Screenshots,
@@ -267,8 +267,21 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.32.0
+## Current status (2026-11-16) — v1.33.0
 
+- v1.33.0 renames four commands moon found confusing (his picks,
+  no aliases — the old names stop working): `/sdl` →
+  `/vidsplit`, `/upage` → `/fileuploadpage`, `/sendlink` →
+  `/linkuploadpage`, `/phost` → `/imghost`. Handlers, menu
+  (`BOT_COMMANDS`), help text, and every user-facing message
+  updated. Deliberately UNCHANGED: the `/sendlink/{token}` web
+  route (moon's permanent link-upload page link keeps working),
+  module/file names (`plugins/sdl.py` etc.), and the internal
+  stats key `"sdl"` (renaming it would split job history).
+  Telegram caches the menu — moon may need to reopen the chat
+  to see the new names. Verified: 25 checks in
+  /tmp/test_v133.py (menu + handlers + no old command strings
+  left + route intact).
 - v1.32.0 adapts six picks from the WZML-X review (moon picked
   1, 2, 3, 5, 6, 7 of 8; 4 filename-cleaner/TMDB posters and 8
   ouo.io bypass were NOT picked — do not build them unprompted).
@@ -440,8 +453,8 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - **Pending device retests from moon:** `/convert` on v1.25.3 (bot now shows
   the real error if it still fails — he should send the popup text back),
   a real 600/900 MB zip (file count inside still unknown vs the 200 cap),
-  `/sendlink` one-tap flow on v1.27.0 (real video + image links), upage from
-  Windows, upage Upload-to-admin from the page, a Terabox link via FileSnag,
+  `/linkuploadpage` one-tap flow on v1.27.0 (real video + image links), fileuploadpage from
+  Windows, fileuploadpage Upload-to-admin from the page, a Terabox link via FileSnag,
   a luluvido page link, a real direct/HLS/DASH `/pipe`, fresh-link mpvRx
   seeks after v1.18.2.
 - **Open decisions waiting on moon:** Terabox ndus route (A. Koyeb API token

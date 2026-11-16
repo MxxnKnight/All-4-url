@@ -1,6 +1,6 @@
-"""/sdl — split download: an oversized direct-link video, in parts.
+"""/vidsplit — split download: an oversized direct-link video, in parts.
 
-    /sdl <direct video link>
+    /vidsplit <direct video link>
 
 The bot probes the link first (no downloading) and answers with a
 report card — direct link? really a video? range/seek support?
@@ -93,19 +93,19 @@ def _card_text(info: dict, probed, range_ok: bool,
 
 
 @Client.on_message(filters.private & admin_only
-                   & filters.command(["sdl"]))
+                   & filters.command(["vidsplit"]))
 async def sdl_cmd(_client: Client, message: Message):
     url = _extract_url(message)
     if not url:
         await message.reply_text(
-            "Usage: `/sdl <direct video link>` — I'll probe it and "
+            "Usage: `/vidsplit <direct video link>` — I'll probe it and "
             "show whether it can be split into watchable parts.")
         return
     status = await message.reply_text("🔍 Probing the link…")
     info = await check_direct(url)
     if not info:
         await status.edit_text(
-            "❌ That's not a direct file link — /sdl only works on "
+            "❌ That's not a direct file link — /vidsplit only works on "
             "links that point straight at a video file. (Page links "
             "go through the normal uploader.)")
         return
@@ -129,7 +129,7 @@ async def sdl_cmd(_client: Client, message: Message):
     elif total_size and total_size <= config.MAX_FILE_SIZE:
         problems.append("Good news instead: this fits under the "
                         "normal 2 GB limit — just send the link "
-                        "without /sdl and I'll fetch it as one file.")
+                        "without /vidsplit and I'll fetch it as one file.")
     elif total_size > config.SEGMENT_MAX_TOTAL_BYTES:
         problems.append(
             f"That file is {human_bytes(total_size)} — split mode "
@@ -178,7 +178,7 @@ async def sdl_callback(client: Client, query: CallbackQuery):
         return
     if not job or time.time() - job["ts"] > JOB_TTL:
         PENDING.pop(job_id, None)
-        await query.answer("This probe expired — run /sdl again.",
+        await query.answer("This probe expired — run /vidsplit again.",
                            show_alert=True)
         return
     if segmenter.busy():

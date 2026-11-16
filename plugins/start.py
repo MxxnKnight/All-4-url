@@ -44,12 +44,12 @@ up automatically and survive redeploys.
 **Destination**: `/destination` picks where finished files land —
 this chat, or your own Saved Messages — separately for URL uploads
 and restricted downloads.
-**Web upload**: `/upage` gives you a private, 1-hour upload page.
+**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
 Drop files there (max 750 MB each) and send the download link it
 gives you back here — I'll push it to Telegram straight from the
 server disk, no re-download, then delete the server copy. No
 matter which sudo uploads, the file lands in the admin's bot PM.
-**Link upload page**: `/sendlink` gives you a permanent, unlisted
+**Link upload page**: `/linkuploadpage` gives you a permanent, unlisted
 page instead — paste a link there and hit Fetch, one tap, and
 I'll download it at best quality and upload it to the admin's
 bot PM. The job card below shows Probe, Check, Download,
@@ -106,7 +106,7 @@ Optional upgrade: set STORAGE_CHANNEL_ID and files are copied into a
 private storage channel instead, so links survive deleting the original.
 
 Photos and image files don't trigger this — they stay quiet until you
-reply /phost to one, which hosts it on Catbox and gives you a direct
+reply /imghost to one, which hosts it on Catbox and gives you a direct
 image link instead."""
 
 SECTION_RESTRICTED = """🔒 **Restricted Downloader**

@@ -1,6 +1,6 @@
-""" /phost — host a replied image, get a direct image URL.
+""" /imghost — host a replied image, get a direct image URL.
 
-Reply /phost to a photo or an image sent as a file. The bot downloads
+Reply /imghost to a photo or an image sent as a file. The bot downloads
 it from Telegram, uploads it, replies with the direct link (displays as
 an image anywhere), and deletes its temp copy.
 
@@ -17,7 +17,7 @@ host's own error instead of one vague failure.
 
 Deliberately separate from file-to-link: sending an image does NOT
 auto-produce download/stream links (see _is_image_message in
-plugins/filetolink.py) — images stay quiet until /phost is replied to
+plugins/filetolink.py) — images stay quiet until /imghost is replied to
 one. That separation is the point: an image is not a file waiting for
 a download link, it's a picture waiting for a host.
 
@@ -54,7 +54,7 @@ FREEIMAGE_MAX_BYTES = 64 * 1024 * 1024
 
 
 def _image_target(message):
-    """(size, filename) for a /phost-able reply, else None.
+    """(size, filename) for a /imghost-able reply, else None.
 
     Accepts a photo (Telegram's compressed JPG) or a document whose
     MIME type is an image (the original file, sent as a file)."""
@@ -154,12 +154,12 @@ async def upload_image(path: str, filename: str) -> tuple[str, str]:
 
 
 @Client.on_message(filters.private & admin_only
-                   & filters.command("phost"))
+                   & filters.command("imghost"))
 async def phost_cmd(client: Client, message):
     target = _image_target(message)
     if target is None:
         await message.reply_text(
-            "Reply /phost to an image — a photo, or an image sent as a "
+            "Reply /imghost to an image — a photo, or an image sent as a "
             "file — and I'll host it and give you a direct link.")
         return
     size, filename = target

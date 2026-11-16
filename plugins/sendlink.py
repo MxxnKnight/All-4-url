@@ -1,4 +1,4 @@
-""" /sendlink — permanent private link-upload page (owner + sudo).
+""" /linkuploadpage — permanent private link-upload page (owner + sudo).
 
 The bot replies with a link that NEVER expires. Whoever opens it
 can paste a video/file/image link, pick a quality, and the server
@@ -7,7 +7,7 @@ downloads to the visitor's phone. The page is unlisted (noindex,
 robots.txt) and link-only: there is no password, the link itself
 is the key, so treat it like one.
 
-Sudo users get this too, like /upage: the file always lands in
+Sudo users get this too, like /fileuploadpage: the file always lands in
 the OWNER's bot PM, no matter who pasted the link.
 """
 
@@ -20,7 +20,7 @@ from core.utils import admin_only
 
 
 @Client.on_message(filters.private & admin_only
-                   & filters.command("sendlink"))
+                   & filters.command("linkuploadpage"))
 async def sendlink_cmd(client: Client, message):
     if not config.BASE_URL:
         await message.reply_text(

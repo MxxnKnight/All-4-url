@@ -1,4 +1,4 @@
-""" /upage — private web-upload link (owner + sudo).
+""" /fileuploadpage — private web-upload link (owner + sudo).
 
 The bot replies with a signed upload-page link valid for 1 hour.
 Files uploaded there land on the server disk; each finished file gets
@@ -20,7 +20,7 @@ from core.utils import admin_only
 
 
 @Client.on_message(filters.private & admin_only
-                   & filters.command("upage"))
+                   & filters.command("fileuploadpage"))
 async def upage_cmd(client: Client, message):
     if not config.BASE_URL:
         await message.reply_text(

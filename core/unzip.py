@@ -13,7 +13,7 @@ One-by-one extraction (v1.23.0, the owner's design):
   then the next file is extracted. Disk only ever holds
   zip + the largest single file inside it, so the total
   extracted can be far larger than free disk — it is now
-  capped at 8 GB as a bandwidth/time guard (same as /sdl's
+  capped at 8 GB as a bandwidth/time guard (same as /vidsplit's
   total), not as a disk guard.
 
 The key trick from before is kept: the total uncompressed
@@ -66,7 +66,7 @@ MAX_ZIP_BYTES = 1024 * 1024 * 1024
 #: All extracted (and sent) files together may not exceed this.
 #: This is now a bandwidth/time guard, NOT a disk guard —
 #: one-by-one extraction never holds the total on disk.
-#: 8 GB matches /sdl's total cap.
+#: 8 GB matches /vidsplit's total cap.
 MAX_EXTRACT_BYTES = 8 * 1024 * 1024 * 1024
 #: At most this many files out of one zip. Count alone was a bad
 #: rule on its own: a 10 MB zip with 65 tiny files is easy, a
