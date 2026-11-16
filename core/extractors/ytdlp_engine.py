@@ -37,7 +37,9 @@ def _base_opts(dest_dir: str, url: str | None = None,
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 30,
-        "retries": 3,
+        "retries": 10,
+        "fragment_retries": 10,
+        "trim_file_name": 220,
     }
     cookies = jar_for_url(url) if url else config.cookies_path()
     if cookies:

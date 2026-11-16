@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.31.0** (2026-11-16).
+- **Current version: v1.32.0** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -97,7 +97,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | Path | What it is |
 |---|---|
 | `main.py` | Startup, `BOT_COMMANDS`, version-notify hook, `webserver.bind_bot` |
-| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (2), `OUTBOUND_CAP_GB` (1000), `SPLIT_PART_BYTES` (1.95 GB), `SPLIT_MAX_TOTAL_BYTES` (20 GB), `TERABOX_NDUS`, `STORAGE_CHANNEL_ID` |
+| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (2), `OUTBOUND_CAP_GB` (1000), `SPLIT_PART_BYTES` (1.95 GB max per part), `SPLIT_MAX_TOTAL_BYTES` (20 GB), `TERABOX_NDUS`, `TERABOX_BDUSS`, `STORAGE_CHANNEL_ID` |
 | `core/utils.py` | `JOB_SEMAPHORE`, `ThrottledEditor`, `check_size` / `SizeBlocked`, `make_job_dir`, `cleanup_dir`, `progress_text`, `human_bytes`, `admin_only`, `is_admin_id` |
 | `core/sender.py` | `send_files`, `send_files_routed`, `send_file` (re-probes document-typed videos with ffprobe) |
 | `core/sudo.py` | Sudo model (below) |
@@ -267,8 +267,40 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.31.0
+## Current status (2026-11-16) — v1.32.0
 
+- v1.32.0 adapts six picks from the WZML-X review (moon picked
+  1, 2, 3, 5, 6, 7 of 8; 4 filename-cleaner/TMDB posters and 8
+  ouo.io bypass were NOT picked — do not build them unprompted).
+  Ideas only, reimplemented in our own code — WZML-X is AGPL-3.0,
+  so nothing is copied from it, and torrent features are excluded
+  entirely (moon: torrent may risk the HF account). (1) **Balanced
+  split** (`core/splitter.py`): parts are near-equal
+  (`ceil(size / parts)`, each at most `SPLIT_PART_BYTES`) instead
+  of fixed 1.95 GB chunks, so a file barely over the cap becomes
+  two even halves. (2) **FloodWait retry** (`core/sender.py`):
+  every send rides out short Telegram FloodWaits (sleep + retry,
+  max 5 waits, gives up past a 10-minute wait) instead of failing
+  the job. (3) **yt-dlp hardening**: `retries` 3 → 10,
+  `fragment_retries: 10`, `trim_file_name: 220`. (4) **Split
+  parts as one media group**: consecutive `.001`/`.002` parts go
+  out as a single album (chunked at 10). (5) **New host
+  resolvers**: mediafire, gofile, hubcloud/hubdrive/gdflix
+  (`core/extractors/mediafire.py`, `gofile.py`, `hubcloud.py`,
+  registered after `filehosts`); hubcloud probes candidates
+  with a 1-byte Range GET, never HEAD (R2 presigned URLs are
+  GET-signed — HEAD 403s). Gdflix live flow + pack support are
+  implemented but UNVERIFIED against the live site (gdflix
+  file pages 500d during testing; no live pack link found).
+  (6) **Richer captions**: uploads gain a size/duration/quality
+  line (total size across all paths; duration + resolution from
+  ffprobe). (7) **Terabox BDUSS**: `TERABOX_BDUSS` env var —
+  either cookie alone enables the cookie route; both set means
+  both sent. Verified: 60 checks in /tmp/test_v132.py + 31
+  replay checks in /tmp/test_v132_replay.py (real curl-fetched
+  pages through the modules' real code; sandbox aiohttp cannot
+  reach live sites, so one live-bot retest per new host is
+  still the final proof).
 - v1.31.0 adds a **Reddit OAuth extractor**
   (`core/extractors/reddit_oauth.py`): Reddit posts go through
   Reddit's official API (app-only bearer token from a free "script"

@@ -3,8 +3,9 @@
 Telegram bot uploads cap at 2 GB (config.MAX_FILE_SIZE), but the host
 can now hold much bigger files (50 GB disk on HF, vs 2 GB on Koyeb).
 So instead of refusing a 5 GB download, the bot chops the finished
-file into ~1.95 GB parts — `movie.mkv.001`, `movie.mkv.002`, … —
-sends each part as a document, and deletes them from disk.
+file into near-equal parts of at most ~1.95 GB — `movie.mkv.001`,
+`movie.mkv.002`, … — sends each part as a document, and deletes
+them from disk.
 
 Parts are NOT playable on their own: they are chopped byte ranges
 and must be joined back first (7-Zip, or `cat part1 part2 > file`)
@@ -164,6 +165,11 @@ async def maybe_split(paths: list[str], editor=None,
                 f"split limit, so I can't send it even in parts.")
         check_split_room(size)
         count = (size + config.SPLIT_PART_BYTES - 1) // config.SPLIT_PART_BYTES
+        # Balanced parts: near-equal pieces instead of fixed-size
+        # chunks, so a file barely over the cap becomes two even
+        # halves instead of a 1.95 GB chunk plus a tiny tail.
+        # ceil(size / count) is always <= SPLIT_PART_BYTES.
+        part_size = (size + count - 1) // count
         note = (f"Splitting {os.path.basename(path)} "
                 f"({human_bytes(size)}) into {count} parts…")
         if editor is not None:
@@ -173,7 +179,6 @@ async def maybe_split(paths: list[str], editor=None,
                 await status_msg.edit_text(note)
             except Exception:
                 pass
-        parts = await run_blocking(_split_file_sync, path,
-                                   config.SPLIT_PART_BYTES)
+        parts = await run_blocking(_split_file_sync, path, part_size)
         out.extend(parts)
     return out

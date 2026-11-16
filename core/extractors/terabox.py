@@ -10,7 +10,9 @@ Original implementation of the publicly documented share flow:
 4. Download the chosen file's dlink with a browser user-agent + cookie.
 
 Terabox changes this flow from time to time; when it breaks, the API
-step is the part to re-check. A valid TERABOX_NDUS cookie is required.
+step is the part to re-check. A valid TERABOX_NDUS or TERABOX_BDUSS
+cookie is required (either alone works; when both are set, both
+are sent).
 
 Fallback (added 2026-10-25): when the cookie route fails — including
 when no ndus cookie is set at all — list_files() falls back to
@@ -65,13 +67,25 @@ def extract_surl(url: str) -> str | None:
 
 
 def _cookies() -> dict:
-    if not config.TERABOX_NDUS:
+    """ndus and/or BDUSS cookies for the share API + downloads.
+
+    Either cookie alone enables the cookie route; when both are
+    set, both are sent (BDUSS accompanies ndus, it does not
+    replace it). Raises only when neither is set.
+    """
+    cookies: dict[str, str] = {}
+    if config.TERABOX_NDUS:
+        cookies["ndus"] = config.TERABOX_NDUS
+    if config.TERABOX_BDUSS:
+        cookies["BDUSS"] = config.TERABOX_BDUSS
+    if not cookies:
         raise TeraboxError(
-            "TERABOX_NDUS is not set. Terabox needs the `ndus` cookie of a "
-            "logged-in Terabox account — see the README ('Terabox cookie') "
-            "for the 1-minute browser steps, then add it as an env var."
+            "TERABOX_NDUS / TERABOX_BDUSS is not set. Terabox needs "
+            "the `ndus` or `BDUSS` cookie of a logged-in Terabox "
+            "account — see the README ('Terabox cookie') for the "
+            "1-minute browser steps, then add it as an env var."
         )
-    return {"ndus": config.TERABOX_NDUS}
+    return cookies
 
 
 async def _cookie_list_files(url: str) -> list[dict]:
@@ -137,13 +151,13 @@ async def list_files(url: str) -> list[dict]:
     so a dead link is not mistaken for a cookie problem (or reverse).
     """
     cookie_err = None
-    if config.TERABOX_NDUS:
+    if config.TERABOX_NDUS or config.TERABOX_BDUSS:
         try:
             return await _cookie_list_files(url)
         except TeraboxError as exc:
             cookie_err = exc
     else:
-        cookie_err = TeraboxError("no ndus cookie set")
+        cookie_err = TeraboxError("no ndus/BDUSS cookie set")
     try:
         return await filesnag.list_files(url)
     except filesnag.FileSnagError as exc:

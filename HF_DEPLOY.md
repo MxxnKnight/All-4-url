@@ -37,6 +37,8 @@ HF PRO ($9/mo).
    Koyeb — copy them, do not retype secrets from memory):
    - Secrets: `API_ID`, `API_HASH`, `BOT_TOKEN`, `SESSION_STRING`
      (if used), `DB_URI` (if used), `TERABOX_NDUS` (if used),
+     `TERABOX_BDUSS` (if used — the same account's Baidu login
+     cookie; either cookie alone enables the Terabox cookie route),
      `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` (if used — Reddit
      app login for the OAuth extractor; without them Reddit stays
      on gallery-dl + cookies).

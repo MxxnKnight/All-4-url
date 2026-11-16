@@ -27,8 +27,8 @@ API hiccup. Both dispatch sites catch it and continue the chain
 instead of failing the job.
 """
 
-from core.extractors import (filehosts, luluvido, reddit_oauth, streamtape,
-                             vidara)
+from core.extractors import (filehosts, gofile, hubcloud, luluvido,
+                             mediafire, reddit_oauth, streamtape, vidara)
 
 SITES = [
     # Player pages that need their own JS replayed (no yt-dlp extractor).
@@ -36,6 +36,12 @@ SITES = [
     vidara,
     # File hosts / shorteners whose page hides the file behind a gate.
     filehosts,
+    # Direct file hosts with their own page/API flow (no yt-dlp
+    # extractor): mediafire pages, gofile shares, hubcloud /
+    # hubdrive / gdflix movie-link hosts.
+    mediafire,
+    gofile,
+    hubcloud,
     # LuluStream's packed-jwplayer pages.
     luluvido,
     # Reddit via its official OAuth API — the deliberate exception to

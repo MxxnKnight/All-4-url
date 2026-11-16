@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.31.0"
+BOT_VERSION = "1.32.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -120,6 +120,10 @@ LINK_EXPIRY_HOURS = _int("LINK_EXPIRY_HOURS", 72)
 # The `ndus` cookie of a logged-in Terabox account. See README for how to
 # copy it out of your browser. Terabox links fail without it.
 TERABOX_NDUS = (os.environ.get("TERABOX_NDUS") or "").strip()
+# The `BDUSS` cookie of the same account (Baidu's login cookie).
+# Either cookie alone enables the cookie route; when both are set,
+# both are sent (BDUSS accompanies ndus, it does not replace it).
+TERABOX_BDUSS = (os.environ.get("TERABOX_BDUSS") or "").strip()
 
 # --- Reddit OAuth (optional) --------------------------------------------------
 # Client ID + secret of a Reddit "script" app (reddit.com/prefs/apps).
@@ -155,8 +159,9 @@ SEGMENT_MAX_TOTAL_GB = max(1, _int("SEGMENT_MAX_TOTAL_GB", 8))
 SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
 
 # Byte-split downloads (core/splitter.py): a finished download over
-# MAX_FILE_SIZE is chopped into ~1.95 GB .001/.002 parts instead of
-# being refused, then sent as documents. Parts are NOT playable —
+# MAX_FILE_SIZE is chopped into near-equal .001/.002 parts of at
+# most ~1.95 GB each instead of being refused, then sent as
+# documents. Parts are NOT playable —
 # they must be joined back (7-Zip, or `cat`) before watching, unlike
 # /sdl's time segments. The split briefly holds the file AND its
 # parts (2x on disk), so the total cap stays well under the host's
