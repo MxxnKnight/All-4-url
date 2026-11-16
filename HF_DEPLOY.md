@@ -45,7 +45,11 @@ HF PRO ($9/mo).
    - Variables: `OWNER_ID`, `SUDO_USERS` (if any), `DB_NAME=all4url`,
      `PORT=7860`, `BASE_URL=https://<user>-<space>.hf.space`
      (no trailing slash, no `/app`), `LINK_EXPIRY_HOURS=72`,
-     `OUTBOUND_CAP_GB=1000`, `MAX_JOBS=2`.
+     `OUTBOUND_CAP_GB=100` (owner's choice — HF publishes no cap,
+     but the guard stays at 100), `MAX_JOBS=4`.
+     Optional tuning variables: `SEGMENT_MAX_MB` (50-1900, default
+     1000 — /vidsplit part size), `PARALLEL_DOWNLOADS` (1 = on,
+     0 = off — parallel Range downloads for direct links ≥20 MB).
    - `BASE_URL` must be the Space's own `*.hf.space` address, or
      file-to-link / Mini App / upage / sendlink URLs will point at
      the wrong host.
@@ -59,7 +63,7 @@ HF PRO ($9/mo).
    Keep the Koyeb service stopped — not deleted — until HF has
    proven itself for a few days; it is the fallback.
 6. **Verify on the live bot:** `/status` answers, a link downloads,
-   a file-to-link Stream link plays, `/sendlink` opens. Old Koyeb
+   a file-to-link Stream link plays, `/linkuploadpage` opens. Old Koyeb
    file-to-link URLs stop working the moment Koyeb stops — that is
    expected; new links come from the HF address.
 

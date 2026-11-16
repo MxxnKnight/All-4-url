@@ -13,8 +13,8 @@ One-by-one extraction (v1.23.0, the owner's design):
   then the next file is extracted. Disk only ever holds
   zip + the largest single file inside it, so the total
   extracted can be far larger than free disk — it is now
-  capped at 8 GB as a bandwidth/time guard (same as /vidsplit's
-  total), not as a disk guard.
+  capped at 20 GB as a bandwidth/time guard (same as the
+  byte-split total), not as a disk guard.
 
 The key trick from before is kept: the total uncompressed
 size, the largest file, and the file count are all known
@@ -59,24 +59,28 @@ import zipfile
 import config
 from core.utils import human_bytes
 
-#: A zip file itself may not be bigger than this. 1 GB covers
-#: the owner's 600 MB and 900 MB zips; a bigger zip plus its
-#: largest file plus headroom would not fit in 2 GB of disk.
-MAX_ZIP_BYTES = 1024 * 1024 * 1024
+#: A zip file itself may not be bigger than this. 2 GB is the real
+#: ceiling: a zip sent to the bot can never exceed Telegram's own
+#: 2 GB file cap, and a zip downloaded from a link over 2 GB is
+#: split into .001 parts before it ever reaches the unzipper
+#: (plugins/uploader.py splits first, prompts second) — so a
+#: higher number here would be dead config, not a real limit.
+MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024
 #: All extracted (and sent) files together may not exceed this.
 #: This is now a bandwidth/time guard, NOT a disk guard —
 #: one-by-one extraction never holds the total on disk.
-#: 8 GB matches /vidsplit's total cap.
-MAX_EXTRACT_BYTES = 8 * 1024 * 1024 * 1024
+#: 20 GB matches the byte-split total cap.
+MAX_EXTRACT_BYTES = 20 * 1024 * 1024 * 1024
 #: At most this many files out of one zip. Count alone was a bad
 #: rule on its own: a 10 MB zip with 65 tiny files is easy, a
-#: 1 GB zip with 65 huge files is hard — so total (8 GB) and
+#: 1 GB zip with 65 huge files is hard — so total (20 GB) and
 #: per-file (2 GB) caps are the real limits, and count is only
-#: a guard against hundreds of separate Telegram messages in
+#: a guard against thousands of separate Telegram messages in
 #: one job (chat spam, FloodWait, job time), not a disk guard.
-#: 200 covers a 65-file zip with room to spare, while still
-#: refusing absurd 500+ file jobs that would flood the chat.
-MAX_EXTRACT_FILES = 200
+#: 1000 covers the owner's many-file zips with room to spare,
+#: while still refusing absurd 1000+ file jobs that would flood
+#: the chat for hours.
+MAX_EXTRACT_FILES = 1000
 #: Free disk that must remain after extracting one entry
 #: (same margin the upage uploader reserves).
 HEADROOM_BYTES = 256 * 1024 * 1024

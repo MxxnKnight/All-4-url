@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
 
+import config
 from core import stats
 
 BROWSER_UA = (
@@ -128,10 +129,16 @@ async def check_direct(url: str) -> dict | None:
         return None
 
 
-async def download_file(url: str, dest_dir: str, progress_cb=None,
-                        filename: str | None = None, headers: dict | None = None,
-                        cookies: dict | None = None) -> str:
-    """Stream `url` to disk in chunks (never loads the file into RAM)."""
+async def _download_file_single(url: str, dest_dir: str, progress_cb=None,
+                                filename: str | None = None,
+                                headers: dict | None = None,
+                                cookies: dict | None = None) -> str:
+    """Stream `url` to disk in chunks (never loads the file into RAM).
+
+    The plain single-connection download. Called directly only by
+    download_file_parallel's fallback and when the parallel toggle
+    is off — every other caller goes through download_file().
+    """
     req_headers = {"User-Agent": BROWSER_UA}
     if headers:
         req_headers.update(headers)
@@ -154,13 +161,37 @@ async def download_file(url: str, dest_dir: str, progress_cb=None,
             return path
 
 
-#: Parallel-download tuning. Only used for hosts proven to support
-#: Range (FileSnag's backend does — verified 2026-10-25: concurrent
-#: Range requests all returned 206 with byte-exact slices). Small
-#: files are not worth the extra connections, so below this size the
-#: caller falls back to the single-stream download_file above.
+#: Parallel-download tuning. Files of 20 MB or more go through
+#: download_file_parallel (4 simultaneous Range chunks) when the
+#: PARALLEL_DOWNLOADS toggle is on; anything smaller, or any host
+#: that does not support Range, falls back to the single-stream
+#: download. Proven first on FileSnag's backend (verified
+#: 2026-10-25: concurrent Range requests all returned 206 with
+#: byte-exact slices) and Terabox, then opened to every direct
+#: link in v1.34.0.
 PARALLEL_MIN_BYTES = 20 * 1024 * 1024
 PARALLEL_CONNECTIONS = 4
+
+
+async def download_file(url: str, dest_dir: str, progress_cb=None,
+                        filename: str | None = None,
+                        headers: dict | None = None,
+                        cookies: dict | None = None) -> str:
+    """Download a direct link — parallel when it helps, single otherwise.
+
+    Every direct download in the bot comes through here (uploader,
+    sendlink, and all host extractors). The parallel path probes
+    with a 1-byte Range GET and falls back to single-stream on any
+    doubt, so a host that dislikes Range just downloads slowly
+    instead of failing. The PARALLEL_DOWNLOADS toggle (Space
+    variable, 1 = on, 0 = off) is honoured inside
+    download_file_parallel, so turning it off makes every download
+    single-stream — including Terabox/FileSnag, which call the
+    parallel function directly.
+    """
+    return await download_file_parallel(
+        url, dest_dir, progress_cb=progress_cb, filename=filename,
+        headers=headers, cookies=cookies)
 
 
 async def download_file_parallel(url: str, dest_dir: str, progress_cb=None,
@@ -182,9 +213,13 @@ async def download_file_parallel(url: str, dest_dir: str, progress_cb=None,
     held in RAM); every chunk's byte count is verified; ANY failure,
     a 200 instead of 206, a missing size, or a host without
     Accept-Ranges, discards the partial file and retries the whole
-    download single-stream via download_file. A cancelled job is
+    download single-stream via _download_file_single. A cancelled job is
     never retried — cancellation re-raises.
     """
+    if not config.PARALLEL_DOWNLOADS:
+        return await _download_file_single(
+            url, dest_dir, progress_cb=progress_cb, filename=filename,
+            headers=headers, cookies=cookies)
     req_headers = {"User-Agent": BROWSER_UA}
     if headers:
         req_headers.update(headers)
@@ -266,8 +301,8 @@ async def download_file_parallel(url: str, dest_dir: str, progress_cb=None,
                 os.unlink(path)
             except OSError:
                 pass
-        return await download_file(url, dest_dir, progress_cb=progress_cb,
-                                   filename=filename, headers=headers,
-                                   cookies=cookies)
+        return await _download_file_single(
+            url, dest_dir, progress_cb=progress_cb,
+            filename=filename, headers=headers, cookies=cookies)
     stats.record_paths("downloaded", [path])
     return path

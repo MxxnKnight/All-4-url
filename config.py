@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.33.0"
+BOT_VERSION = "1.34.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -142,9 +142,16 @@ DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR") or os.path.join(BASE_DIR, "downloa
 # Netscape cookies.txt (Instagram & co.), if the owner provided one.
 COOKIES_FILE = os.environ.get("COOKIES_FILE") or os.path.join(BASE_DIR, "cookies.txt")
 
-# Hard cap on simultaneous download/upload jobs. The Koyeb free nano has
-# ~512 MB RAM and 0.1 vCPU, so 2 is the sensible ceiling.
-MAX_JOBS = max(1, _int("MAX_JOBS", 2))
+# Hard cap on simultaneous download/upload jobs. Downloads are
+# mostly waiting on the network, not the CPU, so 4 fits the HF
+# Space (2 CPU, 16 GB RAM) where the old Koyeb nano (0.1 vCPU)
+# only managed 2. Rate limits still respected: every send goes
+# through the FloodWait retry (core/sender.py), media groups and
+# zip sends pace 1 s between messages, only one oversize
+# download+split runs at a time (core/splitter.py BIG_FILE_LOCK),
+# only one browser scan runs at a time (BROWSER_LOCK), and the
+# monthly outbound guard still pauses new jobs at 95% of cap.
+MAX_JOBS = max(1, _int("MAX_JOBS", 4))
 
 # Safety ceiling for a single file, in bytes. Telegram bot uploads are
 # limited to 2 GB anyway; keep a little headroom below that.
@@ -153,10 +160,22 @@ MAX_FILE_SIZE = _int("MAX_FILE_SIZE", 2_000_000_000)
 # Split downloads (/vidsplit, core/segmenter.py): an oversized direct-link
 # VIDEO is cut into watchable parts instead of being refused. Each
 # part obeys BOTH caps; the whole file must fit under the total cap.
+# SEGMENT_MAX_MB is the owner's knob for part size (Space variable):
+# 1900 gives the fewest parts, 500 gives smaller ones. The ceiling
+# is 1900, not 2000 — a part must stay under Telegram's 2 GB cap
+# with margin, and the floor is 50 so a part is never silly-small.
 SEGMENT_MAX_MIN = max(1, _int("SEGMENT_MAX_MIN", 45))
-SEGMENT_MAX_MB = max(50, _int("SEGMENT_MAX_MB", 1000))
+SEGMENT_MAX_MB = min(1900, max(50, _int("SEGMENT_MAX_MB", 1000)))
 SEGMENT_MAX_TOTAL_GB = max(1, _int("SEGMENT_MAX_TOTAL_GB", 8))
 SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
+
+# Parallel downloads (core/extractors/direct.py): direct links of
+# 20 MB or more download in 4 simultaneous Range chunks instead of
+# one stream, when the host supports Range. Any failure falls back
+# to the single-stream download, so a host that dislikes it just
+# downloads slowly instead of failing. Space variable, 1 = on
+# (default), 0 = off — every download single-stream.
+PARALLEL_DOWNLOADS = _int("PARALLEL_DOWNLOADS", 1) != 0
 
 # Byte-split downloads (core/splitter.py): a finished download over
 # MAX_FILE_SIZE is chopped into near-equal .001/.002 parts of at

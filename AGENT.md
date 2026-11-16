@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.33.0** (2026-11-16).
+- **Current version: v1.34.0** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -97,7 +97,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | Path | What it is |
 |---|---|
 | `main.py` | Startup, `BOT_COMMANDS`, version-notify hook, `webserver.bind_bot` |
-| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (2), `OUTBOUND_CAP_GB` (1000), `SPLIT_PART_BYTES` (1.95 GB max per part), `SPLIT_MAX_TOTAL_BYTES` (20 GB), `TERABOX_NDUS`, `TERABOX_BDUSS`, `STORAGE_CHANNEL_ID` |
+| `config.py` | `BOT_VERSION`, `BOT_TOKEN`, `OWNER_ID`, `BASE_URL`, `LINK_EXPIRY_HOURS` (72), `MAX_FILE_SIZE`, `MAX_JOBS` (4), `OUTBOUND_CAP_GB` (1000), `SPLIT_PART_BYTES` (1.95 GB max per part), `SPLIT_MAX_TOTAL_BYTES` (20 GB), `TERABOX_NDUS`, `TERABOX_BDUSS`, `STORAGE_CHANNEL_ID` |
 | `core/utils.py` | `JOB_SEMAPHORE`, `ThrottledEditor`, `check_size` / `SizeBlocked`, `make_job_dir`, `cleanup_dir`, `progress_text`, `human_bytes`, `admin_only`, `is_admin_id` |
 | `core/sender.py` | `send_files`, `send_files_routed`, `send_file` (re-probes document-typed videos with ffprobe) |
 | `core/sudo.py` | Sudo model (below) |
@@ -108,7 +108,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 | `core/upage.py` | `/fileuploadpage` 1-hour upload page (see below) |
 | `core/sendlink.py` | `/linkuploadpage` permanent link-upload page (see below) |
 | `core/pipe.py` | `/pipe` Telegram-direct chunked pipe |
-| `core/unzip.py` | One-by-one zip extraction (`zip_info`, `iter_extracted`; caps: zip ≤1 GB, total ≤8 GB, ≤200 files) |
+| `core/unzip.py` | One-by-one zip extraction (`zip_info`, `iter_extracted`; caps: zip ≤2 GB, total ≤20 GB, ≤1000 files) |
 | `core/filemenu.py` | File-menu builders (`fm:` callbacks) |
 | `core/videotools.py` | Screenshots / sample clips (ffprobe/ffmpeg) |
 | `core/mediainfo.py` | Partial probe (head chunks + MP4/MOV moov tail, ~16 MB max) |
@@ -205,7 +205,7 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   decided that explicitly ("since i want upload as videos, using pipe
   everywhere is bad idea!").
 - `/vidsplit`: oversize **direct videos only**, time-split playable parts
-  (≤1 GB/part, total ≤8 GB, one part on disk).
+  (≤1 GB/part by default, SEGMENT_MAX_MB option 50–1900, total ≤8 GB, one part on disk).
 - `/imghost`: reply to a photo/image → Catbox upload, then freeimage.host as
   fallback (FREEIMAGE_KEY overrides its public key), temp deleted in `finally`.
 - File menu (`core/filemenu.py`, `plugins/filemenu.py`): sending a file
@@ -267,8 +267,38 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.33.0
+## Current status (2026-11-16) — v1.34.0
 
+- v1.34.0 is moon's picks from the "bigger hosting" list (1, 2, 4-partial,
+  5; 3 download cache NOT picked, do not build unprompted):
+  (1) zip caps raised — zip ≤2 GB (the real ceiling: Telegram's own
+  cap for sent files, and link zips over 2 GB are split before they
+  reach the unzipper, so a higher number would be dead config),
+  total ≤20 GB, ≤1000 files (was 1 GB / 8 GB / 200);
+  (2) MAX_JOBS default 2 → 4 (downloads are I/O-bound; FloodWait
+  retry, 1 s pacing, BIG_FILE_LOCK and BROWSER_LOCK all still
+  apply) — NOTE: the Space variable MAX_JOBS=2 overrides the code
+  default until moon changes it to 4 in Space Settings;
+  (4) /vidsplit total cap NOT raised (moon's call) but the part
+  size is now a documented option — SEGMENT_MAX_MB was already
+  env-overridable, now clamped 50–1900 so a part can never exceed
+  Telegram's 2 GB cap; (5) parallel downloads for EVERY direct
+  link ≥20 MB (download_file now routes through
+  download_file_parallel, which falls back to single-stream on any
+  doubt), with a PARALLEL_DOWNLOADS Space-variable toggle (1 = on,
+  0 = off — honoured inside download_file_parallel, so Terabox /
+  FileSnag's direct calls respect it too). Moon also decided the
+  outbound guard stays at 100 GB (he does not believe HF has
+  1000 GB of bandwidth) — .env.example + HF_DEPLOY.md now say 100;
+  the code default stays 1000 as a runaway safety. aria2 /
+  JDownloader were asked about and answered no: the parallel
+  downloader covers aria2's speed win without a second process,
+  and JDownloader is a heavy Java desktop app unsuited to a
+  2-CPU Space. Verified: 26 checks in /tmp/test_v134.py (config
+  defaults + env clamps, zip caps incl. 201-file pass / 1001-file
+  refuse, parallel dispatch with mocks, byte-identical downloads
+  against a local Range server incl. toggle-off and no-Range
+  fallback).
 - v1.33.0 renames four commands moon found confusing (his picks,
   no aliases — the old names stop working): `/sdl` →
   `/vidsplit`, `/upage` → `/fileuploadpage`, `/sendlink` →
@@ -452,7 +482,7 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   `/status`'s version line when it matters.
 - **Pending device retests from moon:** `/convert` on v1.25.3 (bot now shows
   the real error if it still fails — he should send the popup text back),
-  a real 600/900 MB zip (file count inside still unknown vs the 200 cap),
+  a real 600/900 MB zip (file count inside still unknown vs the 1000 cap),
   `/linkuploadpage` one-tap flow on v1.27.0 (real video + image links), fileuploadpage from
   Windows, fileuploadpage Upload-to-admin from the page, a Terabox link via FileSnag,
   a luluvido page link, a real direct/HLS/DASH `/pipe`, fresh-link mpvRx
