@@ -34,6 +34,7 @@ from core.extractors import (browser_scan, gallery_engine, scrape,
 from core import splitter, stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
                                      is_playlist_url)
+from core.extractors.player_scan import FallThrough
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
@@ -614,6 +615,12 @@ async def _dispatch(client: Client, message: Message, url: str,
             except SizeBlocked as exc:
                 await status.edit_text(f"❌ {exc}")
                 return "failed"
+            except FallThrough as exc:
+                # Matched the URL but not the media (a link post, a
+                # deleted post, an API hiccup) — the next engine gets
+                # its turn; the reason joins the final error list.
+                errors.append(
+                    f"{site.__name__.rsplit('.', 1)[-1]}: {exc}")
             except Exception as exc:
                 await status.edit_text(
                     f"{site.__name__.rsplit('.', 1)[-1]} failed: {exc}")

@@ -32,6 +32,14 @@ class HostError(Exception):
     """A custom extractor could not produce a usable media URL."""
 
 
+class FallThrough(Exception):
+    """The URL looked like this extractor's site, but turned out not
+    to be its media (a link post, a deleted post, an API hiccup).
+    The dispatch chain catches it and tries the next engine instead
+    of failing the job — the reason rides along in the final error
+    list so the owner still sees what this engine said."""
+
+
 #: Markers of Cloudflare's interactive "Just a moment…" browser check.
 CF_MARKERS = (
     "just a moment",

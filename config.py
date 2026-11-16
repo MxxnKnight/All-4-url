@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.30.0"
+BOT_VERSION = "1.31.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -120,6 +120,15 @@ LINK_EXPIRY_HOURS = _int("LINK_EXPIRY_HOURS", 72)
 # The `ndus` cookie of a logged-in Terabox account. See README for how to
 # copy it out of your browser. Terabox links fail without it.
 TERABOX_NDUS = (os.environ.get("TERABOX_NDUS") or "").strip()
+
+# --- Reddit OAuth (optional) --------------------------------------------------
+# Client ID + secret of a Reddit "script" app (reddit.com/prefs/apps).
+# The reddit_oauth extractor uses them for app-only API access, so
+# Reddit posts download without a cookie jar. When either is empty
+# the extractor stays off and Reddit flows through gallery-dl as
+# before. Both are secrets: Space Secrets, never the repo.
+REDDIT_CLIENT_ID = (os.environ.get("REDDIT_CLIENT_ID") or "").strip()
+REDDIT_CLIENT_SECRET = (os.environ.get("REDDIT_CLIENT_SECRET") or "").strip()
 
 # --- Behaviour ---------------------------------------------------------------
 # Where downloads land before being uploaded. On Koyeb this is ephemeral

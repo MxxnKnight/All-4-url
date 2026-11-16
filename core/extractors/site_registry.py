@@ -19,9 +19,16 @@ honest error, and the other sites keep working.
 To add a site: write its module, add one line to SITES below,
 and add its flow to the uploader's dispatch (the custom flow
 there is site-agnostic — it only needs the module).
+
+A module whose URL matched but whose media turns out to belong to
+another engine raises FallThrough (player_scan) from resolve() or
+download() — a Reddit link to a YouTube video, a deleted post, an
+API hiccup. Both dispatch sites catch it and continue the chain
+instead of failing the job.
 """
 
-from core.extractors import filehosts, luluvido, streamtape, vidara
+from core.extractors import (filehosts, luluvido, reddit_oauth, streamtape,
+                             vidara)
 
 SITES = [
     # Player pages that need their own JS replayed (no yt-dlp extractor).
@@ -31,6 +38,12 @@ SITES = [
     filehosts,
     # LuluStream's packed-jwplayer pages.
     luluvido,
+    # Reddit via its official OAuth API — the deliberate exception to
+    # "never register a site yt-dlp understands": yt-dlp's Reddit path
+    # is the scrape Reddit blocks on datacenter IPs. Only matches
+    # when REDDIT_CLIENT_ID/SECRET are set; otherwise gallery-dl
+    # handles Reddit exactly as before.
+    reddit_oauth,
 ]
 
 

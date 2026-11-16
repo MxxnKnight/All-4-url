@@ -36,7 +36,10 @@ HF PRO ($9/mo).
 3. **Set the variables/secrets in Space Settings** (same values as
    Koyeb — copy them, do not retype secrets from memory):
    - Secrets: `API_ID`, `API_HASH`, `BOT_TOKEN`, `SESSION_STRING`
-     (if used), `DB_URI` (if used), `TERABOX_NDUS` (if used).
+     (if used), `DB_URI` (if used), `TERABOX_NDUS` (if used),
+     `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` (if used — Reddit
+     app login for the OAuth extractor; without them Reddit stays
+     on gallery-dl + cookies).
    - Variables: `OWNER_ID`, `SUDO_USERS` (if any), `DB_NAME=all4url`,
      `PORT=7860`, `BASE_URL=https://<user>-<space>.hf.space`
      (no trailing slash, no `/app`), `LINK_EXPIRY_HOURS=72`,

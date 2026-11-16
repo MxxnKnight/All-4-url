@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.30.0** (2026-11-16).
+- **Current version: v1.31.0** (2026-11-16).
 
 ## How moon works — the contract
 
@@ -267,8 +267,24 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.30.0
+## Current status (2026-11-16) — v1.31.0
 
+- v1.31.0 adds a **Reddit OAuth extractor**
+  (`core/extractors/reddit_oauth.py`): Reddit posts go through
+  Reddit's official API (app-only bearer token from a free "script"
+  app) instead of the scrape Reddit blocks on datacenter IPs — no
+  cookie jar needed, one API call for the post's media URLs. Video
+  via `media.reddit_video.dash_url` (yt-dlp merges the DASH
+  tracks), galleries via `gallery_data` + `media_metadata`, images
+  direct, GIFs via the preview mp4 variant; crossposts fall back to
+  the parent. Needs `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET`
+  (Space Secrets); when unset the extractor doesn't match and
+  Reddit stays on gallery-dl + cookies exactly as before. Any
+  failure before media is confirmed raises `FallThrough`
+  (`player_scan.py`) — both dispatch sites catch it and continue
+  the chain, so a Reddit link to a YouTube video still reaches
+  yt-dlp. Live proof still needs moon's Reddit app + a device test
+  (no credentials exist yet to test the API path from the host).
 - v1.30.0 adds two HF-only features (both were impossible on Koyeb's
   2 GB disk / 512 MB RAM). (1) **Byte-split downloads**
   (`core/splitter.py`): a finished download over the 2 GB Telegram cap
