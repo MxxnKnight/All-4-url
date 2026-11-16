@@ -393,5 +393,5 @@ both at once). No code changes are needed.
 | Links in file-to-link point nowhere | `BASE_URL` isn't the public Koyeb URL |
 | /mediainfo finds no streams on an MP4 | Metadata sits in a tail `moov` — the probe already retries with the tail; if it still fails, the file is likely truncated/corrupt |
 | /mediainfo summary works but report is a .txt file | Telegraph was unreachable at that moment; the full report is the attachment |
-| Everything got slow / OOM | Someone raised `MAX_JOBS`, or giant files — keep it at 2 |
+| Everything got slow / OOM | Someone raised `MAX_JOBS` past 4, or giant files — keep it at 4 |
 | Terabox: jsToken / cookie error | `ndus` cookie expired — redo the cookie steps |
