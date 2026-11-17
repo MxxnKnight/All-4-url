@@ -134,15 +134,31 @@ def _next_job_id() -> str:
     return f"{int(time.time()) % 100000}{_counter}"
 
 
+# How many links one message may carry: each is a full download +
+# upload job, so a paste of dozens would hold the handler for hours.
+# The rest are skipped with a note (v1.38.0).
+MAX_MULTI_LINKS = 10
+
+
+def _extract_urls(message: Message) -> list[str]:
+    """Every uploadable URL in the message, in order, de-duplicated.
+
+    Telegram links are skipped — the restricted plugin owns those.
+    """
+    urls: list[str] = []
+    for match in URL_RE.finditer(message.text or ""):
+        url = match.group(0).rstrip(").,>]\"'")
+        if "t.me/" in url or "telegram.me/" in url:
+            continue
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
 def _extract_url(message: Message) -> str | None:
-    text = message.text or ""
-    match = URL_RE.search(text)
-    if not match:
-        return None
-    url = match.group(0).rstrip(").,>]\"'")
-    if "t.me/" in url or "telegram.me/" in url:
-        return None  # Telegram links belong to the restricted plugin
-    return url
+    """First uploadable URL in the message, or None."""
+    urls = _extract_urls(message)
+    return urls[0] if urls else None
 
 
 # ---------------------------------------------------------------- Terabox UI
@@ -542,21 +558,41 @@ async def gallery_cmd(client: Client, message: Message):
                                        "mediainfo", "live", "pipe",
                                        "vidsplit", "browser", "gallery"]))
 async def url_handler(client: Client, message: Message):
-    url = _extract_url(message)
-    if not url:
+    urls = _extract_urls(message)
+    if not urls:
         return
     await react(message, "👀")
-    status = await message.reply_text("Working on it…")
-    editor = ThrottledEditor(status)
-    outcome = await _dispatch(client, message, url, status, editor)
-    if outcome == "done":
-        await react(message, "👍")
-        stats.record_job("uploader", ok=True)
-    elif outcome == "failed":
-        await react(message, "👎")
-        stats.record_job("uploader", ok=False)
+    if len(urls) > MAX_MULTI_LINKS:
+        await message.reply_text(
+            f"Taking the first {MAX_MULTI_LINKS} links — the rest were "
+            "skipped. Send them in another message.")
+        urls = urls[:MAX_MULTI_LINKS]
+    total = len(urls)
+    outcomes = []
+    # One after another: each link is a full download + upload job,
+    # and running them in parallel would fight over the 2 CPUs and
+    # the job slots. A failed link never stops the rest; a
+    # "pending" link (a picker is on screen) resolves through its
+    # own button callback, so the loop moves on.
+    for i, url in enumerate(urls, 1):
+        label = f" ({i} of {total})" if total > 1 else ""
+        status = await message.reply_text(f"Working on it…{label}")
+        editor = ThrottledEditor(status)
+        outcome = await _dispatch(client, message, url, status, editor)
+        outcomes.append(outcome)
+        if outcome == "done":
+            stats.record_job("uploader", ok=True)
+        elif outcome == "failed":
+            stats.record_job("uploader", ok=False)
+        elif outcome == "blocked":
+            break  # bandwidth cap: the rest would block too
     # "pending" = a picker is on screen; the reaction comes from the
     # button callback when the job actually finishes.
+    settled = [o for o in outcomes if o in ("done", "failed")]
+    if settled and all(o == "done" for o in settled):
+        await react(message, "👍")
+    elif settled and all(o == "failed" for o in settled):
+        await react(message, "👎")
 
 
 async def _upage_local_flow(client: Client, message: Message, url: str,

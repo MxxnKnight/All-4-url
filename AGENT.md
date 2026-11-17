@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.37.1** (2026-11-17).
+- **Current version: v1.38.0** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.37.1
+## Current status (2026-11-17) — v1.38.0
 
+- v1.38.0 adds multi-link messages (moon's order): paste several
+  links in one message and they download one after another, each
+  with its own status message ("Working on it… (1 of 3)").
+  `_extract_urls` (new) returns every uploadable URL in order,
+  de-duplicated, skipping t.me links (the restricted plugin owns
+  those); `_extract_url` is now its first-result wrapper, so
+  /browser and /gallery are unchanged. Sequential by design (each
+  link is a full download + upload job; parallel runs would fight
+  over the 2 CPUs and the job slots). A failed link never stops
+  the rest; a "pending" link resolves through its own button
+  callback while the loop moves on; "blocked" (bandwidth cap)
+  stops the loop. Cap: MAX_MULTI_LINKS = 10 per message, the rest
+  skipped with a note. Single-link messages behave exactly as
+  before (same status text, same reactions). Verified: 23 checks
+  in /tmp/test_v138.py.
 - v1.37.1 shortens the /start message with a FREE collapsible
   blockquote (Bot API 7.4, no Premium needed; older clients just
   show a normal quote). HOME_TEXT keeps its short intro visible

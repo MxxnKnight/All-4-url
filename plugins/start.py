@@ -96,7 +96,8 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
-Just send any link in this chat:
+Just send any link in this chat — or several links in one message,
+and I'll download them one after another (up to 10 at a time):
 • Videos/audio from YouTube, Instagram, TikTok, X, Reddit, … (yt-dlp,
   with quality buttons when several resolutions are offered)
 • Instagram photo posts & carousels, Pinterest, Pixiv galleries (gallery-dl)
