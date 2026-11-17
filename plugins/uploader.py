@@ -21,8 +21,9 @@ the final error message tells the owner what each engine said.
 import asyncio
 import os
 import re
+import shutil
 import time
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
@@ -33,16 +34,17 @@ from core.extractors import (browser_scan, gallery_engine, scrape,
                              site_registry, terabox)
 from core import splitter, stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
-                                     is_playlist_url)
+                                    is_playlist_url, safe_filename)
 from core.extractors.player_scan import FallThrough
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
-from core.sender import send_files, send_files_routed
+from core.sender import (send_files, send_files_routed,
+                         send_files_split)
 from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
                         check_size, cleanup_dir, human_bytes, is_admin_id,
                         is_owner_id, list_files, make_job_dir, admin_only,
-                        progress_text, react, react_to)
+                        progress_text, react, react_to, run_blocking)
 
 URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -159,6 +161,253 @@ def _extract_url(message: Message) -> str | None:
     """First uploadable URL in the message, or None."""
     urls = _extract_urls(message)
     return urls[0] if urls else None
+
+
+# ------------------------------------------------------- join split archives
+# (/joinzip, v1.40.0)
+
+#: Split-archive part files look like `movie.zip.001` — a stem plus
+#: a 3-digit part number. Only this shape is joined (7-Zip style,
+#: the same shape the splitter produces).
+_PART_RE = re.compile(r"^(.+)\.(\d{3})$")
+#: At most this many parts in one /joinzip message — each is a
+#: full download, and the 20 GB joined-size cap bounds the bytes.
+MAX_JOIN_PARTS = 20
+
+
+def _split_archive_parts(urls: list[str]):
+    """Split `urls` into a split-archive part set, or say why not.
+
+    Returns ("ok", stem, parts) where parts is a list of
+    (part_number, url, filename) sorted by part number;
+    ("missing", stem, missing_numbers) when the links are parts
+    of one archive with gaps; or None when the message is not a
+    part set at all (fewer than two part links, mixed stems,
+    duplicate numbers, a part 000).
+    """
+    parsed = []
+    for url in urls:
+        name = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+        match = _PART_RE.match(name)
+        if not match:
+            return None
+        parsed.append((int(match.group(2)), url, name, match.group(1)))
+    if len(parsed) < 2:
+        return None
+    stems = {p[3] for p in parsed}
+    if len(stems) != 1:
+        return None
+    numbers = [p[0] for p in parsed]
+    if len(set(numbers)) != len(numbers):
+        return None  # same part twice from different links: ambiguous
+    if min(numbers) < 1:
+        return None  # 7-Zip parts start at 001, never 000
+    numbers.sort()
+    if numbers != list(range(1, len(numbers) + 1)):
+        missing = [n for n in range(1, numbers[-1] + 1)
+                   if n not in numbers]
+        return ("missing", parsed[0][3], missing)
+    parts = sorted(parsed, key=lambda p: p[0])
+    return ("ok", parsed[0][3],
+            [(num, url, name) for num, url, name, _ in parts])
+
+
+def _join_parts_sync(part_paths: list[str], dest_path: str) -> int:
+    """Concatenate `part_paths` into `dest_path`; returns its size.
+
+    Blocking (run through run_blocking). The parts are deleted
+    only after the joined size matches the parts' sizes exactly —
+    a short read deletes the partial join instead and raises.
+    """
+    expected = sum(os.path.getsize(p) for p in part_paths)
+    try:
+        with open(dest_path, "wb") as dst:
+            for part in part_paths:
+                with open(part, "rb") as src:
+                    while True:
+                        chunk = src.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+        size = os.path.getsize(dest_path)
+        if size != expected:
+            raise IOError(
+                f"joined file is {human_bytes(size)}, not "
+                f"{human_bytes(expected)} — refusing to use it")
+    except Exception:
+        try:
+            os.unlink(dest_path)
+        except OSError:
+            pass
+        raise
+    for part in part_paths:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+    return size
+
+
+def _check_join_room(total: int) -> None:
+    """Raise SizeBlocked unless parts + joined file fit on disk.
+
+    The join briefly holds both: the downloaded parts AND the
+    joined file, so 2x the total must be free (plus headroom).
+    """
+    try:
+        free = shutil.disk_usage(config.BASE_DIR).free
+    except Exception:
+        return  # can't measure; let the join try
+    reserved = 0
+    try:
+        reserved = upage.pending_bytes()
+    except Exception:
+        reserved = 0
+    if 2 * total + 256 * 1024 * 1024 + reserved > free:
+        raise SizeBlocked(
+            f"Joining {human_bytes(total)} needs "
+            f"{human_bytes(2 * total)} free on the server (parts "
+            f"plus the joined file) and only {human_bytes(free)} "
+            f"is free right now — try again when the server is "
+            f"less busy.")
+
+
+_JOINZIP_USAGE = (
+    "Usage: `/joinzip <link1> <link2> …` — send ALL the links of "
+    "one split archive in one message (like `movie.zip.001`, "
+    "`movie.zip.002`, …). I'll download the parts, join them, "
+    "and if it's a zip, offer to unzip it; a big video inside "
+    "arrives split into .mkv.001/.002 parts.")
+
+
+@Client.on_message(filters.command("joinzip") & filters.private
+                   & admin_only)
+async def joinzip_cmd(client: Client, message: Message):
+    """Join split-archive links, then unzip / split-and-send.
+
+    The owner sends every part link of one archive in one
+    message. Parts download one after another, join on disk,
+    and a joined zip gets the usual unzip prompt — whose
+    callback now splits oversize videos into .001/.002 parts
+    instead of skipping them (v1.40.0). A joined non-zip
+    (e.g. movie.mkv parts) is split and sent directly.
+    """
+    urls = _extract_urls(message)
+    if not urls:
+        await message.reply_text(_JOINZIP_USAGE)
+        return
+    parsed = _split_archive_parts(urls)
+    if parsed is None:
+        await message.reply_text(
+            "I need the links of ONE split archive — every link "
+            "ending in .001, .002, … with the same file name "
+            "before the number.\n\n" + _JOINZIP_USAGE)
+        return
+    if parsed[0] == "missing":
+        _, stem, missing = parsed
+        nums = ", ".join(f".{n:03d}" for n in missing)
+        await message.reply_text(
+            f"That set is missing part(s) {nums} of {stem} — "
+            f"a zip with a hole in the middle can't be opened. "
+            f"Send ALL the parts in one message.")
+        return
+    _, stem, parts = parsed
+    if len(parts) > MAX_JOIN_PARTS:
+        await message.reply_text(
+            f"That's {len(parts)} parts — I take at most "
+            f"{MAX_JOIN_PARTS} in one command.")
+        return
+    if stats.bandwidth_blocked():
+        await message.reply_text(stats.bandwidth_pause_text())
+        return
+    await react(message, "👀")
+    status = await message.reply_text(
+        f"Checking {len(parts)} parts of {stem}…")
+    editor = ThrottledEditor(status)
+    job_dir = make_job_dir()
+
+    async def _fail(text: str) -> None:
+        await status.edit_text(text)
+        await react(message, "👎")
+        stats.record_job("uploader", ok=False)
+
+    try:
+        async with JOB_SEMAPHORE:
+            # Probe every part first: all must be direct links,
+            # and the total must fit the join + unzip caps.
+            total = 0
+            known = True
+            for num, url, _name in parts:
+                info = await check_direct(url)
+                if info is None:
+                    await _fail(
+                        f"❌ Part .{num:03d} isn't a direct "
+                        f"download link — /joinzip needs direct "
+                        f"links to the part files.")
+                    return
+                if info.get("size"):
+                    total += info["size"]
+                else:
+                    known = False
+            if known and total > unzip.MAX_ZIP_BYTES:
+                await _fail(
+                    f"❌ Those parts add up to {human_bytes(total)} "
+                    f"— over the {human_bytes(unzip.MAX_ZIP_BYTES)} "
+                    f"limit, so I can't join them here.")
+                return
+            if known:
+                try:
+                    _check_join_room(total)
+                except SizeBlocked as exc:
+                    await _fail(f"❌ {exc}")
+                    return
+            is_big = (not known) or total > config.MAX_FILE_SIZE
+            async with splitter.big_file_guard(is_big):
+                # Download the parts in order.
+                part_paths = []
+                for i, (num, url, name) in enumerate(parts, 1):
+                    started = time.time()
+                    label = (f"Downloading part {i} of {len(parts)} "
+                             f"(.{num:03d})…")
+
+                    async def _prog(current, total_b, _label=label,
+                                    _started=started):
+                        await editor.edit(progress_text(
+                            _label, current, total_b, _started))
+
+                    part_paths.append(await download_file(
+                        url, job_dir, progress_cb=_prog,
+                        filename=safe_filename(
+                            name, f"part.{num:03d}")))
+                await editor.edit("Joining the parts…", force=True)
+                joined_path = os.path.join(
+                    job_dir, safe_filename(stem, "joined"))
+                await run_blocking(_join_parts_sync, part_paths,
+                                   joined_path)
+                # A joined zip gets the unzip prompt (the callback
+                # owns the job from here); anything else is split
+                # and sent like any other big download.
+                caption = (f"Joined from {len(parts)} parts: {stem}")
+                prompted = await _maybe_unzip_prompt(
+                    client, message.chat.id, [joined_path], caption,
+                    status, job_dir)
+                if prompted:
+                    job_dir = None  # the callback owns the dir now
+                    return
+                paths = await splitter.maybe_split([joined_path],
+                                                   editor, status)
+            await send_files_routed(client, message.chat.id, paths,
+                                    "uploader", caption=caption,
+                                    status_msg=status)
+            await react(message, "👍")
+            stats.record_job("uploader", ok=True)
+    except SizeBlocked as exc:
+        await _fail(f"❌ {exc}")
+    except Exception as exc:
+        await _fail(f"❌ Join failed: {exc}")
+    finally:
+        if job_dir is not None:
+            cleanup_dir(job_dir)
 
 
 # ---------------------------------------------------------------- Terabox UI
@@ -556,7 +805,8 @@ async def gallery_cmd(client: Client, message: Message):
 @Client.on_message(filters.private & admin_only & filters.text
                    & ~filters.command(["start", "help", "batch", "cancel",
                                        "mediainfo", "live", "pipe",
-                                       "vidsplit", "browser", "gallery"]))
+                                       "vidsplit", "browser", "gallery",
+                                       "joinzip"]))
 async def url_handler(client: Client, message: Message):
     urls = _extract_urls(message)
     if not urls:
@@ -874,9 +1124,9 @@ async def unzip_callback(client: Client, query: CallbackQuery):
         if choice == "asis":
             await query.answer("Sending the zip…")
             await status.edit_text("Uploading the zip…")
-            await send_files_routed(client, job["chat_id"], [zip_path],
-                                    "uploader", caption=job["caption"],
-                                    status_msg=status)
+            await send_files_split(client, job["chat_id"], [zip_path],
+                                   "uploader", caption=job["caption"],
+                                   status_msg=status)
         else:
             await query.answer("Unzipping…")
             await status.edit_text("Unzipping…")
@@ -905,18 +1155,24 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                             f"{os.path.basename(path)}…")
                     except Exception:
                         pass
+                    # Oversize files are split into .001/.002
+                    # parts before sending (v1.40.0) — a 10 GB
+                    # video inside the zip arrives as mkv.001,
+                    # mkv.002, … instead of failing the cap.
+                    sent_paths = [path]
                     try:
-                        await send_files_routed(
+                        sent_paths = await send_files_split(
                             client, job["chat_id"], [path],
                             "uploader", caption=job["caption"],
                             status_msg=status)
                         sent_count += 1
                     except Exception as exc:
                         failed.append(f"{os.path.basename(path)} ({exc})")
-                    try:
-                        os.unlink(path)
-                    except OSError:
-                        pass
+                    for sent in sent_paths:
+                        try:
+                            os.unlink(sent)
+                        except OSError:
+                            pass
                     # Pace one-by-one sends (see plugins/unzip.py).
                     await asyncio.sleep(1)
             finally:
@@ -927,9 +1183,9 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                     + (f" (skipped: {', '.join(skipped[:5])})"
                        if skipped else "")
                     + ".\nSending the zip itself as-is instead.")
-                await send_files_routed(client, job["chat_id"], [zip_path],
-                                        "uploader", caption=job["caption"],
-                                        status_msg=status)
+                await send_files_split(client, job["chat_id"], [zip_path],
+                                       "uploader", caption=job["caption"],
+                                       status_msg=status)
                 return
             if bandwidth_stopped:
                 try:

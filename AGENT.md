@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.39.0** (2026-11-17).
+- **Current version: v1.40.0** (2026-11-18).
 
 ## How moon works — the contract
 
@@ -267,8 +267,27 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.39.0
+## Current status (2026-11-18) — v1.40.0
 
+- v1.40.0 adds /joinzip (moon's order): he has 10 GB+ files as
+  zip splits and wants the video out as MoonStream-playable
+  .mkv.001/.002 parts. `/joinzip <link1> <link2> …` takes ALL
+  the part links of ONE archive in one message (`.001/.002/…`
+  with one shared stem; missing parts are named, not guessed).
+  Parts must be direct links (check_direct probe); total over
+  20 GB refused up front; disk must hold 2x the total (parts +
+  joined file). Parts download in order, join on disk (size
+  verified, parts deleted), then the usual unzip prompt — whose
+  callback now SPLITS oversize videos into .001/.002 parts
+  instead of skipping them (core/sender.py::send_files_split,
+  used by the unzip callback's three send sites and /unzip).
+  A joined non-zip (e.g. .mkv parts) is split and sent
+  directly. MAX_ZIP_BYTES raised 2 GB → 20 GB (only joined
+  archives reach the unzipper over 2 GB); zip_info /
+  iter_extracted no longer exclude oversize entries (the
+  `too_big` key stays, always empty, because plugins/unzip.py
+  reads it). "joinzip" is in the uploader exclusion list.
+  Menu 22 → 23 commands. Verified: 35 checks in /tmp/test_v140.py.
 - v1.39.0 adds the "Send URL uploads as" setting (moon's order):
   /destination now also picks whether video files from links arrive
   as 🎬 Video (inline player, default) or 📄 Document (plain file).

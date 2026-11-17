@@ -66,12 +66,17 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
 >(15/30/60s from the middle), Unzip (zips only), and Close.
 >**Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
->it and send the contents instead (caps: zip ≤ 2 GB, unzipped
+>it and send the contents instead (caps: zip ≤ 20 GB, unzipped
 >total ≤ 20 GB, ≤ 1000 files, extracted and sent one by one so
 >disk never holds more than the zip plus one file — bigger
 >zips get a plain "exceeds"
->message and are sent as-is). Or send me a zip and reply to it
->with `/unzip` and I'll unzip that one the same way.
+>message and are sent as-is). A video inside that's over 2 GB
+>arrives split into .mkv.001/.002 parts. Or send me a zip and
+>reply to it with `/unzip` and I'll unzip that one the same way.
+>**Join split archives**: `/joinzip <link1> <link2> …` — send ALL
+>the links of one split archive in one message (like
+>`movie.zip.001`, `movie.zip.002`, …). I'll download the parts,
+>join them, and offer to unzip the result.
 >**Custom sites**: sites yt-dlp doesn't understand get their own
 >extractor here — currently luluvido.com. More sites can be added
 >the same way, one module each.

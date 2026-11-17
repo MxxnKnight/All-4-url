@@ -41,9 +41,13 @@ Safety, in order:
     files are flattened to basenames, with _1, _2 suffixes when
     two entries share a name.
   * per-file Telegram cap: a single entry over Telegram's
-    2 GB bot cap is skipped, not extracted — it could never
-    be sent as one file, and extracting it would only waste
-    disk and time.
+    2 GB bot cap is NOT skipped anymore (v1.40.0): it is
+    extracted like any other file, and the caller splits it
+    into .001/.002 parts before sending (the byte-splitter
+    already does this for every other oversize file, so a
+    10 GB video inside a zip now arrives as mkv.001/.002
+    instead of being silently dropped). The split needs
+    2x the file on disk, which maybe_split checks itself.
   * disk fit, per file: before extracting each entry, free
     disk must exceed that entry's size + headroom. A file
     that does not fit is skipped, not extracted, and the
@@ -56,16 +60,18 @@ import os
 import shutil
 import zipfile
 
-import config
 from core.utils import human_bytes
 
-#: A zip file itself may not be bigger than this. 2 GB is the real
-#: ceiling: a zip sent to the bot can never exceed Telegram's own
-#: 2 GB file cap, and a zip downloaded from a link over 2 GB is
-#: split into .001 parts before it ever reaches the unzipper
-#: (plugins/uploader.py splits first, prompts second) — so a
-#: higher number here would be dead config, not a real limit.
-MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024
+#: A zip file itself may not be bigger than this. 20 GB matches
+#: the extract total cap. A zip sent to the bot can never exceed
+#: Telegram's own 2 GB file cap, and a zip downloaded from a
+#: link over 2 GB is split into .001 parts before it ever
+#: reaches the unzipper (plugins/uploader.py splits first,
+#: prompts second) — so the only zips that reach this limit
+#: are ones the bot assembled itself: /joinzip joins split
+#: archives on disk, and a 10 GB movie zip is the whole point
+#: of that command (v1.40.0 raised this from 2 GB for it).
+MAX_ZIP_BYTES = 20 * 1024 * 1024 * 1024
 #: All extracted (and sent) files together may not exceed this.
 #: This is now a bandwidth/time guard, NOT a disk guard —
 #: one-by-one extraction never holds the total on disk.
@@ -126,7 +132,8 @@ def zip_info(path: str) -> dict:
     Returns {"total": uncompressed bytes of sendable files,
     "count": sendable file entries, "files": [names],
     "encrypted": [names], "skipped": [names],
-    "too_big": [names over Telegram's cap],
+    "too_big": [] (kept for callers — oversize entries are
+    sendable since v1.40.0, split into parts before sending),
     "largest": largest sendable file size}.
     Raises ZipBad for unreadable/corrupt zips, ZipTooBig when
     the count or the sendable total breaks a cap — with a
@@ -156,9 +163,9 @@ def zip_info(path: str) -> dict:
         if size == 0:
             skipped.append(info.filename)
             continue
-        if size > config.MAX_FILE_SIZE:
-            too_big.append(info.filename)
-            continue
+        # No per-file size exclusion: an entry over Telegram's
+        # cap is extracted and split into .001/.002 parts by
+        # the caller (v1.40.0) instead of being skipped.
         total += size
         largest = max(largest, size)
         files.append(info.filename)
@@ -253,10 +260,9 @@ def iter_extracted(zip_path: str, dest_dir: str, skipped: list):
                     if entry.filename not in skipped:
                         skipped.append(entry.filename)
                     continue
-                if size > config.MAX_FILE_SIZE:
-                    if entry.filename not in skipped:
-                        skipped.append(entry.filename)
-                    continue
+                # No per-file size exclusion: an entry over
+                # Telegram's cap is extracted and split into
+                # .001/.002 parts by the caller (v1.40.0).
                 # Per-file disk fit, checked now, not once for
                 # the whole zip — free disk changes while other
                 # jobs run alongside.

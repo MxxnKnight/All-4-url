@@ -29,7 +29,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from core import stats, unzip
-from core.sender import send_files_routed
+from core.sender import send_files_routed, send_files_split
 from core.utils import (admin_only, cleanup_dir, human_bytes, make_job_dir)
 
 
@@ -109,8 +109,13 @@ async def unzip_cmd(client: Client, message: Message):
                         f"{info['count']}: {os.path.basename(path)}…")
                 except Exception:
                     pass
+                # Oversize files are split into .001/.002 parts
+                # before sending (v1.40.0) — a 10 GB video inside
+                # the zip arrives as mkv.001, mkv.002, … instead
+                # of failing the cap.
+                sent_paths = [path]
                 try:
-                    await send_files_routed(
+                    sent_paths = await send_files_split(
                         client, message.chat.id, [path],
                         "uploader", caption=f"Unzipped from {name}",
                         status_msg=status)
@@ -118,10 +123,11 @@ async def unzip_cmd(client: Client, message: Message):
                     sent_bytes += size
                 except Exception as exc:
                     failed.append(f"{os.path.basename(path)} ({exc})")
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+                for sent in sent_paths:
+                    try:
+                        os.unlink(sent)
+                    except OSError:
+                        pass
                 # Pace one-by-one sends: 65+ tiny files in a row
                 # would otherwise hit Telegram's FloodWait. 1s per
                 # file is cheap (65 files = ~1 extra minute) and

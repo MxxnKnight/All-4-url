@@ -9,7 +9,7 @@ from pyrogram.errors import FloodPremiumWait, FloodWait, SlowmodeWait
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             InputMediaDocument, InputMediaPhoto)
 
-from core import stats
+from core import splitter, stats
 from core.splitter import is_split_part
 from core.utils import (ThrottledEditor, guess_kind, human_bytes,
                         progress_text, run_blocking)
@@ -403,6 +403,32 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         await _attach_mediainfo_button(sent_all[0])
     stats.record_paths("uploaded", paths)
     return sent_all
+
+
+async def send_files_split(bot_client, chat_id: int, paths: list[str],
+                           feature: str, caption: str = "",
+                           status_msg=None) -> list[str]:
+    """Split oversize files, then send_files_routed().
+
+    Every file over Telegram's cap is chopped into .001/.002
+    parts first (v1.40.0: a 10 GB video out of a zip arrives as
+    mkv.001/.002 instead of failing the cap). Files within the
+    cap pass through untouched. Returns the paths that were
+    sent, so the caller can delete them (split parts included —
+    the original is already gone, deleted by the splitter).
+    """
+    send_paths: list[str] = []
+    for path in paths:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        async with splitter.big_file_guard(splitter.needs_split(size)):
+            send_paths.extend(
+                await splitter.maybe_split([path], None, status_msg))
+    await send_files_routed(bot_client, chat_id, send_paths, feature,
+                            caption=caption, status_msg=status_msg)
+    return send_paths
 
 
 async def send_files_routed(bot_client, chat_id: int, paths: list[str],

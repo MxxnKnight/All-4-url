@@ -57,6 +57,7 @@ BOT_COMMANDS = [
     BotCommand("live", "Record a live stream in 15-min parts"),
     BotCommand("browser", "Force the browser: open a page, get its video"),
     BotCommand("gallery", "Force gallery-dl: galleries and image posts"),
+    BotCommand("joinzip", "Join split .001/.002 links, unzip, send the video"),
     BotCommand("fileuploadpage", "Private web upload link (owner only)"),
     BotCommand("linkuploadpage", "Permanent private link-upload page"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),
