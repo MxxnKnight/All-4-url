@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.34.0** (2026-11-16).
+- **Current version: v1.35.0** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,30 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-16) — v1.34.0
+## Current status (2026-11-17) — v1.35.0
 
+- v1.35.0 teaches the headless browser to click play (moon's order).
+  Some players show only a thumbnail + play button and request
+  NOTHING until a click — StreamFile's own code says so ("a page
+  that is only looked at — or loaded by a bot — adds no view"), which
+  is why moon's streamfiles.net link failed at every engine (the
+  registry also misses streamfiles.net — only streamfile.net is in
+  the host table — but the alias alone would NOT fix it: the walker
+  does static form/media scanning and this page has no download form
+  and no media URL in its HTML, so the alias was deliberately not
+  added). When the first load finds no media, the browser now tries
+  up to 3 clicks on a narrow play-only selector list (StreamFile's
+  #vplayer button first, then Plyr/Video.js/generic play controls),
+  waits for a new media response after each click (8 s max, ends
+  early), and re-checks network + DOM + rendered HTML. Popups get
+  closed; a click that navigates away is undone with go_back; a
+  captcha revealed by a click still fails honestly. The no-cache
+  alternative (fetch the page with ?nc=1 — verified 2026-11-17: the
+  uncached page carries the real .m3u8 and it serves 200) was NOT
+  built — moon picked the click approach instead. Verified: 14
+  checks in /tmp/test_v135.py against a mocked Playwright (no real
+  Chromium in the sandbox); the live proof is moon sending the
+  StreamFile link to the bot.
 - v1.34.0 is moon's picks from the "bigger hosting" list (1, 2, 4-partial,
   5; 3 download cache NOT picked, do not build unprompted):
   (1) zip caps raised — zip ≤2 GB (the real ceiling: Telegram's own
@@ -386,7 +408,11 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   scrape and the data: playlist, in both the chat uploader and
   sendlink. Watches the page's own network requests (manifest first,
   then biggest file), falls back to DOM video/audio srcs, then
-  `player_scan.find_media` on the rendered HTML. Fails fast and
+  `player_scan.find_media` on the rendered HTML. v1.35.0 adds
+  click-to-play: when the first load finds no media, the browser
+  clicks play controls (up to 3, play buttons only) and re-checks
+  after each click — for placeholder players that load nothing until
+  clicked. Fails fast and
   honestly on captcha markers — a headless browser on a datacenter IP
   does NOT beat Turnstile/Cloudflare. One browser at a time
   (`BROWSER_LOCK`), 75 s overall cap, `--no-sandbox` +
