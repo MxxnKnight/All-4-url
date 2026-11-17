@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.35.0** (2026-11-17).
+- **Current version: v1.36.0** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,38 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.35.0
+## Current status (2026-11-17) — v1.36.0
 
+- v1.36.0 adds `/live` (moon's order): record a live stream into
+  Telegram, part by part. New files `core/live.py` + `plugins/live.py`.
+  yt-dlp probes the link (refuses non-live / not-started / ended
+  streams in plain words) and hands ffmpeg the best stream URL
+  (combined format preferred, else best video-only + best audio-only
+  as two inputs; Referer + User-Agent forwarded, cookies never).
+  ffmpeg records with stream-copy into the segment muxer
+  (`-segment_time` = LIVE_SEGMENT_MIN minutes, default 15,
+  env-overridable 5–60; `-reset_timestamps 1`; mp4 parts) — the
+  muxer cuts by TIME only, there is no byte-size option (verified
+  against ffmpeg's own muxer help), so the part length is the only
+  knob; at live bitrates a 15-minute part is a few hundred MB, far
+  under the 2 GB cap. A watcher sends each finished part as a video
+  the moment it closes (a part counts as complete ONLY when a newer
+  part exists or ffmpeg has exited — never the part still being
+  written), then deletes it from disk. A ⏹ Stop button
+  (`lv:stop:<8-hex-job-id>`, 16 bytes) ends it cleanly (SIGTERM,
+  SIGKILL only if ffmpeg refuses); a stream ending on its own, or
+  the bandwidth cap, ends it the same way. ONE recording at a time
+  (own LIVE_LOCK — deliberately NOT JOB_SEMAPHORE, a hours-long
+  recording must not hold a download slot); a second /live gets an
+  "already recording" reply. A Space restart kills a recording with
+  no resume — accepted, not fixed. No streamlink, no third-party
+  plugins: moon confirmed skipping the unofficial Stripchat
+  streamlink plugin (yt-dlp already reads Stripchat directly).
+  Wiring: menu is 20 commands now; `/live` added to the uploader's
+  command-exclusion list so the URL handler doesn't double-fire on
+  it. Verified: 48 checks in /tmp/test_v136.py (mocked yt-dlp +
+  ffmpeg + sender — the sandbox cannot reach live sites); the live
+  proof is moon sending a live link to the bot.
 - v1.35.0 teaches the headless browser to click play (moon's order).
   Some players show only a thumbnail + play button and request
   NOTHING until a click — StreamFile's own code says so ("a page

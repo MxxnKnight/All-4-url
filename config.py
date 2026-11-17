@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.35.0"
+BOT_VERSION = "1.36.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -168,6 +168,15 @@ SEGMENT_MAX_MIN = max(1, _int("SEGMENT_MAX_MIN", 45))
 SEGMENT_MAX_MB = min(1900, max(50, _int("SEGMENT_MAX_MB", 1000)))
 SEGMENT_MAX_TOTAL_GB = max(1, _int("SEGMENT_MAX_TOTAL_GB", 8))
 SEGMENT_MAX_TOTAL_BYTES = SEGMENT_MAX_TOTAL_GB * 1000 * 1000 * 1000
+
+# Live recording (/live, core/live.py): a live stream is cut into
+# standalone MP4 parts of this many minutes each, sent as they
+# finish. The segment muxer cuts by time only — there is no
+# byte-size option — so this is the only knob. 5-60 minutes;
+# 15 keeps each part a few hundred MB at live bitrates, far
+# under Telegram's 2 GB cap.
+LIVE_SEGMENT_MIN = min(60, max(5, _int("LIVE_SEGMENT_MIN", 15)))
+LIVE_SEGMENT_SECONDS = LIVE_SEGMENT_MIN * 60
 
 # Parallel downloads (core/extractors/direct.py): direct links of
 # 20 MB or more download in 4 simultaneous Range chunks instead of

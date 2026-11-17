@@ -78,7 +78,13 @@ document, no thumbnail). Direct file links pipe in one
 pass; HLS (.m3u8) / DASH (.mpd) playlist links pipe through
 ffmpeg in two passes (measure, then upload) and refuse
 live streams. Video pages are not piped — send those
-normally instead."""
+normally instead.
+**Live**: `/live <link>` records a live stream (YouTube Live,
+Twitch, Kick, Stripchat, …) and sends it here in 15-minute
+video parts as each part finishes — nothing stays on the server
+disk. Tap ⏹ Stop on the status message to end it; a stream
+ending on its own ends it the same way. One recording at a time,
+and the monthly bandwidth cap still applies."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 

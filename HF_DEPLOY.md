@@ -49,7 +49,9 @@ HF PRO ($9/mo).
      but the guard stays at 100), `MAX_JOBS=4`.
      Optional tuning variables: `SEGMENT_MAX_MB` (50-1900, default
      1000 — /vidsplit part size), `PARALLEL_DOWNLOADS` (1 = on,
-     0 = off — parallel Range downloads for direct links ≥20 MB).
+     0 = off — parallel Range downloads for direct links ≥20 MB),
+     `LIVE_SEGMENT_MIN` (5-60, default 15 — /live part length in
+     minutes).
    - `BASE_URL` must be the Space's own `*.hf.space` address, or
      file-to-link / Mini App / upage / sendlink URLs will point at
      the wrong host.

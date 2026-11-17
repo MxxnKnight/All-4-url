@@ -470,7 +470,7 @@ async def _instagram_carousel(client, message, url, status) -> bool:
 
 @Client.on_message(filters.private & admin_only & filters.text
                    & ~filters.command(["start", "help", "batch", "cancel",
-                                       "mediainfo"]))
+                                       "mediainfo", "live"]))
 async def url_handler(client: Client, message: Message):
     url = _extract_url(message)
     if not url:

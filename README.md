@@ -303,6 +303,26 @@ sent). Files up to `SEGMENT_MAX_TOTAL_GB` (default 8 GB). Honest
 limits: cut points snap to keyframes (a few seconds' drift), and
 hosts without range support can't be split this way.
 
+## Live recording (`/live`)
+
+For streams that are live right now (a live stream has no end and
+no size, so the normal uploader and `/pipe` both refuse it):
+
+    /live <link to a live stream>
+
+The bot checks the link is live (yt-dlp), then ffmpeg records it
+— stream-copy, no re-encode — into standalone MP4 parts of
+`LIVE_SEGMENT_MIN` minutes each (default 15). Each finished part
+is sent to Telegram as a video the moment it closes, then deleted
+from the server disk, so a hours-long recording never fills the
+disk. A ⏹ Stop button on the status message ends the recording
+(the part in progress is finished and sent too); a stream ending
+on its own ends it the same way. One recording at a time; the
+monthly bandwidth guard stops it if the cap is reached. Honest
+limits: the segment muxer cuts by time only (there is no
+byte-size cut), and a server restart ends the recording — nothing
+is saved or resumed.
+
 ## Control panel (Mini App)
 
 The bot has a Telegram Mini App control panel — same Koyeb web
