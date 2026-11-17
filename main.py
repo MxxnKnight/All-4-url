@@ -55,6 +55,8 @@ BOT_COMMANDS = [
     BotCommand("vidsplit", "Split-download an oversize video link"),
     BotCommand("pipe", "Stream a direct file to Telegram, no disk"),
     BotCommand("live", "Record a live stream in 15-min parts"),
+    BotCommand("browser", "Force the browser: open a page, get its video"),
+    BotCommand("gallery", "Force gallery-dl: galleries and image posts"),
     BotCommand("fileuploadpage", "Private web upload link (owner only)"),
     BotCommand("linkuploadpage", "Permanent private link-upload page"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),

@@ -383,7 +383,10 @@ async def _direct_flow(client, message, url, info, status, editor):
         return prompted
 
 
-async def _scrape_flow(client, message, url, status, editor):
+async def _scrape_flow(client, message, url, status, editor,
+                   force_browser=False):
+    """Static scrape, data: playlist, then the browser — unless
+    force_browser (/browser command) skips straight to the browser."""
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
@@ -407,31 +410,55 @@ async def _scrape_flow(client, message, url, status, editor):
                                        headers={"Referer": url})
             return [path]
 
-        try:
+        async def _browser_media():
+            """The page rendered in a real browser — some players only
+            reveal the video URL once their JavaScript has run (or
+            their play button is clicked)."""
+            await status.edit_text(
+                "Opening the page in a browser to find the video…")
             try:
-                media_url = await scrape.find_media_url(url)
-            except scrape.ScrapeError:
-                # No link in the static HTML — but the playlist itself
-                # may hide in a data: URI, which ffmpeg can still play.
-                try:
-                    path = await scrape.download_playlist(
-                        url, job_dir, progress_cb=progress)
-                    paths = [path]
-                except scrape.ScrapeError:
-                    # Last resort: render the page in a real browser —
-                    # some players only reveal the video URL once their
-                    # JavaScript has run.
-                    await status.edit_text(
-                        "Opening the page in a browser to find the video…")
-                    try:
-                        media_url = await browser_scan.find_media_url(url)
-                    except browser_scan.BrowserError as exc:
-                        raise scrape.ScrapeError(
-                            "no embedded media URL found in the page "
-                            f"(browser: {exc})") from exc
-                    paths = await _download_media(media_url)
+                return await browser_scan.find_media_url(url)
+            except browser_scan.BrowserError as exc:
+                raise scrape.ScrapeError(
+                    "no embedded media URL found in the page "
+                    f"(browser: {exc})") from exc
+
+        try:
+            if force_browser:
+                paths = await _download_media(await _browser_media())
             else:
-                paths = await _download_media(media_url)
+                try:
+                    media_url = await scrape.find_media_url(url)
+                except scrape.ScrapeError:
+                    # No link in the static HTML — but the playlist
+                    # itself may hide in a data: URI, which ffmpeg
+                    # can still play.
+                    try:
+                        path = await scrape.download_playlist(
+                            url, job_dir, progress_cb=progress)
+                        paths = [path]
+                    except scrape.ScrapeError:
+                        # Last resort: render the page in a real
+                        # browser.
+                        paths = await _download_media(
+                            await _browser_media())
+                else:
+                    if scrape.is_image_url(media_url):
+                        # The static scrape found only a thumbnail
+                        # (og:image). The page may still hide a video
+                        # the browser can reach — click-to-play players
+                        # load nothing until clicked — so the browser
+                        # gets its turn, and the thumbnail is only the
+                        # fallback.
+                        await status.edit_text(
+                            "That page only shows a thumbnail — opening "
+                            "it in a browser to find the video…")
+                        try:
+                            media_url = await browser_scan.find_media_url(
+                                url)
+                        except browser_scan.BrowserError:
+                            pass  # keep the thumbnail; it beats nothing
+                    paths = await _download_media(media_url)
             paths = await splitter.maybe_split(paths, editor=editor)
             await editor.edit("Uploading…", force=True)
             await send_files_routed(client, message.chat.id, paths, "uploader",
@@ -466,12 +493,54 @@ async def _instagram_carousel(client, message, url, status) -> bool:
             cleanup_dir(job_dir)
 
 
+@Client.on_message(filters.command("browser") & filters.private
+                   & admin_only)
+async def browser_cmd(client: Client, message: Message):
+    """Manual override: skip the whole chain, render the page in a
+    real browser (with click-to-play) and download what it finds."""
+    url = _extract_url(message)
+    if not url:
+        await message.reply_text(
+            "Usage: `/browser <link>` — I'll open the page in a real "
+            "browser and download the video it loads (or shows after "
+            "its play button is clicked).")
+        return
+    status = await message.reply_text("Opening the page in a browser…")
+    editor = ThrottledEditor(status)
+    try:
+        await _scrape_flow(client, message, url, status, editor,
+                           force_browser=True)
+    except scrape.ScrapeError as exc:
+        await status.edit_text(f"❌ The browser found no video: {exc}")
+    except Exception as exc:
+        await status.edit_text(f"❌ Failed: {exc}")
+
+
+@Client.on_message(filters.command("gallery") & filters.private
+                   & admin_only)
+async def gallery_cmd(client: Client, message: Message):
+    """Manual override: run gallery-dl on the link, nothing else."""
+    url = _extract_url(message)
+    if not url:
+        await message.reply_text(
+            "Usage: `/gallery <link>` — I'll fetch it with gallery-dl "
+            "only (galleries, image posts, multi-image pages).")
+        return
+    status = await message.reply_text("Fetching with gallery-dl…")
+    try:
+        await _gallery_flow(client, message, url, status)
+    except gallery_engine.GalleryError as exc:
+        await status.edit_text(f"❌ gallery-dl found nothing: {exc}")
+    except Exception as exc:
+        await status.edit_text(f"❌ Failed: {exc}")
+
+
 # ---------------------------------------------------------------- entry point
 
 @Client.on_message(filters.private & admin_only & filters.text
                    & ~filters.command(["start", "help", "batch", "cancel",
                                        "mediainfo", "live", "pipe",
-                                       "vidsplit"]))
+                                       "vidsplit", "browser", "gallery"]))
 async def url_handler(client: Client, message: Message):
     url = _extract_url(message)
     if not url:

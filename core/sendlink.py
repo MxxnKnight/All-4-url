@@ -360,9 +360,22 @@ async def _download_resolved(resolved: dict, job_dir: str,
         except Exception as gal_exc:
             try:
                 media_url = await scrape.find_media_url(url)
-                if is_playlist_url(media_url):
-                    return await ytdlp_download(media_url, job_dir,
-                                                progress_cb=progress)
+                if scrape.is_image_url(media_url):
+                    # Thumbnail only — the browser may still find the
+                    # video (click-to-play players); fall back to the
+                    # thumbnail when it cannot.
+                    try:
+                        media_url = await browser_scan.find_media_url(url)
+                    except Exception:
+                        media_url = None
+                if media_url is not None:
+                    if is_playlist_url(media_url):
+                        return await ytdlp_download(media_url, job_dir,
+                                                    progress_cb=progress)
+                    path = await download_file(
+                        media_url, job_dir, progress_cb=progress,
+                        headers={"Referer": url})
+                    return [path]
                 path = await scrape.download(url, job_dir,
                                              progress_cb=progress)
                 return [path]

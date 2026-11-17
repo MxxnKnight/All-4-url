@@ -84,7 +84,13 @@ Twitch, Kick, Stripchat, …) and sends it here in 15-minute
 video parts as each part finishes — nothing stays on the server
 disk. Tap ⏹ Stop on the status message to end it; a stream
 ending on its own ends it the same way. One recording at a time,
-and the monthly bandwidth cap still applies."""
+and the monthly bandwidth cap still applies.
+**Browser**: `/browser <link>` skips the whole chain and opens
+the page in a real browser (it clicks play on click-to-play
+players) — for pages where the normal flow returns only a
+thumbnail or nothing at all.
+**Gallery**: `/gallery <link>` runs gallery-dl only — for
+galleries and image posts when you want exactly that engine."""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.36.1** (2026-11-17).
+- **Current version: v1.37.0** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,32 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.36.1
+## Current status (2026-11-17) — v1.37.0
 
+- v1.37.0 fixes the thumbnail-instead-of-video bug AND adds the two
+  override commands moon asked for. Root cause, proven on a real
+  StreamFile page (replayed its saved HTML): the static scrape's
+  PATTERNS matched `og:image` BEFORE any video pattern, so the
+  placeholder page's thumbnail was downloaded and sent, and the
+  browser scan (incl. v1.35.0 click-to-play) never ran. gallery-dl
+  was NOT the culprit — it answers "Unsupported URL" for
+  streamfiles.net (verified with gallery-dl 1.32.20); an earlier
+  explanation blaming gallery-dl was wrong. Fixes: (1) og:image
+  moved LAST in scrape.py's PATTERNS, so a real video URL in the
+  same HTML always wins; (2) a new `scrape.is_image_url` helper,
+  and both scrape flows (chat uploader `_scrape_flow`, sendlink
+  `_download_resolved` gallery branch) now give the browser a turn
+  when the static result is only an image — video wins if found,
+  the thumbnail is the fallback when the browser finds nothing.
+  (3) New commands `/browser` (force_browser flag on
+  `_scrape_flow`: skips the static steps entirely) and `/gallery`
+  (runs `_gallery_flow` only). Menu is now 22 commands; both new
+  commands are in the uploader's exclusion list (the v1.36.1
+  lesson). Verified: 45 checks in /tmp/test_v137.py (pattern order,
+  real-page replay, both flows mocked incl. fallbacks, command
+  routing, menu + exclusion). Live proof pending: moon re-sending
+  the StreamFile link — this also proves v1.35.0 click-to-play,
+  which has never run on a real page yet.
 - v1.36.1 fixes a pre-existing double-fire found while wiring
   /live: the uploader's URL handler excluded only start/help/batch/
   cancel/mediainfo/live from its command filter, so `/pipe <link>`

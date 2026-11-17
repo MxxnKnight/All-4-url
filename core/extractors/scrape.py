@@ -29,11 +29,27 @@ from core.utils import run_blocking
 PATTERNS = (
     r'property=["\']og:video(?::secure_url)?["\']\s+content=["\']([^"\']+)',
     r'name=["\']twitter:player:stream["\']\s+content=["\']([^"\']+)',
-    r'property=["\']og:image["\']\s+content=["\']([^"\']+)',
     r'<video[^>]+src=["\']([^"\']+)',
     r'(https?://[^\s"\'<>]+\.m3u8(?:\?[^\s"\'<>]*)?)',
     r'(https?://[^\s"\'<>]+\.mp4(?:\?[^\s"\'<>]*)?)',
+    # og:image LAST: a page whose only video is behind JavaScript
+    # (click-to-play players) still carries a thumbnail, and the
+    # thumbnail must never beat a real video URL in the same HTML.
+    # An image-only result does not stop the chain either — the
+    # scrape flows give the browser a turn first (see
+    # plugins/uploader._scrape_flow and core/sendlink).
+    r'property=["\']og:image["\']\s+content=["\']([^"\']+)',
 )
+
+#: Extensions that mark a URL as an image file.
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp")
+
+
+def is_image_url(url: str) -> bool:
+    """True when `url` points at an image file (by extension)."""
+    from urllib.parse import urlparse
+    return os.path.splitext(urlparse(url or "").path)[1].lower() \
+        in IMAGE_EXTS
 
 
 class ScrapeError(Exception):
