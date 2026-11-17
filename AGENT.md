@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.36.0** (2026-11-17).
+- **Current version: v1.36.1** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,17 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.36.0
+## Current status (2026-11-17) — v1.36.1
 
+- v1.36.1 fixes a pre-existing double-fire found while wiring
+  /live: the uploader's URL handler excluded only start/help/batch/
+  cancel/mediainfo/live from its command filter, so `/pipe <link>`
+  and `/vidsplit <link>` ALSO ran the normal uploader chain on the
+  same link (a second download of the same thing, double bandwidth
+  and double sends). Both are now in the exclusion list. Any future
+  command that takes a URL argument MUST be added to that list in
+  plugins/uploader.py (the exclusion is a manual list, not
+  automatic).
 - v1.36.0 adds `/live` (moon's order): record a live stream into
   Telegram, part by part. New files `core/live.py` + `plugins/live.py`.
   yt-dlp probes the link (refuses non-live / not-started / ended
