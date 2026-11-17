@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.37.0** (2026-11-17).
+- **Current version: v1.37.1** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,25 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.37.0
+## Current status (2026-11-17) — v1.37.1
 
+- v1.37.1 shortens the /start message with a FREE collapsible
+  blockquote (Bot API 7.4, no Premium needed; older clients just
+  show a normal quote). HOME_TEXT keeps its short intro visible
+  and wraps the whole feature list in one expandable blockquote
+  ("Full feature list — tap to expand"), written in Pyrogram's
+  markdown quote syntax: first line `**>`, every following line
+  (incl. blank ones) prefixed `>`, last line ending `||` (the
+  parser strips it — it is a terminator, not a spoiler). Verified
+  by parsing HOME_TEXT with Pyrogram's own Markdown parser:
+  exactly one blockquote entity with collapsed=True, covering the
+  tail to the message end, bold/code intact inside, no spoiler
+  entity, no stray markers. Also fixed the stale unzip caps in the
+  same text (1 GB / 8 GB / 200 files → 2 GB / 20 GB / 1000 files,
+  the v1.34.0 limits). 27 checks in /tmp/test_v1371.py. Note for
+  future parser tests: this Pyrogram's Markdown.parse returns a
+  dict {"message", "entities"} of RAW types, and the raw
+  MessageEntityBlockquote flag is `collapsed`, not `collapsible`.
 - v1.37.0 fixes the thumbnail-instead-of-video bug AND adds the two
   override commands moon asked for. Root cause, proven on a real
   StreamFile page (replayed its saved HTML): the static scrape's

@@ -32,65 +32,67 @@ details on each feature.
 
 This bot only answers its owner and sudo users. Strangers get nothing.
 
-**Sudo users** (owner only): `/addsudo <id or @username>` or reply `/addsudo`,
-`/delsudo <id>`, `/sudos`. Permanent sudo users go in the SUDO_USERS env var.
-
-**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
-`/setcookies` and pick the site — then send its `cookies.txt`
-(exported from your browser while logged in). Each site gets its own
-jar, verified before installing; `/cookies` lists them. Jars are backed
-up automatically and survive redeploys.
-**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
-**Destination**: `/destination` picks where finished files land —
-this chat, or your own Saved Messages — separately for URL uploads
-and restricted downloads.
-**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
-Drop files there (max 750 MB each) and send the download link it
-gives you back here — I'll push it to Telegram straight from the
-server disk, no re-download, then delete the server copy. No
-matter which sudo uploads, the file lands in the admin's bot PM.
-**Link upload page**: `/linkuploadpage` gives you a permanent, unlisted
-page instead — paste a link there and hit Fetch, one tap, and
-I'll download it at best quality and upload it to the admin's
-bot PM. The job card below shows Probe, Check, Download,
-Upload; up to 5 jobs at once, history deletes itself after an
-hour. Same download logic as pasting a link here, images
-included; the link never expires, so treat it like a password.
-**Convert**: reply to a video/document with `/convert` to
-re-send it as the other type (video ↔ document, same file, no
-re-upload). Files sent to me also get a menu with links,
-MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
-(15/30/60s from the middle), Unzip (zips only), and Close.
-**Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
-it and send the contents instead (caps: zip ≤ 1 GB, unzipped
-total ≤ 8 GB, ≤ 200 files, extracted and sent one by one so
-disk never holds more than the zip plus one file — bigger
-zips get a plain "exceeds"
-message and are sent as-is). Or send me a zip and reply to it
-with `/unzip` and I'll unzip that one the same way.
-**Custom sites**: sites yt-dlp doesn't understand get their own
-extractor here — currently luluvido.com. More sites can be added
-the same way, one module each.
-**Pipe**: `/pipe <link>` streams a file straight to
-Telegram — nothing is saved on the server disk, so files
-that would fill it can still land (≤ 2 GB, sent as a
-document, no thumbnail). Direct file links pipe in one
-pass; HLS (.m3u8) / DASH (.mpd) playlist links pipe through
-ffmpeg in two passes (measure, then upload) and refuse
-live streams. Video pages are not piped — send those
-normally instead.
-**Live**: `/live <link>` records a live stream (YouTube Live,
-Twitch, Kick, Stripchat, …) and sends it here in 15-minute
-video parts as each part finishes — nothing stays on the server
-disk. Tap ⏹ Stop on the status message to end it; a stream
-ending on its own ends it the same way. One recording at a time,
-and the monthly bandwidth cap still applies.
-**Browser**: `/browser <link>` skips the whole chain and opens
-the page in a real browser (it clicks play on click-to-play
-players) — for pages where the normal flow returns only a
-thumbnail or nothing at all.
-**Gallery**: `/gallery <link>` runs gallery-dl only — for
-galleries and image posts when you want exactly that engine."""
+**>Full feature list — tap to expand
+>
+>**Sudo users** (owner only): `/addsudo <id or @username>` or reply `/addsudo`,
+>`/delsudo <id>`, `/sudos`. Permanent sudo users go in the SUDO_USERS env var.
+>
+>**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
+>`/setcookies` and pick the site — then send its `cookies.txt`
+>(exported from your browser while logged in). Each site gets its own
+>jar, verified before installing; `/cookies` lists them. Jars are backed
+>up automatically and survive redeploys.
+>**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
+>**Destination**: `/destination` picks where finished files land —
+>this chat, or your own Saved Messages — separately for URL uploads
+>and restricted downloads.
+>**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
+>Drop files there (max 750 MB each) and send the download link it
+>gives you back here — I'll push it to Telegram straight from the
+>server disk, no re-download, then delete the server copy. No
+>matter which sudo uploads, the file lands in the admin's bot PM.
+>**Link upload page**: `/linkuploadpage` gives you a permanent, unlisted
+>page instead — paste a link there and hit Fetch, one tap, and
+>I'll download it at best quality and upload it to the admin's
+>bot PM. The job card below shows Probe, Check, Download,
+>Upload; up to 5 jobs at once, history deletes itself after an
+>hour. Same download logic as pasting a link here, images
+>included; the link never expires, so treat it like a password.
+>**Convert**: reply to a video/document with `/convert` to
+>re-send it as the other type (video ↔ document, same file, no
+>re-upload). Files sent to me also get a menu with links,
+>MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
+>(15/30/60s from the middle), Unzip (zips only), and Close.
+>**Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
+>it and send the contents instead (caps: zip ≤ 2 GB, unzipped
+>total ≤ 20 GB, ≤ 1000 files, extracted and sent one by one so
+>disk never holds more than the zip plus one file — bigger
+>zips get a plain "exceeds"
+>message and are sent as-is). Or send me a zip and reply to it
+>with `/unzip` and I'll unzip that one the same way.
+>**Custom sites**: sites yt-dlp doesn't understand get their own
+>extractor here — currently luluvido.com. More sites can be added
+>the same way, one module each.
+>**Pipe**: `/pipe <link>` streams a file straight to
+>Telegram — nothing is saved on the server disk, so files
+>that would fill it can still land (≤ 2 GB, sent as a
+>document, no thumbnail). Direct file links pipe in one
+>pass; HLS (.m3u8) / DASH (.mpd) playlist links pipe through
+>ffmpeg in two passes (measure, then upload) and refuse
+>live streams. Video pages are not piped — send those
+>normally instead.
+>**Live**: `/live <link>` records a live stream (YouTube Live,
+>Twitch, Kick, Stripchat, …) and sends it here in 15-minute
+>video parts as each part finishes — nothing stays on the server
+>disk. Tap ⏹ Stop on the status message to end it; a stream
+>ending on its own ends it the same way. One recording at a time,
+>and the monthly bandwidth cap still applies.
+>**Browser**: `/browser <link>` skips the whole chain and opens
+>the page in a real browser (it clicks play on click-to-play
+>players) — for pages where the normal flow returns only a
+>thumbnail or nothing at all.
+>**Gallery**: `/gallery <link>` runs gallery-dl only — for
+>galleries and image posts when you want exactly that engine.||"""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
