@@ -345,7 +345,10 @@ async def _send_segment(job: LiveJob, path: str) -> None:
         stats.record("downloaded", size)
         await send_files_routed(job.client, job.chat_id, [path],
                                 "uploader", caption=caption,
-                                status_msg=job.status)
+                                status_msg=job.status,
+                                force_document=False)  # live parts
+        # are always videos — they are meant to be watched as they
+        # arrive, whatever the URL-upload "Send as" setting says.
         job.parts_sent += 1
         job.bytes_sent += size
     except Exception:

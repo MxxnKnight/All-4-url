@@ -430,8 +430,11 @@ async def _send_to_owner(paths: list[str], title: str,
         except Exception:
             pass
     from core.sender import send_files
+    from core import settings
     sent = await send_files(_bot, config.OWNER_ID, paths,
-                            caption=title[:200], progress_cb=progress_cb)
+                            caption=title[:200], progress_cb=progress_cb,
+                            force_document=settings.get_send_as("uploader")
+                            == "document")
     if not sent:
         raise RuntimeError("Telegram returned nothing for the file")
 

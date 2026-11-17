@@ -1,15 +1,22 @@
 """Bot-wide settings the owner can change from chat.
 
 Currently: the upload destination per feature — where finished files
-are delivered.
+are delivered — and how URL uploads are sent (video vs document).
 
     dest_uploader    "bot" | "saved"
     dest_restricted  "bot" | "saved"
+    sendas_uploader  "video" | "document"
 
 "bot"   = the bot sends files to the chat (default, classic behavior).
 "saved" = the user account uploads them to its own Saved Messages
           (Destiny-style; needs SESSION_STRING — sender falls back to
           "bot" when no session is configured).
+
+"video"    = video files go out as videos (inline player, thumbnail).
+"document" = video files go out as plain files instead. Photos, audio
+             and everything else are unaffected, and restricted
+             downloads always use "video" — the setting is URL uploads
+             only, by the owner's choice.
 
 Storage mirrors sudo/stats: Mongo `settings` collection when DB_URI
 is set, data/settings.json otherwise; values cached in memory.
@@ -24,8 +31,12 @@ from core import db
 
 DATA_FILE = os.path.join(config.BASE_DIR, "data", "settings.json")
 
-_DEFAULTS = {"dest_uploader": "bot", "dest_restricted": "bot"}
+_DEFAULTS = {"dest_uploader": "bot", "dest_restricted": "bot",
+             "sendas_uploader": "video"}
 _DESTS = ("bot", "saved")
+_SENDAS = ("video", "document")
+_VALID = {"dest_uploader": _DESTS, "dest_restricted": _DESTS,
+          "sendas_uploader": _SENDAS}
 
 _mem = None
 
@@ -37,7 +48,7 @@ def _load_file() -> dict:
             raw = json.load(handle)
         if isinstance(raw, dict):
             for key in _DEFAULTS:
-                if raw.get(key) in _DESTS:
+                if raw.get(key) in _VALID[key]:
                     data[key] = raw[key]
     except Exception:
         pass
@@ -73,7 +84,7 @@ async def init_from_db() -> None:
     if stored:
         data = dict(_DEFAULTS)
         for key in _DEFAULTS:
-            if stored.get(key) in _DESTS:
+            if stored.get(key) in _VALID[key]:
                 data[key] = stored[key]
         _mem = data
         _save_file(data)
@@ -95,3 +106,20 @@ def set_dest(feature: str, value: str) -> None:
     data[f"dest_{feature}"] = value
     _save_file(data)
     db.schedule(db.save_setting(f"dest_{feature}", value))
+
+
+def get_send_as(feature: str) -> str:
+    """How video files are sent for `feature`: "video" (inline player)
+    or "document" (plain file). Only "uploader" has the setting —
+    every other feature always sends videos as video."""
+    value = _memory().get(f"sendas_{feature}", "video")
+    return value if value in _SENDAS else "video"
+
+
+def set_send_as(feature: str, value: str) -> None:
+    if value not in _SENDAS:
+        return
+    data = _memory()
+    data[f"sendas_{feature}"] = value
+    _save_file(data)
+    db.schedule(db.save_setting(f"sendas_{feature}", value))

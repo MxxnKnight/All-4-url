@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.38.0** (2026-11-17).
+- **Current version: v1.39.0** (2026-11-17).
 
 ## How moon works — the contract
 
@@ -267,8 +267,22 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-17) — v1.38.0
+## Current status (2026-11-17) — v1.39.0
 
+- v1.39.0 adds the "Send URL uploads as" setting (moon's order):
+  /destination now also picks whether video files from links arrive
+  as 🎬 Video (inline player, default) or 📄 Document (plain file).
+  Setting key `sendas_uploader` in core/settings.py ("video" |
+  "document", Mongo or settings.json like the destinations).
+  Sender threading: send_file/send_files take force_document
+  (video → document; photos, audio, split parts unaffected);
+  send_files_routed takes force_document=None (follow the feature
+  setting — only "uploader" has one) or an explicit bool.
+  Restricted downloads always send videos as video (moon's rule).
+  /live parts and samples pass force_document=False (meant to be
+  watched inline). The link-upload page (core/sendlink.py) reads
+  the setting itself — it calls send_files directly, bypassing
+  routing. Verified: 30 checks in /tmp/test_v139.py.
 - v1.38.0 adds multi-link messages (moon's order): paste several
   links in one message and they download one after another, each
   with its own status message ("Working on it… (1 of 3)").

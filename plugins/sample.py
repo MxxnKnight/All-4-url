@@ -92,7 +92,10 @@ async def sample_callback(client: Client, query):
         await send_files_routed(
             client, dest, [sample_path], "uploader",
             caption=f"Sample ({seconds}s, middle) of {name}",
-            status_msg=status)
+            status_msg=status,
+            force_document=False)  # a sample is a preview — it
+        # is meant to be watched inline, whatever the URL-upload
+        # "Send as" setting says.
         stats.record_job("sample", ok=True)
         await status.edit_text(
             f"✅ Sent a {seconds}s sample of {name}.",

@@ -166,16 +166,20 @@ def _split_run(paths: list[str], start: int) -> list[str] | None:
 
 
 async def send_file(client, chat_id: int, path: str, caption: str = "",
-                    status_msg=None, progress_cb=None):
+                    status_msg=None, progress_cb=None,
+                    force_document: bool = False):
     """Send one local file as video / photo / audio / document.
 
     Returns the sent Message (or None if the client returned nothing).
     `progress_cb`, when given, is awaited with (current, total) bytes
     as Telegram reports them — in addition to the status-message
-    editor, not instead of it."""
+    editor, not instead of it.
+    `force_document` sends a video as a plain file instead (the
+    /destination "Send URL uploads as" setting); photos, audio and
+    split parts are unaffected."""
     kind = guess_kind(path)
     meta: dict = {}
-    if kind == "document":
+    if kind == "document" and not force_document:
         # A video wearing a wrong/no extension (or an unknown MIME in
         # this container) would leave as a document. Trust the CONTENT
         # instead: if ffprobe finds a video stream, send it as video.
@@ -188,6 +192,8 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
             meta = await run_blocking(_ffprobe, path)
             if meta.get("duration") or meta.get("width"):
                 kind = "video"
+    if force_document and kind == "video":
+        kind = "document"
     editor = ThrottledEditor(status_msg) if status_msg is not None else None
     callbacks = []
     if editor is not None:
@@ -257,8 +263,13 @@ async def _attach_mediainfo_button(sent) -> None:
 
 async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                      status_msg=None, mediainfo_button: bool = False,
-                     progress_cb=None) -> list:
+                     progress_cb=None,
+                     force_document: bool = False) -> list:
     """Send a job's resulting files; returns the sent Messages.
+
+    `force_document` sends videos as plain files instead (the
+    /destination "Send URL uploads as" setting); photos, audio and
+    split parts are unaffected.
 
     Photo sets (carousels, gallery dumps) go out as media groups of up to
     10, and so do consecutive .001/.002 parts of one split file;
@@ -302,7 +313,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     if len(paths) == 1:
         sent = await send_file(client, chat_id, paths[0], caption, status_msg,
                                progress_cb=_per_file(0)
-                               if progress_cb is not None else None)
+                               if progress_cb is not None else None,
+                               force_document=force_document)
         if sent is not None:
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
@@ -320,7 +332,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             sent = await send_file(client, chat_id, chunk[0],
                                    caption if first else "", status_msg,
                                    progress_cb=_per_file(sent_bytes)
-                                   if progress_cb is not None else None)
+                                   if progress_cb is not None else None,
+                                   force_document=force_document)
             if sent is not None:
                 sent_all.append(sent)
         else:
@@ -376,7 +389,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         sent = await send_file(client, chat_id, path,
                                caption if first else "", status_msg,
                                progress_cb=_per_file(sent_bytes)
-                               if progress_cb is not None else None)
+                               if progress_cb is not None else None,
+                               force_document=force_document)
         if sent is not None:
             sent_all.append(sent)
         if progress_cb is not None:
@@ -394,7 +408,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                             feature: str, caption: str = "",
                             status_msg=None,
-                            mediainfo_button: bool = False) -> list:
+                            mediainfo_button: bool = False,
+                            force_document: bool | None = None) -> list:
     """send_files() to the destination chosen for `feature`.
 
     Destinations (core/settings.py, /destination command):
@@ -404,10 +419,18 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                 user session is configured, falls back to "bot".
     The progress editor keeps working either way: the status message
     belongs to the bot, only the uploading client changes.
+
+    `force_document` decides whether videos go out as plain files:
+    None (default) follows the feature's "Send as" setting — only
+    "uploader" has one, everything else sends videos as video.
+    An explicit True/False overrides the setting (live recordings
+    and samples always pass False: they are meant to be watched).
     """
     from core import settings
     from core.userclient import SessionNotConfigured, get_user_client
 
+    if force_document is None:
+        force_document = settings.get_send_as(feature) == "document"
     if settings.get_dest(feature) == "saved":
         try:
             user = await get_user_client()
@@ -416,7 +439,9 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
         if user is not None:
             return await send_files(user, "me", paths, caption=caption,
                                     status_msg=status_msg,
-                                    mediainfo_button=False)
+                                    mediainfo_button=False,
+                                    force_document=force_document)
     return await send_files(bot_client, chat_id, paths, caption=caption,
                             status_msg=status_msg,
-                            mediainfo_button=mediainfo_button)
+                            mediainfo_button=mediainfo_button,
+                            force_document=force_document)

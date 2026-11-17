@@ -45,7 +45,9 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
 >**Destination**: `/destination` picks where finished files land —
 >this chat, or your own Saved Messages — separately for URL uploads
->and restricted downloads.
+>and restricted downloads. It also picks how URL uploads arrive:
+>videos as 🎬 Video or 📄 Document (restricted downloads always
+>send as video).
 >**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
 >Drop files there (max 750 MB each) and send the download link it
 >gives you back here — I'll push it to Telegram straight from the
