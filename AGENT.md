@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.45.3** (2026-11-19).
+- **Current version: v1.46.0** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -286,6 +286,42 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-19) — v1.46.0
+
+- v1.46.0 (moon's ask, same night): transfer.it extractor
+  (core/extractors/transferit.py, registered in site_registry).
+  transfer.it is MEGA's own transfer service (launched July
+  2025) but NOT MEGA Drive: no end-to-end encryption, no MEGA
+  Drive links, downloads are plaintext (server-side decrypt).
+  The module lists a transfer through MEGA's own API (POST
+  f-command, domain=transferit, g.api host with bt7 fallback),
+  decrypts node filenames from their AES-CBC attrs blobs
+  (pycryptodome, new in requirements.txt; file keys are 8
+  words with the attr key XORed, folder keys 4 words as-is),
+  and downloads each file from a fresh /cs/g URL with Referer
+  transfer.it (302 to userstorage, Range-capable, so the
+  parallel downloader applies). Folders download whole, up to
+  100 files; dead/expired transfers fail honestly. Verified:
+  listed transfer TVaJtqIjRLAI live (one 13.3 GB mkv, attrs
+  decrypted to the real name) and a 1 MB Range GET on the
+  fresh /cs/g URL answered 206 with a plaintext Matroska
+  header. CORRECTION (same night): the assistant's earlier
+  claim that a 1DM-extracted transfer.it download URL serves
+  MEGA-encrypted bytes was WRONG — the bytes are plaintext and
+  the real blocker is the temp URL is IP-bound (HEAD 200, GET
+  403 from another machine). MEGA Drive support (megatools)
+  would NOT help transfer.it links — different service; still
+  shelved, awaiting moon's pick. Live-bot retest pending:
+  moon sends the transfer.it link to the bot (13 GB pull,
+  transfer.it's free limits unproven).
+- TOOL GOTCHA (2026-11-19): the literal MEGA file-host domain
+  (mega, dot, nz) in ANY tool argument makes the call fail with
+  "this URL could not be accessed" — the runtime tries to fetch
+  it and fails. Never write that literal string in file
+  contents, edits, exec input, or commit messages; say "MEGA
+  Drive" instead. The API hosts (g.api / bt7 under mega.co.nz)
+  are fine, and transfer.it URLs are fine.
 
 ## Current status (2026-11-19) — v1.45.3
 

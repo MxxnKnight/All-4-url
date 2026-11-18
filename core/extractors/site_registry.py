@@ -36,8 +36,8 @@ from core.extractors import (buzzheavier, fichier, filehosts, firestream,
                              fuckingfast, github, gofile, hubcloud,
                              krakenfiles, lulacloud, luluvido, mediafire,
                              missav, pixeldrain, reddit_oauth, solidfiles,
-                             sourceforge, streamtape, uploadhaven, uploadee,
-                             vidara)
+                             sourceforge, streamtape, transferit,
+                             uploadhaven, uploadee, vidara)
 
 SITES = [
     # Player pages that need their own JS replayed (no yt-dlp extractor).
@@ -46,10 +46,11 @@ SITES = [
     # File hosts / shorteners whose page hides the file behind a gate.
     filehosts,
     # Direct file hosts with their own page/API flow (no yt-dlp
-    # extractor): mediafire pages, gofile shares, hubcloud /
-    # hubdrive / gdflix movie-link hosts.
+    # extractor): mediafire pages, gofile shares, transfer.it
+    # shares, hubcloud / hubdrive / gdflix movie-link hosts.
     mediafire,
     gofile,
+    transferit,  # transfer.it shares — MEGA API, no login/key
     hubcloud,
     # LuluStream's packed-jwplayer pages (and its clone panels:
     # lulustream.com, lplaygo.com).

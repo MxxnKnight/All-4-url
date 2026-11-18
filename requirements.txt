@@ -20,3 +20,6 @@ playwright==1.65.2
 # Async MongoDB driver (sudo users + usage stats when DB_URI is set).
 motor
 Pillow
+# AES for the transfer.it extractor (core/extractors/transferit.py):
+# node filenames live in AES-CBC-encrypted attrs blobs.
+pycryptodome>=3.24.0
