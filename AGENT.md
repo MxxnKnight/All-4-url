@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.45.2** (2026-11-19).
+- **Current version: v1.45.3** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -276,11 +276,34 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   bad URL → 400.
 - Do not run internet probes that depend on proxy credentials; local
   aiohttp servers are unaffected and are the reliable test surface.
+- **Handler registration is tested, not assumed.** After ANY change
+  to a plugin file (especially moving functions in uploader.py),
+  run `test_v1453.py`: it builds a real Client, loads the plugins,
+  and asserts every handler is registered and no helper is. A
+  decorator that lands on the wrong function kills the feature
+  silently — no error reaches the user (v1.44.0–v1.45.2: plain
+  links dead for two days because the entry-point decorator sat
+  on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-19) — v1.45.2
+## Current status (2026-11-19) — v1.45.3
 
+- v1.45.3 (the link hang, SOLVED): plain links were dead since
+  v1.44.0 — the entry-point decorator in uploader.py sat on
+  _run_links (v1.44.0–v1.44.1) then _job_label (v1.45.0–v1.45.2)
+  instead of url_handler, so WzGram called a helper with the
+  wrong arguments, logged a TypeError, and dropped the update:
+  no reaction, no reply, no job, while every command worked.
+  Fixed by moving the decorator onto url_handler. Proof: a real
+  Client.load_plugins probe lists url_handler as a MessageHandler
+  and no helper; test_v1453.py pins it (17 checks: registration
+  of all 44 handlers, filter routing for links vs commands vs
+  groups vs strangers) and FAILS on the old code. The v1.45.2
+  /status jobs diagnostic stays — it is still the right tool if
+  a link ever stalls mid-download. Mega links are still
+  unsupported (moon shelved Mega): after this fix they get an
+  honest error reply instead of silence.
 - v1.45.2 (bot-silence diagnosis, same night): /start was dead
   because HOME_TEXT is 4936 chars — over Telegram's 4096 cap, so
   reply_text raises and the handler dies silently. It was ALREADY
@@ -291,7 +314,8 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   verified under 4096 too. /status now shows live jobs +
   free/total job slots (new jobs.snapshot(), Job.started) so the
   next link-hang is visible through the one command that still
-  replies. Link hang itself still undiagnosed: ruled out the
+  replies. Link hang itself still undiagnosed at that point
+  (SOLVED in v1.45.3 — see above: misplaced decorator): ruled out the
   browser scan (BROWSER_TIMEOUT 100 s caps it), the sendlink
   semaphore (try/finally release, no leak), react() (swallows
   all errors), and /health (static string — proves nothing

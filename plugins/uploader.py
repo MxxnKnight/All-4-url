@@ -987,12 +987,12 @@ async def gallery_cmd(client: Client, message: Message):
 
 
 # ---------------------------------------------------------------- entry point
+# NOTE: the @Client.on_message decorator below belongs to url_handler
+# (the last function in this section), NOT to the helpers above it.
+# v1.44.0–v1.45.2 registered the decorator on _run_links/_job_label
+# instead (a helper moved between them), so plain links were silently
+# ignored for two days — see test_v1453.py, which pins this.
 
-@Client.on_message(filters.private & admin_only & filters.text
-                   & ~filters.command(["start", "help", "batch", "cancel",
-                                       "mediainfo", "live", "pipe",
-                                       "vidsplit", "browser", "gallery",
-                                       "joinzip"]))
 def _job_label(url: str) -> str:
     """One line naming a link in the shared progress message:
     the site plus the file name when the URL carries one."""
@@ -1042,6 +1042,11 @@ async def _run_links(client: Client, message: Message,
         await react(message, "👎")
 
 
+@Client.on_message(filters.private & admin_only & filters.text
+                   & ~filters.command(["start", "help", "batch", "cancel",
+                                       "mediainfo", "live", "pipe",
+                                       "vidsplit", "browser", "gallery",
+                                       "joinzip"]))
 async def url_handler(client: Client, message: Message):
     urls = _extract_urls(message)
     if not urls:
