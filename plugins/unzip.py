@@ -30,6 +30,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from core import stats, unzip
+from core.filename_parser import clean_display
 from core.sender import send_files_routed, send_files_split
 from core.utils import (admin_only, cleanup_dir, human_bytes, make_job_dir)
 
@@ -117,9 +118,14 @@ async def unzip_cmd(client: Client, message: Message):
                 # of failing the cap.
                 sent_paths = [path]
                 try:
+                    # Each file goes out under its OWN clean title
+                    # ("Show S01E01") — no "Unpacked from …"
+                    # caption (v1.44.1, moon's call).
+                    file_caption = clean_display(
+                        os.path.basename(path))
                     sent_paths = await send_files_split(
                         client, message.chat.id, [path],
-                        "uploader", caption=f"Unpacked from {name}",
+                        "uploader", caption=file_caption,
                         status_msg=status)
                     sent_count += 1
                     sent_bytes += size

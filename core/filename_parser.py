@@ -23,6 +23,8 @@ _EXTENSIONS = {
     "3gp", "ts", "m2ts", "vob", "mp3", "flac", "aac", "ogg", "opus", "wav",
     "m4a", "zip", "rar", "7z", "tar", "gz", "srt", "ass", "vtt", "sub",
     "jpg", "jpeg", "png", "gif", "webp", "bmp",
+    "txt", "pdf", "nfo", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "epub", "mobi", "json", "xml", "csv", "log", "md",
 }
 
 # Tokens dropped from the title: quality/source/codec/audio/subtitle tags

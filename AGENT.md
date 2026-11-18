@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.44.0** (2026-11-18).
+- **Current version: v1.44.1** (2026-11-18).
 
 ## How moon works — the contract
 
@@ -267,8 +267,19 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-18) — v1.44.0
+## Current status (2026-11-18) — v1.44.1
 
+- v1.44.1 drops the "Unpacked from …" caption (moon's call):
+  /unzip and the file-menu Unpack button now caption each file
+  with its OWN clean title (same as the uploader prompt flow
+  since v1.44.0). The job summary ("✅ Unpacked N file(s) from
+  …") is unchanged — it is a status message, not a caption.
+  Bundled parser fix found by the v1.44.1 tests: _EXTENSIONS
+  now covers document/text extensions (txt/pdf/nfo/doc/epub/
+  json/…), so "readme.txt" cleans to "readme", not "readme txt".
+  Verified: 7 checks in /tmp/test_v1441.py (both unpack flows
+  end to end with fakes) + parser suite now 35 + v1.44.0 suite
+  still 47.
 - v1.44.0 is the WZML-X round-2 batch (moon's "Make all" on the
   7-item pick-list; ideas/patterns only, AGPL, no copy-paste):
   (1) clean filenames — new core/filename_parser.py (title/year/

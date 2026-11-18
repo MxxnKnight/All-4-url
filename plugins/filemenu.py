@@ -23,6 +23,7 @@ import os
 from pyrogram import Client, filters
 
 from core import filemenu, stats, unzip
+from core.filename_parser import clean_display
 from core.linktoken import make_token
 from core.sender import send_files_routed
 from core.utils import (admin_only, cleanup_dir, human_bytes, is_admin_id,
@@ -220,9 +221,14 @@ async def filemenu_callback(client: Client, query):
                     except OSError:
                         sz = 0
                     try:
+                        # Each file goes out under its OWN clean
+                        # title ("Show S01E01") — no "Unpacked
+                        # from …" caption (v1.44.1, moon's call).
+                        file_caption = clean_display(
+                            os.path.basename(path))
                         await send_files_routed(
                             client, status.chat.id, [path],
-                            "uploader", caption=f"Unpacked from {name}",
+                            "uploader", caption=file_caption,
                             status_msg=status)
                         sent_count += 1
                         sent_bytes += sz
