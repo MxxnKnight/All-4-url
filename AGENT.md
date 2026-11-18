@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.45.1** (2026-11-19).
+- **Current version: v1.45.2** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -278,6 +278,30 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   aiohttp servers are unaffected and are the reliable test surface.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-19) — v1.45.2
+
+- v1.45.2 (bot-silence diagnosis, same night): /start was dead
+  because HOME_TEXT is 4936 chars — over Telegram's 4096 cap, so
+  reply_text raises and the handler dies silently. It was ALREADY
+  4859 chars at v1.44.1 (pre-existing, not a v1.45.0 break — moon
+  only noticed now because he never uses /start). Fixed by
+  trimming HOME_TEXT to 1241 chars (same expandable-blockquote
+  shape, one short line per feature); all four SECTION_TEXTS
+  verified under 4096 too. /status now shows live jobs +
+  free/total job slots (new jobs.snapshot(), Job.started) so the
+  next link-hang is visible through the one command that still
+  replies. Link hang itself still undiagnosed: ruled out the
+  browser scan (BROWSER_TIMEOUT 100 s caps it), the sendlink
+  semaphore (try/finally release, no leak), react() (swallows
+  all errors), and /health (static string — proves nothing
+  about the Telegram side). Space logs need an HF owner sign-in
+  (no saved login). A Space restart at ~02:31 IST revived the
+  bot briefly (deploy notice + /status + one error reply, then
+  silent again). Verified: 19 checks in test_v1452.py.
+  NOTE: /tmp test suites get wiped between sessions (v145,
+  v145_hosts, v1451 all gone) — suites now also saved under
+  ~/workspace/tests-all4url/.
 
 ## Current status (2026-11-19) — v1.45.1
 

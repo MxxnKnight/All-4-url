@@ -18,8 +18,9 @@ import sys
 import time
 
 import config
-from core import backup, cookies, db, stats
-from core.utils import human_bytes, is_admin_id, is_owner_id, admin_only, owner_only
+from core import backup, cookies, db, jobs as jobs_mod, stats
+from core.utils import (JOB_SEMAPHORE, human_bytes, is_admin_id,
+                        is_owner_id, admin_only, owner_only)
 
 #: Koyeb's free monthly outbound allowance, in bytes. Outbound here is
 #: everything the box sends out: Telegram uploads + file-to-link serves.
@@ -34,86 +35,22 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 
 **>Full feature list — tap to expand
 >
->**Sudo users** (owner only): `/addsudo <id or @username>` or reply `/addsudo`,
->`/delsudo <id>`, `/sudos`. Permanent sudo users go in the SUDO_USERS env var.
->
->**Cookies**: when a login-walled site (Instagram, Reddit, …) fails, tap
->`/setcookies` and pick the site — then send its `cookies.txt`
->(exported from your browser while logged in). Each site gets its own
->jar, verified before installing; `/cookies` lists them. Jars are backed
->up automatically and survive redeploys.
->**yt-dlp**: `/updateytdlp` upgrades it on the spot, no redeploy needed.
->**Destination**: `/destination` picks where finished files land —
->this chat, or your own Saved Messages — separately for URL uploads
->and restricted downloads. It also picks how URL uploads arrive:
->videos as 🎬 Video or 📄 Document (restricted downloads always
->send as video). Every person has their own settings here — yours
->never touch anyone else's.
->**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
->Drop files there (max 750 MB each) and send the download link it
->gives you back here — I'll push it to Telegram straight from the
->server disk, no re-download, then delete the server copy. No
->matter which sudo uploads, the file lands in the admin's bot PM.
->**Link upload page**: `/linkuploadpage` gives you a permanent, unlisted
->page instead — paste a link there and hit Fetch, one tap, and
->I'll download it at best quality and upload it to the admin's
->bot PM. The job card below shows Probe, Check, Download,
->Upload; up to 5 jobs at once, history deletes itself after an
->hour. Same download logic as pasting a link here, images
->included; the link never expires, so treat it like a password.
->**Convert**: reply to a video/document with `/convert` to
->re-send it as the other type (video ↔ document, same file, no
->re-upload). Files sent to me also get a menu with links,
->MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
->(15/30/60s from the middle), Unpack (archives), and Close.
->**Metadata**: reply to a video/audio file with `/metadata
->title=Name | artist=Who` and I'll write those tags into a
->copy and send it back (no re-encoding, the file itself is
->untouched). `/mediainfo` still does the reading.
->**Unzip**: if a downloaded file is a .zip/.rar/.7z archive,
->I'll ask whether to unpack it and send the contents instead
->(caps: archive ≤ 20 GB, unpacked total ≤ 20 GB, ≤ 1000 files,
->extracted and sent one by one so disk never holds more than
->the archive plus one file — bigger archives get a plain
->"exceeds" message and are sent as-is). A video inside that's
->over 2 GB arrives split into .mkv.001/.002 parts. The question
->comes even for an archive over 2 GB, and it lists what's
->inside (cleaned episode names) so you can see the files
->before choosing. Or send me an archive and reply to it with
->`/unzip` and I'll unpack that one the same way.
->**Clean names**: messy release names are tidied before
->sending — captions show "Show S01E01" instead of
->"Show.S01E01.720p.WEB-DL.x264-GROUP", and video captions also
->list the audio and subtitle languages inside. With a TMDB
->token set, videos arrive with the real poster as the
->thumbnail instead of a video frame.
->**Join split archives**: `/joinzip <link1> <link2> …` — send ALL
->the links of one split archive in one message (like
->`movie.zip.001`, `movie.zip.002`, …). I'll download the parts,
->join them, and offer to unzip the result.
->**Custom sites**: sites yt-dlp doesn't understand get their own
->extractor here — currently luluvido.com. More sites can be added
->the same way, one module each.
->**Pipe**: `/pipe <link>` streams a file straight to
->Telegram — nothing is saved on the server disk, so files
->that would fill it can still land (≤ 2 GB, sent as a
->document, no thumbnail). Direct file links pipe in one
->pass; HLS (.m3u8) / DASH (.mpd) playlist links pipe through
->ffmpeg in two passes (measure, then upload) and refuse
->live streams. Video pages are not piped — send those
->normally instead.
->**Live**: `/live <link>` records a live stream (YouTube Live,
->Twitch, Kick, Stripchat, …) and sends it here in 15-minute
->video parts as each part finishes — nothing stays on the server
->disk. Tap ⏹ Stop on the status message to end it; a stream
->ending on its own ends it the same way. One recording at a time,
->and the monthly bandwidth cap still applies.
->**Browser**: `/browser <link>` skips the whole chain and opens
->the page in a real browser (it clicks play on click-to-play
->players) — for pages where the normal flow returns only a
->thumbnail or nothing at all.
->**Gallery**: `/gallery <link>` runs gallery-dl only — for
->galleries and image posts when you want exactly that engine.||"""
+>**Sudo** (owner only): `/addsudo`, `/delsudo`, `/sudos`.
+>**Cookies**: `/setcookies` + `/cookies` for login-walled sites.
+>**yt-dlp**: `/updateytdlp` upgrades it on the spot.
+>**Destination**: `/destination` — where files land, per person.
+>**Web upload**: `/fileuploadpage` — private 1-hour upload page.
+>**Link page**: `/linkuploadpage` — paste a link, one tap, Fetch.
+>**Convert**: reply `/convert` — video ↔ document, same file.
+>**Metadata**: reply `/metadata title=…` — tags, no re-encode.
+>**Unzip**: archives get an unpack question; or reply `/unzip`.
+>**Clean names**: messy release names tidied before sending.
+>**Join split**: `/joinzip <links…>` — join .001/.002 parts.
+>**Custom sites**: own extractors for sites yt-dlp misses.
+>**Pipe**: `/pipe <link>` — straight to Telegram, nothing on disk.
+>**Live**: `/live <link>` — live streams in 15-minute parts.
+>**Browser**: `/browser <link>` — real browser for tricky pages.
+>**Gallery**: `/gallery <link>` — gallery-dl only.||"""
 
 SECTION_UPLOADER = """📥 **URL Uploader**
 
@@ -280,6 +217,24 @@ def _status_text() -> str:
             for _pid, label, count, _ts in jars))
     else:
         lines.append("🍪 Cookie jars: none installed")
+    # Live jobs (v1.45.2): when links stop answering, /status is the
+    # one command that still replies — it now names the stuck job and
+    # the free job slots instead of leaving the bot looking dead.
+    lines += ["", "**Jobs**"]
+    live = jobs_mod.snapshot()
+    free = getattr(JOB_SEMAPHORE, "_value", "?")
+    lines.append(f"📥 Running: {len(live)} · slots free: "
+                 f"{free}/{config.MAX_JOBS}")
+    for item in live:
+        age = item["age"]
+        age_s = f"{age // 60}m{age % 60:02d}s" if age >= 60 else f"{age}s"
+        label = item["label"]
+        if len(label) > 40:
+            label = label[:39] + "…"
+        line = item["line"]
+        if len(line) > 80:
+            line = line[:79] + "…"
+        lines.append(f"   • {label} — {line} ({age_s})")
     return "\n".join(lines)
 
 

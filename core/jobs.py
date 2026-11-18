@@ -54,6 +54,7 @@ class Job:
         self.label = label
         self.line = "Working on it…"
         self.cancelled = False
+        self.started = time.time()
         self._state = state
         self._gone = False
 
@@ -187,6 +188,18 @@ def get_job(job_id: str) -> Job | None:
         if job is not None:
             return job
     return None
+
+
+def snapshot() -> list[dict]:
+    """Live jobs for /status: one dict per running job (label, current
+    line, age in seconds). Empty when nothing is running — so a /status
+    that shows a job stuck for many minutes names the hang instead of
+    leaving the bot looking silently dead."""
+    now = time.time()
+    return [{"label": job.label, "line": job.line,
+             "age": int(now - job.started)}
+            for state in _CHATS.values()
+            for job in state.jobs.values()]
 
 
 async def _edit_now(state: _ChatState) -> None:
