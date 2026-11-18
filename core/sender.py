@@ -645,10 +645,12 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
     """send_files() to the destination chosen for `feature`.
 
     Destinations (core/settings.py, /destination command):
-      "bot"   — the bot sends the files to the requester's chat (default).
+      "bot"   — the bot sends the files to the requester's chat.
       "saved" — the *user account* uploads them to its own Saved
                 Messages (Destiny-style). Needs SESSION_STRING; when no
                 user session is configured, falls back to "bot".
+    Defaults: URL uploads go to "bot", restricted downloads to "saved"
+    (owner only — sudo users always get "bot").
     The progress editor keeps working either way: the status message
     belongs to the bot, only the uploading client changes.
 

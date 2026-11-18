@@ -1,4 +1,4 @@
-"""Per-user bot settings (v1.45.0).
+"""Per-user bot settings (v1.45.1).
 
 Each admin — the owner and every sudo user — has their OWN copy of
 every setting, changed from /destination. A user who never changed
@@ -11,10 +11,13 @@ nothing changes for anyone until they open /destination themselves.
     dest_restricted  "bot" | "saved"
     sendas_uploader  "video" | "document"
 
-"bot"   = the bot sends files to the chat (default, classic behavior).
+"bot"   = the bot sends files to the chat (classic behavior; the
+          default for URL uploads).
 "saved" = the user account uploads them to its own Saved Messages
           (Destiny-style; needs SESSION_STRING — sender falls back to
-          "bot" when no session is configured).
+          "bot" when no session is configured). Restricted downloads
+          default to "saved" for the owner (v1.45.1); sudo users
+          still get "bot" (see get_dest).
 
 "video"    = video files go out as videos (inline player, thumbnail).
 "document" = video files go out as plain files instead. Photos, audio
@@ -39,8 +42,12 @@ from core import db
 
 DATA_FILE = os.path.join(config.BASE_DIR, "data", "settings.json")
 
-_DEFAULTS = {"dest_uploader": "bot", "dest_restricted": "bot",
+_DEFAULTS = {"dest_uploader": "bot", "dest_restricted": "saved",
              "sendas_uploader": "video"}
+# Bump whenever a default above changes: _load_file migrates files
+# written under an older revision (see there). Rev 2 (v1.45.1) flipped
+# dest_restricted's default from "bot" to "saved".
+_DEFAULTS_REV = 2
 _DESTS = ("bot", "saved")
 _SENDAS = ("video", "document")
 _VALID = {"dest_uploader": _DESTS, "dest_restricted": _DESTS,
@@ -77,7 +84,17 @@ def _load_file() -> dict:
     data = dict(_DEFAULTS)
     try:
         with open(DATA_FILE, encoding="utf-8") as handle:
-            _apply(data, json.load(handle))
+            raw = json.load(handle)
+        if isinstance(raw, dict) and raw.get("_defaults_rev", 1) < _DEFAULTS_REV:
+            # A file written before rev 2 has the OLD defaults baked
+            # in (_save_file persists the whole dict): its stored
+            # global "bot" for dest_restricted is the old default,
+            # not a choice, so drop it and let the new default apply.
+            # A stored "saved" — a real choice — is kept, and
+            # per-user keys are never touched (always explicit).
+            raw = {key: value for key, value in raw.items()
+                   if not (key == "dest_restricted" and value == "bot")}
+        _apply(data, raw)
     except Exception:
         pass
     return data
@@ -88,8 +105,10 @@ def _save_file(data: dict) -> None:
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(DATA_FILE),
                                    prefix=".settings", suffix=".tmp")
+        payload = dict(data)
+        payload["_defaults_rev"] = _DEFAULTS_REV
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
+            json.dump(payload, handle)
         os.replace(tmp, DATA_FILE)
     except Exception:
         pass  # settings must never break a transfer
@@ -149,8 +168,11 @@ def get_dest(feature: str, user_id=None) -> str:
     vault belongs to the single user session (the owner's
     account), so a sudo user who inherited "saved" would watch
     their files vanish into the owner's vault and get nothing
-    back. Any non-owner requester is downgraded to "bot"."""
-    value = _get(f"dest_{feature}", "bot", user_id)
+    back. Any non-owner requester is downgraded to "bot".
+    Restricted downloads default to "saved" (v1.45.1); URL
+    uploads default to "bot"."""
+    base = f"dest_{feature}"
+    value = _get(base, _DEFAULTS.get(base, "bot"), user_id)
     if (value == "saved" and user_id
             and int(user_id) != config.OWNER_ID):
         return "bot"

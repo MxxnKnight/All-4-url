@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.45.0** (2026-11-19).
+- **Current version: v1.45.1** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -127,17 +127,22 @@ OWNER_ID only; non-matching users get total silence.
 Destination and send-as are **per admin, not bot-wide**:
 `settings.get_dest(feature, user_id)` / `get_send_as(feature, user_id)`
 return the user's own value, else the shared global value (the pre-1.45.0
-behaviour), else the default. `/destination` is open to every admin and
-edits only the caller's own settings. `"saved"` is owner-only by
-construction — the vault is the single user session (the owner's
-account), so a sudo user asking for it (or inheriting a global "saved")
-is downgraded to `"bot"`, and `set_dest(..., "saved", non_owner)` is
-ignored. `sender.send_files_routed(..., user_id=...)` and
+behaviour), else the default. Defaults (v1.45.1): URL uploads `"bot"`,
+restricted downloads `"saved"` (owner only — see below). `/destination`
+is open to every admin and edits only the caller's own settings.
+`"saved"` is owner-only by construction — the vault is the single user
+session (the owner's account), so a sudo user asking for it (or
+inheriting a global "saved") is downgraded to `"bot"`, and
+`set_dest(..., "saved", non_owner)` is ignored. `sender.send_files_routed(..., user_id=...)` and
 `send_files_split(..., user_id=...)` thread the requester through;
 callers without a user (none in the bot flows — all thread it) fall back
 to the global value. `sender.send_files` sends directly with no routing
 — used where bot-PM-to-owner delivery is explicitly required
-(upage/sendlink admin delivery).
+(upage/sendlink admin delivery). `_save_file` persists the whole dict,
+so old defaults get baked into settings.json: when a default changes,
+bump `_DEFAULTS_REV` and `_load_file` migrates files written under an
+older revision (drops a stored global value that equals the OLD default
+only; stored real choices and per-user keys are never touched).
 
 ### Bandwidth guard
 
@@ -273,6 +278,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   aiohttp servers are unaffected and are the reliable test surface.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-19) — v1.45.1
+
+- v1.45.1 (moon's ask, same night): restricted downloads now
+  default to Saved Messages for the owner (`dest_restricted`
+  default "bot" -> "saved" in core/settings.py); URL uploads
+  still default to "bot". Sudo users are unaffected — they
+  inherit the global "saved" but get downgraded to "bot" by the
+  existing owner-only rule, and an explicit per-user choice
+  (either side) still wins over the default. Settings files
+  written before this carry the old default baked in
+  (_save_file persists the whole dict), so _load_file migrates
+  them: a stored global "bot" for dest_restricted is dropped
+  when the file lacks the _defaults_rev marker (rev 2), a
+  stored "saved" is kept, per-user keys are never touched.
+  Verified: 19 checks in /tmp/test_v1451.py + the v1.45.0
+  suite still 67/67.
 
 ## Current status (2026-11-19) — v1.45.0
 
