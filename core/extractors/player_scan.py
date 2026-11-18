@@ -139,6 +139,53 @@ async def fetch(url: str, method: str | None = None, data=None,
                              headers=headers)
 
 
+async def fetch_partial(url: str, *, needle: str | bytes | None = None,
+                        max_bytes: int = 512 * 1024, timeout: int = 25,
+                        headers: dict | None = None) -> tuple[str, str]:
+    """Fetch a page but stop early — returns (final_url, text).
+
+    Some hosts stream enormous pages (800 KB+) very slowly, and the
+    one thing worth reading sits in the first few KB. This reads
+    until `needle` appears or the byte budget runs out, then drops
+    the connection. A slow or stalled body is NOT an error: the
+    partial text is returned so the caller can still find what it
+    needs. Only a 4xx/5xx status raises.
+
+    Use it for a page you are about to regex a known marker out of,
+    never for a page you intend to scan whole.
+    """
+    hdrs = _default_headers()
+    if headers:
+        hdrs.update(headers)
+    probe = needle.encode() if isinstance(needle, str) else (needle or b"")
+    buf = bytearray()
+    final = url
+    timeout_obj = aiohttp.ClientTimeout(total=timeout,
+                                        sock_read=max(5, timeout // 2))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            async with session.get(url, headers=hdrs,
+                                   allow_redirects=True) as resp:
+                final = str(resp.url)
+                if resp.status >= 400:
+                    raise HostError(f"the page returned HTTP {resp.status}")
+                try:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        buf.extend(chunk)
+                        if probe and probe in buf:
+                            break
+                        if len(buf) >= max_bytes:
+                            break
+                except Exception:
+                    pass  # slow/stalled body: keep what arrived
+    except HostError:
+        raise
+    except Exception as exc:
+        if not buf:
+            raise HostError(f"couldn't reach the site ({exc})") from exc
+    return final, buf.decode("utf-8", "replace")
+
+
 async def fetch_page(url: str, headers: dict | None = None) -> tuple[str, str]:
     """Fetch a page that must exist; returns (final_url, html)."""
     final, body, status = await fetch(url, headers=headers)
@@ -302,11 +349,19 @@ def normalise_url(found: str, base_url: str) -> str:
 MEDIA_EXTS = (".mp4", ".mkv", ".webm", ".m4v", ".mov", ".m3u8", ".ts",
               ".flv", ".mp3", ".m4a")
 
+#: Hosts that only ever serve code, docs or schemas — a URL from one
+#: of these is a string inside a page's JS, never its media.
+_CODE_HOSTS = (
+    "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org",
+    "npmjs.com", "jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com",
+    "w3.org", "schema.org", "gstatic.com",
+)
+
 #: Never mistake player libraries, posters or ad slots for the video.
 _SKIP_HINTS = (
     "jwplayer", "player.js", "hls.js", "hls.min", "preview", "thumb",
     "poster", "sprite", "doubleclick", "googlesyndication", "adsystem",
-    "banner", "pixel", ".gif", ".css", ".js", ".woff",
+    "banner", "pixel", "favicon", ".gif", ".css", ".js", ".woff",
 )
 
 #: Ordered by confidence — the player's own config first, page meta last.
@@ -342,12 +397,29 @@ def _plausible(found: str, *, images: bool = False) -> bool:
     low = found.lower()
     if not found or low.startswith(("data:", "blob:", "javascript:")):
         return False
+    # A real media URL never contains whitespace. A page title does:
+    # a page whose title is "SGNEW - Lulustream.mp4" used to yield
+    # `https://site/SGNEW \u002d Lulustream.mp4` — a page URL joined
+    # to the title, which the bot then downloaded as a "video"
+    # (proven on a real lplaygo page, 2026-11-18).
+    if any(ch.isspace() for ch in found):
+        return False
+    # Favicons and manifest icons can be .webm/.png and were being
+    # picked as the media on a real StreamFile page (2026-11-18).
+    if "favicon" in low or ".webmanifest" in low:
+        return False
+    # Code/polyfill links inside a page's bundled JS are never the
+    # video — a real StreamFile page offered
+    # `source: "https://github.com/zloirock/core-js"` and it was
+    # returned as the download (2026-11-18).
+    if any(host in low for host in _CODE_HOSTS):
+        return False
     if images:
         # When the image itself is the prize, "poster"/"thumb" hints
         # must not disqualify it — only ads and code files are skipped.
         hints = ("jwplayer", "player.js", "hls.js", "hls.min",
                  "doubleclick", "googlesyndication", "adsystem",
-                 "banner", "pixel", ".css", ".js", ".woff")
+                 "banner", "pixel", "favicon", ".css", ".js", ".woff")
     else:
         hints = _SKIP_HINTS
     if any(hint in low for hint in hints):

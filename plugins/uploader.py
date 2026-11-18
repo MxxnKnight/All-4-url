@@ -35,7 +35,7 @@ from core.extractors import (browser_scan, gallery_engine, scrape,
 from core import splitter, stats, unzip, upage
 from core.extractors.direct import (check_direct, download_file,
                                     is_playlist_url, safe_filename)
-from core.extractors.player_scan import FallThrough
+from core.extractors.player_scan import FallThrough, HostError
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
@@ -498,7 +498,22 @@ async def _custom_flow(client: Client, message: Message, url: str,
 
         prompted = False
         try:
-            info = await site.resolve(url)
+            try:
+                info = await site.resolve(url)
+            except (FallThrough, SizeBlocked):
+                raise
+            except Exception as exc:
+                # The URL belongs to this site, but the site's own
+                # resolver could not produce media (template change,
+                # dead page, Cloudflare, a moved domain). Hand the
+                # link to the rest of the chain — yt-dlp, gallery-dl,
+                # scrape and the browser — instead of failing a link
+                # the browser could still play. Only the resolve step
+                # falls through; a failure mid-download still fails
+                # here (nothing has been written to disk yet).
+                raise FallThrough(
+                    f"the site's own resolver could not read it: {exc}") \
+                    from exc
             if info.get("approx_size"):
                 check_size(info["approx_size"], info.get("title") or "file",
                            allow_split=True)
@@ -659,30 +674,37 @@ async def _scrape_flow(client, message, url, status, editor,
         async def progress(done, total):
             await editor.edit(progress_text("Downloading…", done, total, started))
 
-        async def _download_media(media_url):
+        async def _download_media(media_url, headers=None, playlist=None):
             """A found media URL -> downloaded paths (a stream playlist
-            goes to yt-dlp, not to a text file)."""
-            if is_playlist_url(media_url):
+            goes to yt-dlp, not to a text file). `headers` carry the
+            browser session (Referer, User-Agent, Cookie) when the
+            URL came from the browser — many hosts lock the stream
+            to that session."""
+            if playlist is None:
+                playlist = is_playlist_url(media_url)
+            if playlist:
                 # The page embeds a stream manifest, not a file — let
                 # yt-dlp fetch the real segments instead of saving the
                 # playlist text.
                 await status.edit_text(
                     "Found a stream playlist — downloading the video…")
                 return await download(media_url, job_dir,
-                                      progress_cb=progress)
+                                      progress_cb=progress,
+                                      headers=headers)
             path = await download_file(media_url, job_dir,
                                        progress_cb=progress,
-                                       headers={"Referer": url})
+                                       headers=headers or {"Referer": url})
             return [path]
 
         async def _browser_media():
             """The page rendered in a real browser — some players only
             reveal the video URL once their JavaScript has run (or
-            their play button is clicked)."""
+            their play button is clicked). Returns the media dict
+            (url + playlist flag + session headers)."""
             await status.edit_text(
                 "Opening the page in a browser to find the video…")
             try:
-                return await browser_scan.find_media_url(url)
+                return await browser_scan.find_media(url)
             except browser_scan.BrowserError as exc:
                 raise scrape.ScrapeError(
                     "no embedded media URL found in the page "
@@ -690,7 +712,10 @@ async def _scrape_flow(client, message, url, status, editor,
 
         try:
             if force_browser:
-                paths = await _download_media(await _browser_media())
+                found = await _browser_media()
+                paths = await _download_media(
+                    found["url"], headers=found.get("headers"),
+                    playlist=found.get("playlist"))
             else:
                 try:
                     media_url = await scrape.find_media_url(url)
@@ -705,9 +730,12 @@ async def _scrape_flow(client, message, url, status, editor,
                     except scrape.ScrapeError:
                         # Last resort: render the page in a real
                         # browser.
+                        found = await _browser_media()
                         paths = await _download_media(
-                            await _browser_media())
+                            found["url"], headers=found.get("headers"),
+                            playlist=found.get("playlist"))
                 else:
+                    found = None
                     if scrape.is_image_url(media_url):
                         # The static scrape found only a thumbnail
                         # (og:image). The page may still hide a video
@@ -719,11 +747,15 @@ async def _scrape_flow(client, message, url, status, editor,
                             "That page only shows a thumbnail — opening "
                             "it in a browser to find the video…")
                         try:
-                            media_url = await browser_scan.find_media_url(
-                                url)
+                            found = await browser_scan.find_media(url)
                         except browser_scan.BrowserError:
-                            pass  # keep the thumbnail; it beats nothing
-                    paths = await _download_media(media_url)
+                            found = None  # keep the thumbnail; it beats nothing
+                    if found:
+                        paths = await _download_media(
+                            found["url"], headers=found.get("headers"),
+                            playlist=found.get("playlist"))
+                    else:
+                        paths = await _download_media(media_url)
             paths = await splitter.maybe_split(paths, editor=editor)
             await editor.edit("Uploading…", force=True)
             await send_files_routed(client, message.chat.id, paths, "uploader",
@@ -763,22 +795,39 @@ async def _instagram_carousel(client, message, url, status) -> bool:
 async def browser_cmd(client: Client, message: Message):
     """Manual override: skip the whole chain, render the page in a
     real browser (with click-to-play) and download what it finds."""
-    url = _extract_url(message)
-    if not url:
+    if not browser_scan.BROWSER_AVAILABLE:
+        await message.reply_text(
+            "The browser scraper isn't installed in this build, so "
+            "`/browser` can't run. On a host with it installed, try "
+            "again.")
+        return
+    urls = _extract_urls(message)
+    if not urls:
         await message.reply_text(
             "Usage: `/browser <link>` — I'll open the page in a real "
             "browser and download the video it loads (or shows after "
             "its play button is clicked).")
         return
-    status = await message.reply_text("Opening the page in a browser…")
-    editor = ThrottledEditor(status)
-    try:
-        await _scrape_flow(client, message, url, status, editor,
-                           force_browser=True)
-    except scrape.ScrapeError as exc:
-        await status.edit_text(f"❌ The browser found no video: {exc}")
-    except Exception as exc:
-        await status.edit_text(f"❌ Failed: {exc}")
+    urls = urls[:MAX_MULTI_LINKS]
+    total = len(urls)
+    for i, url in enumerate(urls, 1):
+        label = f" ({i} of {total})" if total > 1 else ""
+        status = await message.reply_text(
+            f"Opening the page in a browser…{label}")
+        editor = ThrottledEditor(status)
+        try:
+            await _scrape_flow(client, message, url, status, editor,
+                               force_browser=True)
+        except scrape.ScrapeError as exc:
+            await status.edit_text(
+                f"❌ The browser found no video: {exc}\n\n"
+                "If that page needs a login or a captcha, open it in "
+                "your own browser, download the file there, and send "
+                "it to me instead.")
+        except SizeBlocked as exc:
+            await status.edit_text(f"❌ {exc}")
+        except Exception as exc:
+            await status.edit_text(f"❌ Failed: {exc}")
 
 
 @Client.on_message(filters.command("gallery") & filters.private

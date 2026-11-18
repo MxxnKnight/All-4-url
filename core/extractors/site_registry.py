@@ -27,8 +27,9 @@ API hiccup. Both dispatch sites catch it and continue the chain
 instead of failing the job.
 """
 
-from core.extractors import (filehosts, gofile, hubcloud, luluvido,
-                             mediafire, reddit_oauth, streamtape, vidara)
+from core.extractors import (filehosts, firestream, gofile, hubcloud,
+                             luluvido, mediafire, missav, reddit_oauth,
+                             streamtape, vidara)
 
 SITES = [
     # Player pages that need their own JS replayed (no yt-dlp extractor).
@@ -42,8 +43,15 @@ SITES = [
     mediafire,
     gofile,
     hubcloud,
-    # LuluStream's packed-jwplayer pages.
+    # LuluStream's packed-jwplayer pages (and its clone panels:
+    # lulustream.com, lplaygo.com).
     luluvido,
+    # FireStream / frstream.life: the page ships a one-time token that
+    # is traded for the signed stream URL over their own JSON API.
+    firestream,
+    # MissAV: the stream URL sits in a packed player script, behind a
+    # Cloudflare check and a Referer-locked surrit.com CDN.
+    missav,
     # Reddit via its official OAuth API — the deliberate exception to
     # "never register a site yt-dlp understands": yt-dlp's Reddit path
     # is the scrape Reddit blocks on datacenter IPs. Only matches

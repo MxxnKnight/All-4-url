@@ -43,13 +43,18 @@ import aiohttp
 
 from core.extractors.direct import (BROWSER_UA, download_file, safe_filename)
 from core.extractors.player_scan import (HostError, download_links, find_media,
-                                         gate_form, iframe_srcs, media_kind,
-                                         next_page, page_title, request)
+                                         fetch_partial, gate_form, iframe_srcs,
+                                         media_kind, next_page, page_title,
+                                         request)
 
 #: Host -> what the walker should know about it.
 HOSTS = {
     # XFileSharing-style video panels.
     "streamfile.net": {"name": "StreamFile"},
+    # streamfiles.net 301s to streamfile.net: the same panel under its
+    # current spelling, so a link pasted with the s must not miss the
+    # walker (verified 2026-11-18).
+    "streamfiles.net": {"name": "StreamFile"},
     "luluvid.com": {"name": "LuluStream"},
     # XFileSharing-style *image* host: the "media" is one big <img>.
     "imagetwist.com": {"name": "ImageTwist", "images": True},
@@ -96,6 +101,13 @@ async def _is_media(url: str, referer: str) -> bool:
                     return False
                 ctype = (resp.headers.get("Content-Type") or "").lower()
                 disposition = resp.headers.get("Content-Disposition", "")
+                # A stream manifest IS the prize (yt-dlp fetches its
+                # segments): it answers as application/vnd.apple.mpegurl
+                # or as plain text, so the byte-family checks below
+                # would wrongly reject it.
+                if media_kind(url) == "hls" or "mpegurl" in ctype \
+                        or "dash+xml" in ctype:
+                    return True
                 if "text/html" in ctype and "attachment" not in disposition:
                     return False
                 return any(hint in ctype for hint in
@@ -170,6 +182,7 @@ async def _walk(url: str, *, images: bool = False) -> dict:
     async with aiohttp.ClientSession(timeout=timeout, cookie_jar=jar) as session:
         page_url = url
         pending = None  # reply from a gate we just submitted
+        nc_tried = False  # the ?nc=1 uncached page is fetched at most once
         for step in range(MAX_STEPS):
             if pending is not None:
                 final, page, status = pending
@@ -197,9 +210,43 @@ async def _walk(url: str, *, images: bool = False) -> dict:
 
             media = find_media(page, page_url, images=images or profile.get("images", False))
             if media:
-                result = _result(media, page, page_url, jar, profile)
-                result["approx_size"] = await _size_of(media, page_url)
-                return result
+                # Trust only a URL that really returns bytes. A page's
+                # bundled JS is full of URLs that merely look like
+                # media (a real StreamFile page offered a github.com
+                # core-js link), and saving one would hand the owner a
+                # web page named .mp4.
+                if await _is_media(media, page_url):
+                    result = _result(media, page, page_url, jar, profile)
+                    result["approx_size"] = await _size_of(media, page_url)
+                    return result
+
+            # Cached placeholder page: the host serves a "click to play"
+            # shell to every visitor and puts the real player only on
+            # the uncached page, which its own script loads as ?nc=1.
+            # Proven on a real StreamFile link (2026-11-18): the cached
+            # page holds a thumbnail and an op=play XHR, while the
+            # uncached page carries the .m3u8 master.
+            # The flag is added to the ORIGINAL link, not to the
+            # redirected host — streamfiles.net?nc=1 answers with the
+            # real player while streamfile.net?nc=1 answers with the
+            # empty shell (both measured 2026-11-18).
+            if ("xvs-ph" in page.lower() and "nc=1" not in page_url
+                    and not nc_tried):
+                nc_tried = True
+                sep = "&" if "?" in url else "?"
+                try:
+                    # These pages arrive slowly and are big; read a
+                    # bounded prefix and stop at the manifest.
+                    nc_final, nc_page = await fetch_partial(
+                        f"{url}{sep}nc=1", needle=".m3u8",
+                        max_bytes=300 * 1024, timeout=35,
+                        headers={"Referer": url})
+                except HostError:
+                    pass
+                else:
+                    pending = (nc_final or url, nc_page, 200)
+                    page_url = pending[0]
+                    continue
 
             # A captcha is a hard wall for a browser-free walker —
             # Turnstile / reCAPTCHA / hCaptcha all need JavaScript in
@@ -232,7 +279,7 @@ async def _walk(url: str, *, images: bool = False) -> dict:
                 media = find_media(
                     iframe_page, src,
                     images=images or profile.get("images", False))
-                if media:
+                if media and await _is_media(media, page_url):
                     result = _result(media, page, page_url, jar, profile)
                     result["approx_size"] = await _size_of(media, page_url)
                     return result

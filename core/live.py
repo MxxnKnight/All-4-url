@@ -26,7 +26,11 @@ Two facts shape the design:
 The stream URL comes from yt-dlp (extract_info, download=False):
 it knows live streams on 1000+ sites, including the cam sites
 whose HLS playlists need API extraction. No streamlink, no
-third-party plugins — yt-dlp is the engine.
+third-party plugins — yt-dlp is the engine. The one exception is
+Stripchat, whose yt-dlp extractor refuses live free models (its
+"private show" check trips on a stale page object); that site is
+resolved by core/extractors/stripchat.py, which also decrypts the
+Mouflon playlist through a loopback HLS proxy ffmpeg reads.
 """
 
 import asyncio
@@ -39,8 +43,9 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
 from core import stats
-from core.extractors import ytdlp_engine
+from core.extractors import stripchat, ytdlp_engine
 from core.extractors.direct import BROWSER_UA
+from core.extractors.player_scan import HostError
 from core.sender import send_files_routed
 from core.utils import (ThrottledEditor, cleanup_dir, human_bytes,
                         human_time, make_job_dir)
@@ -204,6 +209,15 @@ async def probe_live(url: str) -> dict:
     Refuses anything yt-dlp cannot read, anything that is not live
     right now, and live streams with no playable format.
     """
+    # Stripchat is resolved by its own extractor, not yt-dlp: yt-dlp
+    # reports every model whose page still carries the previous show's
+    # object as "in a private show", so free live models were refused
+    # as paid (see core/extractors/stripchat.py).
+    if stripchat.is_site_url(url):
+        try:
+            return await stripchat.open_stream(url)
+        except HostError as exc:
+            raise LiveError(str(exc)) from exc
     try:
         info = await ytdlp_engine.extract_info(url)
     except ytdlp_engine.YtdlpError as exc:

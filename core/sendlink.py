@@ -319,6 +319,27 @@ async def _probe(url: str) -> dict:
             "errors": errors}
 
 
+async def _save_media(media_url: str, job_dir: str, progress,
+                      page_url: str, headers: dict | None = None,
+                      playlist: bool | None = None) -> list[str]:
+    """Save a media URL found by the scrape or the browser.
+
+    A manifest goes to yt-dlp (downloading it would save a few KB of
+    text); a plain file streams straight down. `headers` carry the
+    browser session (Referer, User-Agent, Cookie) when the URL came
+    from the headless browser — hosts that lock the stream to the
+    session that loaded the page answer a bare request with 403.
+    """
+    if playlist is None:
+        playlist = is_playlist_url(media_url)
+    if playlist:
+        return await ytdlp_download(media_url, job_dir,
+                                    progress_cb=progress, headers=headers)
+    path = await download_file(media_url, job_dir, progress_cb=progress,
+                               headers=headers or {"Referer": page_url})
+    return [path]
+
+
 async def _download_resolved(resolved: dict, job_dir: str,
                              progress) -> list[str]:
     """Download the probed link — best quality, always. There is
@@ -360,22 +381,23 @@ async def _download_resolved(resolved: dict, job_dir: str,
         except Exception as gal_exc:
             try:
                 media_url = await scrape.find_media_url(url)
+                found = None
                 if scrape.is_image_url(media_url):
                     # Thumbnail only — the browser may still find the
                     # video (click-to-play players); fall back to the
                     # thumbnail when it cannot.
                     try:
-                        media_url = await browser_scan.find_media_url(url)
+                        found = await browser_scan.find_media(url)
                     except Exception:
-                        media_url = None
+                        found = None
+                if found:
+                    return await _save_media(
+                        found["url"], job_dir, progress, url,
+                        headers=found.get("headers"),
+                        playlist=found.get("playlist"))
                 if media_url is not None:
-                    if is_playlist_url(media_url):
-                        return await ytdlp_download(media_url, job_dir,
-                                                    progress_cb=progress)
-                    path = await download_file(
-                        media_url, job_dir, progress_cb=progress,
-                        headers={"Referer": url})
-                    return [path]
+                    return await _save_media(media_url, job_dir,
+                                             progress, url)
                 path = await scrape.download(url, job_dir,
                                              progress_cb=progress)
                 return [path]
@@ -390,14 +412,11 @@ async def _download_resolved(resolved: dict, job_dir: str,
                 # page in a real browser — some players only reveal
                 # the video URL once their JavaScript has run.
                 try:
-                    media_url = await browser_scan.find_media_url(url)
-                    if is_playlist_url(media_url):
-                        return await ytdlp_download(media_url, job_dir,
-                                                    progress_cb=progress)
-                    path = await download_file(
-                        media_url, job_dir, progress_cb=progress,
-                        headers={"Referer": url})
-                    return [path]
+                    found = await browser_scan.find_media(url)
+                    return await _save_media(
+                        found["url"], job_dir, progress, url,
+                        headers=found.get("headers"),
+                        playlist=found.get("playlist"))
                 except Exception as browser_exc:
                     prior = "; ".join(resolved.get("errors") or [])
                     raise RuntimeError(

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.40.0** (2026-11-18).
+- **Current version: v1.42.0** (2026-11-18).
 
 ## How moon works — the contract
 
@@ -267,7 +267,174 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-18) — v1.40.0
+## Current status (2026-11-18) — v1.42.0
+
+- v1.42.0 fixes the two sites moon reported on 2026-11-18 (MissAV
+  page links, Stripchat live recordings) with two new extractors.
+  (1) **Stripchat — the "free model shown as paid" bug is gone.**
+  yt-dlp's Stripchat extractor refuses any page whose state still
+  carries a `viewCam.show` object. Stripchat keeps the *last* show
+  there after it ends, so plain live free models were reported as
+  "Model is in a private show" and never recorded (measured on five
+  live public models: `isLive=True`, `status="public"`, stale
+  `show.endedAt`). New `core/extractors/stripchat.py` reads
+  `window.__PRELOADED_STATE__` and gates on the model's own
+  `isLive`/`status` pair — `status` other than `public` is a real
+  paid/private/group show and still refuses. It also fixes the
+  *second* reason recordings were wrong: DoppioCDN answers the bare
+  variant URL with a 291-byte advert playlist (#EXT-X-MOUFLON-ADVERT /
+  cpa/chunk_000.m4s), so anything that just followed the master
+  recorded an advert. The extractor appends the master's
+  `#EXT-X-MOUFLON:PSCH:v2:<pkey>` as `&psch=&pkey=`, which yields the
+  real live playlist. Its segment URLs are hidden in
+  `#EXT-X-MOUFLON:URI:` lines and need the Mouflon-v2 decode (reverse
+  the token, base64, XOR with SHA-256 of a per-pkey "pdkey"); the CDN
+  honours *any* pkey the master lists, so the bot asks with a pair it
+  holds the key for and gets a playlist it can decode. Keys come from
+  `STRIPCHAT_PDKEY` (Space secret), `data/stripchat_keys.json`, or a
+  small built-in pair list, and a candidate is only used after it
+  decodes a real token AND a decoded segment downloads. Because a
+  live playlist changes every few seconds,  `/live` reads it through
+  a tiny loopback HLS proxy (`/sc/<token>/live.m3u8` +
+  `/sc/<token>/media`, 127.0.0.1 only, CDN-host allow-list) that
+  re-decrypts each refresh and forwards segments with the right
+  Referer — no new process, no streamlink plugin, no re-encode.
+  `core/live.py::probe_live` routes stripchat links to
+  `stripchat.open_stream()`; `download()` refuses with "use /live".
+  Verified live 2026-11-18: page state + status, live playlist (not
+  the advert) and pdkey selection on several public models, and a
+  REAL 15-second recording of a live free model through the proxy
+  with ffmpeg — two standalone parts, `ffprobe` reports h264 720x960
+  + aac, ffmpeg exit 0. NOT verified: a long multi-hour run, a
+  rotated key (then the error names the two places to put the new
+  `pkey:pdkey`), and a private/paid model being refused live (that
+  branch is covered by the offline tests only).
+  (2) **MissAV page links** → new `core/extractors/missav.py`
+  (`missav.ws`, `missav.live`, `missav.com`): the page's packed player
+  script holds `source: 'https://surrit.com/<uuid>/<quality>.m3u8'`;
+  the extractor unpacks every packed script, prefers the
+  `playlist.m3u8` master, and falls back to probing
+  360p/480p/720p/1080p when only the uuid is in the page. Segments are
+  MPEG-TS with `.jpeg` names and unencrypted — the download is plain
+  HLS through yt-dlp with the page's `Referer`/`Origin`. The site sits
+  behind Cloudflare for datacenter IPs: when the challenge page comes
+  back the error says so and points at `/browser` instead of
+  pretending the link is dead. NOT verified live: this sandbox's IP
+  only ever gets Cloudflare's "Just a moment…", so the parser was
+  tested against the known page shape (synthetic + packed scripts),
+  never a freshly fetched article.
+  Verified: 74 checks in `/tmp/test_v143_sites.py` (state parsing with
+  nested braces, slug/host guards, variant pkey pairing and
+  known-pair ordering, advert detection/refusal, Mouflon encrypt→
+  decrypt round trip, wrong-key rejection, decoded-playlist shape,
+  proxy playlist + SSRF refusal, /live wiring, registry, MissAV parse
+  /title/uuid/quality fallback/Cloudflare message), plus the earlier
+  52 + 33 suites still pass and `py_compile` is clean.
+- v1.41.0 makes the browser resolver (and so `/browser`, the scrape
+  last resort, and sendlink) actually usable on hard pages:
+  (1) **session handoff** — `browser_scan.find_media()` now returns
+  `{url, playlist, headers, cookies, page_url}` instead of a bare URL,
+  and both dispatch sites pass the cookies + User-Agent + Referer to
+  the download (yt-dlp or plain HTTP). Hosts that lock a stream to the
+  session that loaded the page used to answer a bare request with 403
+  for a link the browser had just played; that is the main "some
+  sites don't work" cause. `find_media_url()` stays as a thin
+  compatibility wrapper.
+  (2) **scored candidates** instead of "first manifest, else biggest
+  file": a manifest still wins, then a real video, then audio, then a
+  bare `.ts`/`.m4s` segment; ad/tracker/poster URLs (doubleclick,
+  googlesyndication, adsystem, sprite, preroll…) are never candidates;
+  a <100 KB "video" is penalised. Prevents downloading an ad bumper or
+  an audio track the page also fired.
+  (3) **extensionless media caught** — `page.on("request")` records
+  `resource_type == "media"` requests, so a tokenised stream URL with
+  no extension is found even when its response never completes; blob:
+  and data: URLs are skipped (undownloadable outside the browser).
+  (4) **honest manifest detection** — `playlist` is decided from the
+  response Content-Type too, so an extensionless `.m3u8` goes to
+  yt-dlp instead of being saved as a few KB of text.
+  (5) faster/more robust visits: DOM-ready then an 8 s settle window
+  (a polling page no longer eats the full 20 s page timeout), JS
+  dialogs dismissed (they used to freeze the click loop), jwplayer's
+  `.jw-icon-display` and lowercase `aria-label='play'` added to the
+  narrow play-selector list, total budget 75 s → 100 s.
+  (6) `/browser` now takes several links in one message (same
+  MAX_MULTI_LINKS cap and sequential rule as the uploader), refuses
+  plainly when Playwright is not installed, and a failure adds the
+  "page needs a login or captcha — send the file" hint.
+  (7) **a registered site no longer kills the chain**: a `HostError`
+  from a custom extractor's `resolve()` is converted to `FallThrough`
+  (plugins/uploader.py `_custom_flow`), so yt-dlp, gallery-dl, scrape
+  and the browser still get their turn on a host whose template
+  changed — previously one broken host extractor ended the job.
+  Verified: 52 checks in /tmp/test_v141_browser.py (scoring order, ad
+  exclusion, extensionless media, blob/data skip, manifest detection,
+  DOM/HTML fallbacks, cookie handoff incl. cross-domain fallback and a
+  throwing context, play-click success/failure, availability error,
+  AST parse + wiring of both callers). NOT verified live: no Chromium
+  and no Playwright in the sandbox, so `_visit` itself and the real
+  cookie handoff need moon's re-send of a failing link.
+- v1.41.0 (second half) fixes the per-site failures moon reported on
+  2026-11-18. Each failing page was fetched and replayed through the
+  real modules; the causes were site-shaped, not one bug:
+  (1) **lplaygo.com** (a LuluStream clone): the pasted `/d/<code>`
+  page is a 13 KB shell; the packed jwplayer sits on the `/e/<code>`
+  iframe. `luluvido.py` is now a **LuluStream-family** extractor —
+  host list (`luluvido.com`, `lulustream.com`, `lplaygo.com`) read
+  from the link, page shapes tried in order
+  (`<link>` → `/e/<code>` → `/d/<code>` → `/<code>`), relative media
+  resolved against the FINAL url, generic shell titles ("Loading…")
+  skipped so the file keeps its real name. Live: master.m3u8 → 200
+  `#EXTM3U`.
+  (2) **firestream.to** → new `core/extractors/firestream.py`: the
+  page 302s to `frstream.life` and ships a one-time token in
+  `<script id="token-blob">`; `POST /api/videos/<slug>/resolve`
+  trades it for `signedVideoUrl` (HLS) / `signedVideoMp4Url`. The
+  page is huge and slow (21 KB in 5 s, never finishing inside 45 s),
+  so the new `player_scan.fetch_partial()` reads a byte budget and
+  stops at the token — that, not the player, was why it failed
+  (the scrape step had a 25 s cap). Live: signed m3u8 → 206
+  `#EXTM3U`.
+  (3) **streamfiles.net** 301s to `streamfile.net`, which was already
+  in the walker's HOSTS but not under that spelling — alias added.
+  The page is now a Cloudflare-cached "xvs-ph" placeholder (comment
+  in its own HTML: "the player for this viewer comes from op=play";
+  a real `op=play` POST answers a 403 / empty shell). Its
+  `?nc=1` uncached page DOES carry the `.m3u8`, so `filehosts._walk`
+  now fetches the uncached page once, with a partial read, when it
+  sees `xvs-ph` — on the ORIGINAL host (streamfiles.net?nc=1 works,
+  streamfile.net?nc=1 answers the empty shell; measured).
+  (4) **Wrong-file bugs found while replaying**: `player_scan`
+  returned a URL built from the page TITLE on lplaygo
+  (`https://lplaygo.com/SGNEW \u002d Lulustream.mp4`), a **favicon
+  `.webm`** on StreamFile, and a `github.com/zloirock/core-js` string
+  from a page's bundled JS (`source:` key). `_plausible` now rejects
+  whitespace-bearing URLs, `favicon`/`.webmanifest`, and code/schema
+  hosts (`_CODE_HOSTS`); `filehosts._walk` and the new scrape path
+  additionally PROBE a candidate (2-byte Range GET) and refuse one
+  that answers `text/html` (firestream's fake
+  `/e/<uuid>/video.mp4` route was exactly that).
+  (5) **scrape.py** now makes candidates absolute before probing
+  (a root-relative `<video src="/fake.mp4">` used to be returned
+  raw), gives the browser a turn only on an image, and takes the
+  same `?nc=1` uncached page for placeholder shells.
+  (6) A registered site's `resolve()` failure now becomes
+  `FallThrough` (`_custom_flow`, any exception — not just
+  `HostError`), so one changed panel never ends a job the next
+  engine could finish.
+  **Still failing, honestly:** `luluvid.com` no longer resolves in
+  DNS (the domain is gone — nothing to fix); `wexiostream.com` is a
+  Next.js app that mints a playback *grant* server-side
+  (`/api/media/<token>/…` plus ad/view analytics) — no browser-free
+  path exists, so it stays on yt-dlp → gallery-dl → scrape → browser
+  and the browser is the only realistic chance.
+  Verified: 33 checks in `/tmp/test_v142_hosts.py` (guards, registry,
+  LuluStream `/e/` fallback, FireStream token trade incl. a real
+  POST round trip, walker nc=1 path, scrape HTML-as-mp4 refusal,
+  nc=1 scrape, parse) plus 52 in `/tmp/test_v141_browser.py`, and a
+  LIVE resolve of all eight reported links (six now return real
+  bytes/`#EXTM3U`; the other two are the dead domain and the
+  Next.js grant app above).
 
 - v1.40.0 adds /joinzip (moon's order): he has 10 GB+ files as
   zip splits and wants the video out as MoonStream-playable

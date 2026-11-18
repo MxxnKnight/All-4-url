@@ -23,7 +23,7 @@ import subprocess
 import aiohttp
 
 from core.extractors import player_scan
-from core.extractors.direct import BROWSER_UA, download_file
+from core.extractors.direct import BROWSER_UA, download_file, is_playlist_url
 from core.utils import run_blocking
 
 PATTERNS = (
@@ -61,41 +61,123 @@ def _sanitize(text: str) -> str:
     return re.sub(r"https?://[^\s'\"<>]+", "[source]", text or "")
 
 
-async def find_media_url(url: str) -> str:
-    timeout = aiohttp.ClientTimeout(total=25)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, headers={"User-Agent": BROWSER_UA}) as resp:
+#: Marker of the "cached placeholder" player shell some hosts serve to
+#: every visitor. The real player (and its media URL) lives only on
+#: the uncached page, which the site's own script loads as ?nc=1.
+_PLACEHOLDER_MARKER = "xvs-ph"
+
+
+async def _fetch_html(session, page_url: str, referer: str | None = None) -> str:
+    headers = {"User-Agent": BROWSER_UA}
+    if referer:
+        headers["Referer"] = referer
+    async with session.get(page_url, headers=headers) as resp:
+        if resp.status >= 400:
+            raise ScrapeError(f"page returned HTTP {resp.status}")
+        return await resp.text(errors="replace")
+
+
+def _static_candidates(page: str, page_url: str) -> list[str]:
+    """Media URLs the page's own markup/config claims, best first.
+
+    One hit per PATTERN (their order is the confidence order), then
+    the deeper player_scan pass (JSON configs, packed scripts,
+    srcdoc frames).
+    """
+    found: list[str] = []
+    for pattern in PATTERNS:
+        match = re.search(pattern, page, re.I)
+        if not match:
+            continue
+        # Make it absolute before anything probes or returns it: a
+        # root-relative "<video src=\"/fake.mp4\">" used to be handed
+        # to the downloader as-is, and the probe could not tell a
+        # relative URL was not a file.
+        candidate = player_scan.normalise_url(
+            html_lib.unescape(match.group(1)), page_url)
+        if candidate not in found:
+            found.append(candidate)
+    deeper = player_scan.find_media(page, page_url)
+    if deeper and deeper not in found:
+        found.append(deeper)
+    return found
+
+
+async def _is_real_media(session, candidate: str, referer: str) -> bool:
+    """Does this URL really return bytes, or just an HTML page?
+
+    A page can contain a URL that only looks like a video (an
+    `/e/<uuid>/video.mp4` route that answers HTML — proven on a real
+    firestream.to page, 2026-11-18). Saving that would hand the owner
+    a "video" that is a web page. One 2-byte ranged request settles
+    it. When the probe itself fails (timeout, host refuses Range)
+    the candidate is kept: an unproven link is better than none.
+    """
+    headers = {"User-Agent": BROWSER_UA, "Range": "bytes=0-1"}
+    if referer:
+        headers["Referer"] = referer
+    try:
+        async with session.get(candidate, headers=headers,
+                               allow_redirects=True) as resp:
             if resp.status >= 400:
-                raise ScrapeError(f"page returned HTTP {resp.status}")
-            page = await resp.text(errors="replace")
-        for pattern in PATTERNS:
-            match = re.search(pattern, page, re.I)
-            if match:
-                found = html_lib.unescape(match.group(1))
-                if found.startswith("//"):
-                    found = "https:" + found
-                return found
-        found = player_scan.find_media(page, url)
-        if found:
-            return found
+                return False
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            disposition = (resp.headers.get("Content-Disposition") or "").lower()
+            if "text/html" in ctype and "attachment" not in disposition:
+                return False
+            return True
+    except Exception:
+        return True
+
+
+async def find_media_url(url: str) -> str:
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        page = await _fetch_html(session, url)
+        pages = [page]
+        # Cached placeholder shell: the real player is on the uncached
+        # page (?nc=1), so read that one first.
+        if _PLACEHOLDER_MARKER in page.lower() and "nc=1" not in url:
+            sep = "&" if "?" in url else "?"
+            try:
+                pages.insert(0, await _fetch_html(session,
+                                                  f"{url}{sep}nc=1"))
+            except ScrapeError:
+                pass
+        image_fallback = None
+        for text in pages:
+            for candidate in _static_candidates(text, url):
+                if is_image_url(candidate):
+                    # A thumbnail is a fallback, never the first answer:
+                    # the page may still hide a real video (the caller
+                    # gives the browser a turn on an image result).
+                    image_fallback = image_fallback or candidate
+                    continue
+                if is_playlist_url(candidate):
+                    return candidate
+                if await _is_real_media(session, candidate, url):
+                    return candidate
         # The player is often a separate document behind an <iframe>.
         # Each frame fetch gets its own short timeout so one slow ad
         # frame cannot eat the whole budget.
-        for src in player_scan.iframe_srcs(page, url):
-            try:
-                req_timeout = aiohttp.ClientTimeout(total=15)
-                async with session.get(
-                        src, headers={"User-Agent": BROWSER_UA,
-                                      "Referer": url},
-                        timeout=req_timeout) as resp:
-                    if resp.status >= 400:
-                        continue
-                    iframe_page = await resp.text(errors="replace")
-            except Exception:
-                continue
-            found = player_scan.find_media(iframe_page, src)
-            if found:
-                return found
+        for text in pages:
+            for src in player_scan.iframe_srcs(text, url):
+                try:
+                    req_timeout = aiohttp.ClientTimeout(total=15)
+                    async with session.get(
+                            src, headers={"User-Agent": BROWSER_UA,
+                                          "Referer": url},
+                            timeout=req_timeout) as resp:
+                        if resp.status >= 400:
+                            continue
+                        iframe_page = await resp.text(errors="replace")
+                except Exception:
+                    continue
+                found = player_scan.find_media(iframe_page, src)
+                if found:
+                    return found
+        if image_fallback:
+            return image_fallback
     raise ScrapeError("no embedded media URL found in the page")
 
 

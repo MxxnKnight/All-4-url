@@ -1,6 +1,6 @@
-"""Custom extractor: luluvido.com (a LuluStream file host).
+"""Custom extractor: LuluStream and its clone panels.
 
-Why this exists: yt-dlp has NO extractor for this site (latest
+Why this exists: yt-dlp has NO extractor for these hosts (latest
 yt-dlp, tested 2026-10-26: "Unsupported URL" on a luluvido page),
 and the bot's other engines find nothing either — the page's
 static HTML has no <video> tag, no download form, and no direct
@@ -25,8 +25,18 @@ How it works, in order:
   5. HLS -> yt-dlp downloads the segments and muxes to mp4;
      a direct mp4 -> the direct engine streams it down.
 
+Clone panels: the same LuluStream code runs on several domains
+(luluvido.com, lulustream.com, lplaygo.com) with the same packed
+jwplayer — and the "watch" URL shape differs per panel
+(`/<code>`, `/d/<code>`, `/e/<code>`). So the extractor reads the
+host from the link itself and, when the given page carries no
+player, tries the panel's `/e/<code>` and `/<code>` pages before
+giving up. Verified on a real lplaygo.com link (2026-11-18): the
+`/d/` page is a 13 KB shell, its `/e/` iframe carries the packed
+jwplayer, and the unpacked master.m3u8 answers 200 #EXTM3U.
+
 Fragility, stated plainly: this extractor reads the site's
-player code, so if luluvido changes its player (different
+player code, so if the panel changes its player (different
 packer, different player, a captcha in front of the page),
 this breaks and the bot will say so instead of silently
 sending a wrong file. That is the price of a custom
@@ -39,7 +49,6 @@ core/extractors/site_registry.py — one line, no changes to
 the uploader's resolver chain.
 """
 
-import asyncio
 import os
 import re
 from urllib.parse import urlparse
@@ -47,24 +56,41 @@ from urllib.parse import urlparse
 import aiohttp
 
 from core.extractors.direct import BROWSER_UA, download_file, safe_filename
-from core.utils import human_bytes
+from core.extractors.player_scan import HostError, normalise_url
 
-BASE = "https://luluvido.com"
+#: Panels known to run this player.
+HOSTS = (
+    "luluvido.com", "www.luluvido.com",
+    "lulustream.com", "www.lulustream.com",
+    "lplaygo.com", "www.lplaygo.com",
+)
+# luluvid.com deliberately absent: its DNS does not resolve (checked
+# 2026-11-18), and filehosts already claims that spelling.
 
-
-class LuluvidoError(Exception):
-    pass
+#: Page shapes the player hides behind, tried in order.
+_PAGE_SHAPES = ("{url}", "{origin}/e/{code}", "{origin}/d/{code}",
+                "{origin}/{code}")
 
 
 def is_site_url(url: str) -> bool:
-    host = (urlparse(url).netloc or "").lower()
-    return host in ("luluvido.com", "www.luluvido.com")
+    return (urlparse(url).netloc or "").lower() in HOSTS
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}"
 
 
 def _file_code(url: str) -> str:
-    code = urlparse(url).path.strip("/").split("/")[0]
-    if not code or not re.fullmatch(r"[A-Za-z0-9_-]+", code):
-        raise LuluvidoError("that luluvido link has no file code in it")
+    parts = [p for p in urlparse(url).path.strip("/").split("/") if p]
+    if not parts:
+        raise HostError("that lulustream link has no file code in it")
+    code = parts[-1]
+    for suffix in (".html", ".htm"):
+        if code.lower().endswith(suffix):
+            code = code[: -len(suffix)]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", code or ""):
+        raise HostError("that lulustream link has no usable file code in it")
     return code
 
 
@@ -98,46 +124,72 @@ def unpack_packed(js: str) -> str | None:
     return out
 
 
+_FILE_RE = re.compile(r"""file\s*:\s*["']([^"']+)["']""")
+_DURATION_RE = re.compile(r"""duration\s*:\s*["']?([\d.]+)["']?""")
+
+
 def _media_from_js(js: str) -> tuple[str, float] | None:
     """(media_url, duration_seconds) from jwplayer setup code."""
-    match = re.search(
-        r"sources:\s*\[\{file:\s*\"([^\"]+)\"", js)
+    match = _FILE_RE.search(js or "")
     if not match:
         return None
+    media = match.group(1)
+    # The first `file:` in a packed player is the source; a later
+    # one is the logo/track. Only accept something playable.
+    if not re.search(r"\.(m3u8|mp4|mkv|webm|mpd)(\?|$)", media, re.I):
+        return None
     duration = 0.0
-    dur = re.search(r"duration:\s*\"([\d.]+)\"", js)
+    dur = _DURATION_RE.search(js)
     if dur:
         try:
             duration = float(dur.group(1))
         except ValueError:
             duration = 0.0
-    return match.group(1), duration
+    return media, duration
 
 
 def _title_from_html(html: str) -> str:
-    match = re.search(r"<title>([^<]+)</title>", html, re.I)
+    match = re.search(r"<title>([^<]+)</title>", html or "", re.I)
     if not match:
-        return "luluvido video"
+        return "lulustream video"
     title = match.group(1).strip()
     title = re.sub(r"\s*-\s*Lulustream(\.mp4)?\s*$", "", title, flags=re.I)
-    return title or "luluvido video"
+    title = re.sub(r"\s*-\s*LuluStream\s*$", "", title, flags=re.I)
+    return title or "lulustream video"
 
 
-async def _fetch_page(code: str) -> str:
+async def _fetch_page(page_url: str) -> tuple[str, str]:
+    """GET a panel page; returns (final_url, html).
+
+    The final URL matters: panels redirect between their mirror
+    domains, and a relative media path must be resolved against the
+    page that actually served it.
+    """
     timeout = aiohttp.ClientTimeout(total=30)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f"{BASE}/{code}",
+            async with session.get(page_url,
                                    headers={"User-Agent": BROWSER_UA}) as resp:
                 if resp.status >= 400:
-                    raise LuluvidoError(
-                        f"luluvido page returned {resp.status} — "
+                    raise HostError(
+                        f"the lulustream page returned {resp.status} — "
                         f"the link may be dead or removed")
-                return await resp.text(errors="ignore")
-    except LuluvidoError:
+                return str(resp.url), await resp.text(errors="ignore")
+    except HostError:
         raise
     except Exception as exc:
-        raise LuluvidoError(f"couldn't load the luluvido page ({exc})")
+        raise HostError(f"couldn't load the lulustream page ({exc})") from exc
+
+
+def _find_in_page(html: str) -> tuple[str, float] | None:
+    """The jwplayer source hidden in the page's scripts (packed or plain)."""
+    for body in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S):
+        unpacked = unpack_packed(body)
+        if unpacked:
+            found = _media_from_js(unpacked)
+            if found:
+                return found
+    return _media_from_js(html)
 
 
 async def _approx_size(media_url: str, duration: float) -> int:
@@ -156,8 +208,7 @@ async def _approx_size(media_url: str, duration: float) -> int:
                 if resp.status >= 400:
                     return 0
                 body = await resp.text(errors="ignore")
-        bandwidths = [int(b) for b in
-                      re.findall(r"BANDWIDTH=(\d+)", body)]
+        bandwidths = [int(b) for b in re.findall(r"BANDWIDTH=(\d+)", body)]
         if not bandwidths:
             return 0
         return int(max(bandwidths) * duration / 8)
@@ -165,46 +216,71 @@ async def _approx_size(media_url: str, duration: float) -> int:
         return 0
 
 
+#: Page titles that carry no video name — a player shell says one of
+#: these while the real watch page (fetched earlier in the loop) has
+#: the file's own title.
+_GENERIC_TITLES = {"loading...", "loading", "play", "video", "player",
+                   "lulustream video"}
+
+
 async def resolve(url: str) -> dict:
     """Return {title, media_url, approx_size, is_playlist}."""
     code = _file_code(url)
-    html = await _fetch_page(code)
-    title = _title_from_html(html)
-    found = None
-    # Try every script body: the packed block's position on the
-    # page is not part of the contract, only its shape is.
-    for body in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S):
-        unpacked = unpack_packed(body)
-        if unpacked:
-            found = _media_from_js(unpacked)
-            if found:
-                break
-    if not found:
-        # Unpacked-player sites sometimes ship the setup plain.
-        found = _media_from_js(html)
-    if not found:
-        raise LuluvidoError(
-            "couldn't find the video in the luluvido page — the "
-            "site may have changed its player")
-    media_url, duration = found
-    if media_url.startswith("/"):
-        media_url = BASE + media_url
-    is_playlist = media_url.lower().split("?")[0].endswith(".m3u8")
-    approx = await _approx_size(media_url, duration) if is_playlist else 0
-    return {"title": title, "media_url": media_url,
-            "approx_size": approx, "is_playlist": is_playlist,
-            "duration": duration}
+    origin = _origin(url)
+    tried = []
+    best_title = ""
+    for shape in _PAGE_SHAPES:
+        page_url = shape.format(url=url, origin=origin, code=code)
+        if page_url in tried:
+            continue
+        tried.append(page_url)
+        try:
+            final_url, html = await _fetch_page(page_url)
+        except HostError:
+            continue
+        page_url = final_url or page_url
+        title = _title_from_html(html)
+        if title and title.lower() not in _GENERIC_TITLES and not best_title:
+            best_title = title
+        found = _find_in_page(html)
+        if not found:
+            continue
+        media_url, duration = found
+        media_url = normalise_url(media_url, page_url)
+        is_playlist = media_url.lower().split("?")[0].endswith(".m3u8")
+        # Both the shell and the player page can say just "Loading…":
+        # name the file after the panel and its code instead of
+        # saving "Loading....mp4".
+        final_title = best_title or (
+            "" if (title or "").lower() in _GENERIC_TITLES else title)
+        if not final_title:
+            panel = (urlparse(page_url).netloc or "lulustream").split(".")[0]
+            final_title = f"{panel} {code}"
+        return {
+            "title": final_title,
+            "media_url": media_url,
+            "approx_size": await _approx_size(media_url, duration)
+            if is_playlist else 0,
+            "is_playlist": is_playlist,
+            "referer": page_url,
+            "duration": duration,
+        }
+    raise HostError(
+        "couldn't find the video in the lulustream page — the site "
+        "may have changed its player")
 
 
 async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
     """Resolve the page and download the video; returns file paths."""
     info = await resolve(url)
-    title = safe_filename(info["title"], "luluvido video")
+    title = safe_filename(info["title"], "lulustream video")
     media_url = info["media_url"]
+    referer = info.get("referer") or url
     if info["is_playlist"]:
         from core.extractors.ytdlp_engine import download as ytdlp_download
         paths = await ytdlp_download(media_url, job_dir,
-                                     progress_cb=progress_cb)
+                                     progress_cb=progress_cb,
+                                     headers={"Referer": referer})
         # Give the file the page's title instead of yt-dlp's
         # playlist-derived name (subtitles, if any, keep theirs).
         media = [p for p in paths
@@ -219,6 +295,7 @@ async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
                 except OSError:
                     pass
         return paths
-    ext = os.path.splitext(media_url.split("?")[0])[1].lower() or ".mp4"
+    ext = os.path.splitext(urlparse(media_url).path)[1].lower() or ".mp4"
     return [await download_file(media_url, job_dir, progress_cb=progress_cb,
-                                filename=title + ext)]
+                                filename=title + ext,
+                                headers={"Referer": referer})]
