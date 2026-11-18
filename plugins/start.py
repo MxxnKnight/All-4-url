@@ -47,7 +47,8 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >this chat, or your own Saved Messages — separately for URL uploads
 >and restricted downloads. It also picks how URL uploads arrive:
 >videos as 🎬 Video or 📄 Document (restricted downloads always
->send as video).
+>send as video). Every person has their own settings here — yours
+>never touch anyone else's.
 >**Web upload**: `/fileuploadpage` gives you a private, 1-hour upload page.
 >Drop files there (max 750 MB each) and send the download link it
 >gives you back here — I'll push it to Telegram straight from the
@@ -118,6 +119,8 @@ SECTION_UPLOADER = """📥 **URL Uploader**
 
 Just send any link in this chat — or several links in one message,
 and I'll download them one after another (up to 10 at a time).
+All running downloads share ONE progress message, with a ⏹ Stop
+button per job — tap it to cancel that download.
 For bigger batches, send me a .txt file with one link per line
 (up to 50) and I'll work through the whole file the same way:
 • Videos/audio from YouTube, Instagram, TikTok, X, Reddit, … (yt-dlp,

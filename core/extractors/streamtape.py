@@ -152,7 +152,8 @@ async def resolve(url: str) -> dict:
     }
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     info = await resolve(url)
     title = safe_filename(info["title"], "streamtape video")
     media_url = info["media_url"]

@@ -219,7 +219,8 @@ async def _fetch_messages(user: Client, chat_id, message_id: int):
 
 async def _process_one(bot: Client, user: Client, owner_chat: int,
                        chat_id, message_id: int, seen: set,
-                       filters: dict | None = None) -> str:
+                       filters: dict | None = None,
+                       user_id: int | None = None) -> str:
     """Download every item, then re-upload together.
 
     Photos go back out as one Telegram album (media group) when the
@@ -285,7 +286,8 @@ async def _process_one(bot: Client, user: Client, owner_chat: int,
                 paths.append(path)
                 stats.record_paths("downloaded", [path])
         if paths:
-            await send_files_routed(bot, owner_chat, paths, "restricted", caption=caption)
+            await send_files_routed(bot, owner_chat, paths, "restricted",
+                                  caption=caption, user_id=user_id)
         if handled_any:
             return "done"
         if blocked_msg:
@@ -344,7 +346,10 @@ async def _run_links(bot: Client, message: Message, links: list[str],
             try:
                 outcome = await _process_one(bot, user, message.chat.id,
                                              parsed[0], parsed[1], seen,
-                                             filters)
+                                             filters,
+                                             message.from_user.id
+                                             if message.from_user
+                                             else None)
                 if outcome == "skipped":
                     skipped += 1
                 elif outcome == "filtered":

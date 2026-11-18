@@ -156,7 +156,8 @@ async def resolve(url: str) -> dict:
             "is_playlist": False}
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     """Resolve the page and download the file; returns file paths."""
     info = await resolve(url)
     name = safe_filename(info["title"], "mediafire file")

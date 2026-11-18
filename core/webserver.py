@@ -40,6 +40,11 @@ def bind_bot(client) -> None:
     _bot = client
 
 
+def get_bot():
+    """The bound bot client, or None before bind_bot()."""
+    return _bot
+
+
 def _parse_range(header: str | None, size: int):
     """Parse a Range header against a known `size`.
 

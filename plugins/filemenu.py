@@ -229,7 +229,9 @@ async def filemenu_callback(client: Client, query):
                         await send_files_routed(
                             client, status.chat.id, [path],
                             "uploader", caption=file_caption,
-                            status_msg=status)
+                            status_msg=status,
+                            user_id=query.from_user.id
+                            if query.from_user else None)
                         sent_count += 1
                         sent_bytes += sz
                     except Exception as exc:

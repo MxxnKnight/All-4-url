@@ -214,7 +214,8 @@ async def resolve(url: str) -> dict:
             "files": files, "cookies": {"accountToken": token}}
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     """Resolve the share and download every file; returns file paths."""
     info = await resolve(url)
     files = info["files"]

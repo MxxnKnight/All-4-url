@@ -353,8 +353,15 @@ def check_disk_room(path: str, largest: int) -> None:
             f"enough disk left, so I can't unzip it here")
 
 
-def iter_extracted(archive_path: str, dest_dir: str, skipped: list):
+def iter_extracted(archive_path: str, dest_dir: str, skipped: list,
+                   only_names: set | None = None):
     """Yield extracted file paths, ONE AT A TIME.
+
+    `only_names`, when given, is the set of archive entry names to
+    extract — everything else is skipped WITHOUT touching `skipped`
+    (a user's choice is not a failure). Used by the unzip prompt's
+    file picker (v1.45.0): the owner ticks the files they want and
+    only those come out.
 
     The caller uploads each yielded path and deletes it, then
     calls next() for the following file. Disk therefore holds
@@ -375,9 +382,10 @@ def iter_extracted(archive_path: str, dest_dir: str, skipped: list):
     """
     kind = archive_kind(archive_path)
     if kind == "zip":
-        yield from _iter_zip(archive_path, dest_dir, skipped)
+        yield from _iter_zip(archive_path, dest_dir, skipped, only_names)
     elif kind in ("rar", "7z"):
-        yield from _iter_7z(archive_path, dest_dir, skipped, kind)
+        yield from _iter_7z(archive_path, dest_dir, skipped, kind,
+                            only_names)
     else:
         return
 
@@ -422,7 +430,7 @@ def _extract_7z_entry(archive_path: str, entry: str, size: int,
 
 
 def _iter_7z(archive_path: str, dest_dir: str, skipped: list,
-             kind: str):
+             kind: str, only_names: set | None = None):
     """One-by-one extraction for .rar/.7z (see iter_extracted)."""
     os.makedirs(dest_dir, exist_ok=True)
     try:
@@ -442,6 +450,8 @@ def _iter_7z(archive_path: str, dest_dir: str, skipped: list,
                 except OSError:
                     pass
                 prev_path = None
+            if only_names is not None and name not in only_names:
+                continue  # not ticked in the picker — user's choice
             if name.startswith("-"):
                 # 7z would read a leading dash as a switch.
                 if name not in skipped:
@@ -482,7 +492,8 @@ def _iter_7z(archive_path: str, dest_dir: str, skipped: list,
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _iter_zip(zip_path: str, dest_dir: str, skipped: list):
+def _iter_zip(zip_path: str, dest_dir: str, skipped: list,
+              only_names: set | None = None):
     os.makedirs(dest_dir, exist_ok=True)
     seen: dict[str, int] = {}
     prev_path: str | None = None
@@ -498,6 +509,9 @@ def _iter_zip(zip_path: str, dest_dir: str, skipped: list):
                     except OSError:
                         pass
                     prev_path = None
+                if only_names is not None \
+                        and entry.filename not in only_names:
+                    continue  # not ticked in the picker — user's choice
                 if _is_dir_entry(entry):
                     continue
                 if _is_symlink(entry):

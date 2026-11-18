@@ -222,11 +222,17 @@ async def run() -> None:
     finally:
         flusher.cancel()
         await stats.flush()
-        try:
-            await backup.backup_kind(app, "data/stats.json",
-                                     stats.DATA_FILE)
-        except Exception as exc:
-            log.warning("stats backup on shutdown failed: %s", exc)
+        # Vault backups (v1.45.0): sudo + settings join stats here.
+        # Without them a redeploy wipes the sudo list and everyone's
+        # upload settings — Mongo is unreachable from HF, so these
+        # files are the only durable copy. Sent silently.
+        for kind, path in (("data/stats.json", stats.DATA_FILE),
+                           ("data/sudo.json", sudo.DATA_FILE),
+                           ("data/settings.json", settings.DATA_FILE)):
+            try:
+                await backup.backup_kind(app, kind, path)
+            except Exception as exc:
+                log.warning("%s backup on shutdown failed: %s", kind, exc)
         await db.close()
         await stop_user_client()
         await app.stop()

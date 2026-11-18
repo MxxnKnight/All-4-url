@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.44.1** (2026-11-18).
+- **Current version: v1.45.0** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -122,15 +122,22 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
 OWNER can add/remove sudo. `admin_only` = owner+sudo; `owner_only` =
 OWNER_ID only; non-matching users get total silence.
 
-### Destination model
+### Destination model (per-user since v1.45.0)
 
-Destination is **bot-wide per feature, not per account**
-(`settings.get_dest(feature)`); `/destination` is owner-only.
-`sender.send_files_routed(bot, chat, paths, feature, ...)` routes by
-feature; `"bot"` = requester's chat, `"saved"` = user client to its own
-Saved Messages (needs `SESSION_STRING`, falls back to bot).
-`sender.send_files` sends directly with no routing — used where bot-PM-to-
-owner delivery is explicitly required (upage/sendlink admin delivery).
+Destination and send-as are **per admin, not bot-wide**:
+`settings.get_dest(feature, user_id)` / `get_send_as(feature, user_id)`
+return the user's own value, else the shared global value (the pre-1.45.0
+behaviour), else the default. `/destination` is open to every admin and
+edits only the caller's own settings. `"saved"` is owner-only by
+construction — the vault is the single user session (the owner's
+account), so a sudo user asking for it (or inheriting a global "saved")
+is downgraded to `"bot"`, and `set_dest(..., "saved", non_owner)` is
+ignored. `sender.send_files_routed(..., user_id=...)` and
+`send_files_split(..., user_id=...)` thread the requester through;
+callers without a user (none in the bot flows — all thread it) fall back
+to the global value. `sender.send_files` sends directly with no routing
+— used where bot-PM-to-owner delivery is explicitly required
+(upage/sendlink admin delivery).
 
 ### Bandwidth guard
 
@@ -267,8 +274,59 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-18) — v1.44.1
+## Current status (2026-11-19) — v1.45.0
 
+- v1.45.0 is the WZML-X round-3 batch (moon's picks 1, 3, 5 +
+  his redefinition of 2) plus per-user settings and the sudo
+  persistence fix (both his asks the same night):
+  (1) ONE shared progress message per chat (new core/jobs.py):
+  every running URL job is one block (label + progress line)
+  with its own ⏹ Stop button (callback jb:stop:<8-hex-id>); the
+  message is deleted when the last job finishes. Errors/final
+  notices NEVER go into the shared message — job.fail() /
+  job.finish(text) send them as their own messages. Pickers
+  (Terabox file list, yt-dlp quality, unzip prompt) are their
+  OWN messages now; picking registers a fresh job.
+  Cancel: Job.cancel() flags, flows check via check_cancelled(),
+  JobCancelled is a BaseException on purpose (engines treat a
+  plain Exception from a progress callback as retryable).
+  yt-dlp aborts via the progress hook, gallery-dl via proc.kill,
+  sender via StopTransmission -> None -> JobCancelled, direct
+  downloads via the progress callback raising. _dispatch returns
+  "cancelled" (no reaction, no failed stat). (2) Archive file
+  picker: the unzip prompt lists contents with tap-to-tick
+  buttons (unzip:<id>:t:<idx>/all/none), Unpack sends only the
+  ticked files (core/unzip.py iter_extracted gains only_names;
+  untouched = all, as before; 0 ticked = alert, prompt stays).
+  (3) 15 more host resolvers (21 registry sites now): pixeldrain,
+  GitHub releases, SourceForge (all three verified live via their
+  public APIs), buzzheavier, fuckingfast, lulacloud, krakenfiles,
+  solidfiles, upload.ee, 1fichier, uploadhaven (replay-only —
+  need one real link each as live proof), racaty/hxfile/devuploads
+  (XFS, added to filehosts.py HOSTS). transfer.it (MEGA-backed)
+  and mediafile.cc (60s wait, fragile) skipped with reasons;
+  OSDN unreachable + WZML-X's own osdn() broken; OneDrive/Yandex
+  need moon's real links. Site download() convention gains
+  cancel_check=None (yt-dlp modules pass it through; direct
+  modules abort via the progress callback). (4) Per-user upload
+  settings: dest_uploader / dest_restricted / sendas_uploader
+  are per admin (own value, else the shared global, else the
+  default); /destination is open to every admin and edits only
+  the caller's own; "saved" is owner-only by construction (a sudo
+  asking for it, or inheriting a global "saved", gets "bot").
+  send_files_routed/send_files_split take user_id; all bot flows
+  thread the requester. (5) Sudo/settings persistence: the vault
+  now backs up data/sudo.json + data/settings.json as well as
+  stats.json (immediately on /addsudo + /destination changes,
+  plus on shutdown), settings.json restores on startup, and ALL
+  vault backups are sent silently (disable_notification — moon
+  asked not to be pinged by them). Verified: 67 checks in
+  /tmp/test_v145.py + 102 in /tmp/test_v145_hosts.py (4 live
+  checks skipped — sandbox aiohttp TLS; verified live separately
+  via curl_cffi). Known gap: the v1.45.0 deploy itself wipes the
+  disk BEFORE the new shutdown backup exists, so a sudo added
+  under v1.44.1 must be re-added once under v1.45.0 (or put in
+  the SUDO_USERS env var for permanence).
 - v1.44.1 drops the "Unpacked from …" caption (moon's call):
   /unzip and the file-menu Unpack button now caption each file
   with its OWN clean title (same as the uploader prompt flow

@@ -126,7 +126,9 @@ async def unzip_cmd(client: Client, message: Message):
                     sent_paths = await send_files_split(
                         client, message.chat.id, [path],
                         "uploader", caption=file_caption,
-                        status_msg=status)
+                        status_msg=status,
+                        user_id=message.from_user.id
+                        if message.from_user else None)
                     sent_count += 1
                     sent_bytes += size
                 except Exception as exc:

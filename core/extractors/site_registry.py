@@ -6,7 +6,12 @@ Each entry is a module with three functions:
 
   is_site_url(url) -> bool
   resolve(url) -> {title, media_url, approx_size, is_playlist}
-  download(url, job_dir, progress_cb=None) -> list[str] (file paths)
+  download(url, job_dir, progress_cb=None, cancel_check=None)
+      -> list[str] (file paths). `cancel_check`, when given, is a
+      no-arg callable returning True when the owner stopped the job
+      — modules using yt-dlp pass it through so the download aborts
+      mid-file (v1.45.0); direct downloads abort via the
+      progress_cb raising JobCancelled instead.
 
 The uploader tries these BEFORE yt-dlp and AFTER Terabox:
 a site yt-dlp understands should never be registered here —
@@ -27,9 +32,12 @@ API hiccup. Both dispatch sites catch it and continue the chain
 instead of failing the job.
 """
 
-from core.extractors import (filehosts, firestream, gofile, hubcloud,
-                             luluvido, mediafire, missav, reddit_oauth,
-                             streamtape, vidara)
+from core.extractors import (buzzheavier, fichier, filehosts, firestream,
+                             fuckingfast, github, gofile, hubcloud,
+                             krakenfiles, lulacloud, luluvido, mediafire,
+                             missav, pixeldrain, reddit_oauth, solidfiles,
+                             sourceforge, streamtape, uploadhaven, uploadee,
+                             vidara)
 
 SITES = [
     # Player pages that need their own JS replayed (no yt-dlp extractor).
@@ -58,6 +66,25 @@ SITES = [
     # when REDDIT_CLIENT_ID/SECRET are set; otherwise gallery-dl
     # handles Reddit exactly as before.
     reddit_oauth,
+    # WZML-X round-3 hosts (review 2026-11-18): public-API hosts first
+    # (pixeldrain file API, GitHub releases API, SourceForge mirror
+    # picker), then the page-scrape hosts whose flow the generic gate
+    # walker cannot drive (buzzheavier's htmx download button,
+    # fuckingfast's window.open link, lulacloud's POST-redirect,
+    # krakenfiles' token form, solidfiles' viewer JSON, upload.ee's
+    # direct anchor, 1fichier's POST button, uploadhaven's timed
+    # form). Each module's docstring says what was verified live.
+    pixeldrain,
+    github,
+    sourceforge,
+    buzzheavier,
+    fuckingfast,
+    lulacloud,
+    krakenfiles,
+    solidfiles,
+    uploadee,
+    fichier,
+    uploadhaven,
 ]
 
 

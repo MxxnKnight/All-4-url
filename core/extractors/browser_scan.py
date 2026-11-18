@@ -46,6 +46,7 @@ from urllib.parse import urlparse
 
 from core.extractors import player_scan
 from core.extractors.direct import BROWSER_UA
+from core.jobs import JobCancelled
 
 try:
     from playwright.async_api import async_playwright
@@ -254,7 +255,8 @@ async def _check_media(page, network: dict, url: str):
 
 
 async def _try_click_play(page, network: dict, url: str,
-                          media_event: asyncio.Event):
+                          media_event: asyncio.Event,
+                          cancel_check=None):
     """Click play controls until media appears (or attempts run out).
 
     Returns the media dict, or None when no click produced one. Only
@@ -264,6 +266,8 @@ async def _try_click_play(page, network: dict, url: str,
     """
     clicked = 0
     for selector in _PLAY_SELECTORS:
+        if cancel_check is not None and cancel_check():
+            raise JobCancelled()
         if clicked >= _MAX_PLAY_CLICKS:
             break
         try:
@@ -322,7 +326,7 @@ async def _session_handoff(context, page_url: str, media_url: str):
     return headers, cookies
 
 
-async def _visit(url: str) -> dict:
+async def _visit(url: str, cancel_check=None) -> dict:
     """One browser visit: load the page, return the media dict."""
     network: dict[str, tuple[str, int, str]] = {}  # url -> (ctype, size, rtype)
     media_event = asyncio.Event()
@@ -406,6 +410,8 @@ async def _visit(url: str) -> dict:
                                                timeout=_SETTLE_MS)
             except Exception:
                 pass
+            if cancel_check is not None and cancel_check():
+                raise JobCancelled()
             html = await page.content()
             title = await page.title()
             if _has_captcha(html, title):
@@ -417,7 +423,8 @@ async def _visit(url: str) -> dict:
             if found:
                 return await _finish(context, url, found)
             # Nothing yet — some players only load after a click.
-            found = await _try_click_play(page, network, url, media_event)
+            found = await _try_click_play(page, network, url, media_event,
+                                          cancel_check)
             if found:
                 return await _finish(context, url, found)
             # A click can also reveal a captcha ("verify to play").
@@ -457,7 +464,7 @@ async def _finish(context, page_url: str, found: dict) -> dict:
     }
 
 
-async def find_media(url: str) -> dict:
+async def find_media(url: str, cancel_check=None) -> dict:
     """Render `url` in a headless browser; return what to download.
 
     The dict carries:
@@ -469,13 +476,17 @@ async def find_media(url: str) -> dict:
 
     Raises BrowserError when the browser is not installed, the page
     needs a captcha, the visit times out, or no media appears.
+    `cancel_check`, when given, is polled at stage boundaries — a
+    True answer raises JobCancelled (the browser is closed first).
     """
     if not BROWSER_AVAILABLE:
         raise BrowserError(
             "the browser scraper isn't installed in this build")
+    if cancel_check is not None and cancel_check():
+        raise JobCancelled()
     async with BROWSER_LOCK:
         try:
-            return await asyncio.wait_for(_visit(url),
+            return await asyncio.wait_for(_visit(url, cancel_check),
                                           timeout=BROWSER_TIMEOUT)
         except asyncio.TimeoutError:
             raise BrowserError(

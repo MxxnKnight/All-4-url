@@ -13,6 +13,7 @@ import sys
 import config
 from core import stats
 from core.cookies import jar_for_url
+from core.jobs import JobCancelled
 from core.utils import list_files
 
 
@@ -20,9 +21,12 @@ class GalleryError(Exception):
     pass
 
 
-async def download(url: str, dest_dir: str) -> list[str]:
+async def download(url: str, dest_dir: str,
+                   cancel_check=None) -> list[str]:
     """Download with gallery-dl into dest_dir (-D = exact directory, so
-    files land directly inside the job dir). Returns new file paths."""
+    files land directly inside the job dir). Returns new file paths.
+    `cancel_check`, when given, is polled once a second — a True
+    answer kills the gallery-dl process and raises JobCancelled."""
     before = set(list_files(dest_dir))
     cmd = [sys.executable, "-m", "gallery_dl", "-D", dest_dir,
            "--no-mtime", "--restrict-filenames", "windows"]
@@ -36,11 +40,26 @@ async def download(url: str, dest_dir: str) -> list[str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
+
+    async def _watch_cancel():
+        while proc.returncode is None:
+            if cancel_check is not None and cancel_check():
+                proc.kill()
+                return
+            await asyncio.sleep(1)
+
+    watch_task = (asyncio.create_task(_watch_cancel())
+                  if cancel_check is not None else None)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=900)
     except asyncio.TimeoutError:
         proc.kill()
         raise GalleryError("gallery-dl timed out after 15 minutes")
+    finally:
+        if watch_task is not None:
+            watch_task.cancel()
+    if cancel_check is not None and cancel_check():
+        raise JobCancelled()
 
     new_files = [p for p in list_files(dest_dir) if p not in before]
     if proc.returncode != 0 and not new_files:

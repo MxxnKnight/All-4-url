@@ -11,6 +11,7 @@ import os
 import config
 from core import stats
 from core.cookies import jar_for_url
+from core.jobs import JobCancelled
 from core.utils import VIDEO_EXTS, list_files
 
 #: Audio extensions, for ordering downloads video/audio-first.
@@ -22,7 +23,8 @@ class YtdlpError(Exception):
 
 
 def _base_opts(dest_dir: str, url: str | None = None,
-               state: dict | None = None) -> dict:
+               state: dict | None = None,
+               cancel_check=None) -> dict:
     opts = {
         # NOTE: title was capped at 70 but id was NOT — and for a
         # generic (non-site) link yt-dlp sets id to the URL itself.
@@ -47,6 +49,12 @@ def _base_opts(dest_dir: str, url: str | None = None,
     if state is not None:
         def hook(d):
             state.update(d)
+            # The hook fires per fragment/chunk from the worker
+            # thread, and yt-dlp calls hooks with no try/except
+            # (downloader/common.py _hook_progress) — so raising
+            # here aborts the download mid-file (v1.45.0).
+            if cancel_check is not None and cancel_check():
+                raise JobCancelled()
         opts["progress_hooks"] = [hook]
     return opts
 
@@ -126,14 +134,17 @@ def best_formats(info: dict) -> list[dict]:
 
 async def download(url: str, dest_dir: str, format_id: str | None = None,
                    audio_only: bool = False, progress_cb=None,
-                   headers: dict | None = None) -> list[str]:
+                   headers: dict | None = None,
+                   cancel_check=None) -> list[str]:
     """Download and return the list of new file paths in dest_dir.
 
     `headers` are sent with every request (custom extractors that found
     an HLS playlist behind a Referer check pass them here).
+    `cancel_check`, when given, is called from the progress hook — a
+    True answer raises JobCancelled and aborts the download.
     """
     state: dict = {}
-    opts = _base_opts(dest_dir, url, state)
+    opts = _base_opts(dest_dir, url, state, cancel_check)
     if headers:
         opts["http_headers"] = dict(headers)
     if audio_only:

@@ -26,7 +26,7 @@ from urllib.parse import parse_qsl
 from aiohttp import web
 
 import config
-from core import cookies, db, settings, stats, sudo
+from core import backup, cookies, db, settings, stats, sudo, webserver
 from core.utils import human_bytes
 
 log = logging.getLogger("all4url")
@@ -164,8 +164,10 @@ def _state_payload() -> dict:
                   "month": _period(snap["month"]),
                   "total": _period(snap["total"])},
         "jars": jars,
-        "dest": {"uploader": settings.get_dest("uploader"),
-                 "restricted": settings.get_dest("restricted")},
+        "dest": {"uploader": settings.get_dest("uploader",
+                                          config.OWNER_ID),
+                 "restricted": settings.get_dest("restricted",
+                                           config.OWNER_ID)},
     }
 
 
@@ -238,10 +240,15 @@ async def api_destination(request: web.Request) -> web.Response:
             {"ok": False, "error": "Saved Messages needs SESSION_STRING "
                                    "set on the host first."},
             status=400)
-    settings.set_dest(feature, dest)
+    settings.set_dest(feature, dest, config.OWNER_ID)
+    bot = webserver.get_bot()
+    if bot is not None:
+        await backup.backup_kind(bot, "data/settings.json",
+                                 settings.DATA_FILE)
     log.info("destination for %s set to %s via mini app", feature, dest)
     return web.json_response({"ok": True,
-                              "dest": settings.get_dest(feature)})
+                              "dest": settings.get_dest(
+                                  feature, config.OWNER_ID)})
 
 
 async def page(_request: web.Request) -> web.Response:

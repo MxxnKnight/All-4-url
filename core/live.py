@@ -79,11 +79,13 @@ class LiveError(Exception):
 class LiveJob:
     """One recording, from probe to final summary."""
 
-    def __init__(self, job_id: str, client, chat_id: int, status):
+    def __init__(self, job_id: str, client, chat_id: int, status,
+                 user_id: int | None = None):
         self.job_id = job_id
         self.client = client
         self.chat_id = chat_id
         self.status = status
+        self.user_id = user_id
         self.editor = ThrottledEditor(status)
         self.stop_requested = asyncio.Event()
         self.title = ""
@@ -360,6 +362,7 @@ async def _send_segment(job: LiveJob, path: str) -> None:
         await send_files_routed(job.client, job.chat_id, [path],
                                 "uploader", caption=caption,
                                 status_msg=job.status,
+                                user_id=job.user_id,
                                 force_document=False)  # live parts
         # are always videos — they are meant to be watched as they
         # arrive, whatever the URL-upload "Send as" setting says.
@@ -483,7 +486,8 @@ async def run_live_job(client, message, url: str, status) -> None:
     the job dir up either way.
     """
     job_id = secrets.token_hex(4)
-    job = LiveJob(job_id, client, message.chat.id, status)
+    job = LiveJob(job_id, client, message.chat.id, status,
+                  message.from_user.id if message.from_user else None)
     job.url = url
     recorded = False
     try:

@@ -386,7 +386,8 @@ async def resolve(url: str) -> dict:
     return info
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     """Resolve the page and download the file(s); returns file paths."""
     info = await resolve(url)
     files = info.get("files")

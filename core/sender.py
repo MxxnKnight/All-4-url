@@ -5,12 +5,14 @@ import json
 import os
 import time
 
+from pyrogram import StopTransmission
 from pyrogram.errors import FloodPremiumWait, FloodWait, SlowmodeWait
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             InputMediaDocument, InputMediaPhoto)
 
 from core import splitter, stats, tmdb
 from core.filename_parser import clean_display, parse_filename
+from core.jobs import JobCancelled
 from core.splitter import is_split_part
 from core.utils import (ThrottledEditor, guess_kind, human_bytes,
                         progress_text, run_blocking)
@@ -313,7 +315,7 @@ def _split_run(paths: list[str], start: int) -> list[str] | None:
 
 async def send_file(client, chat_id: int, path: str, caption: str = "",
                     status_msg=None, progress_cb=None,
-                    force_document: bool = False):
+                    force_document: bool = False, job=None):
     """Send one local file as video / photo / audio / document.
 
     Returns the sent Message (or None if the client returned nothing).
@@ -322,7 +324,14 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
     editor, not instead of it.
     `force_document` sends a video as a plain file instead (the
     /destination "Send URL uploads as" setting); photos, audio and
-    split parts are unaffected."""
+    split parts are unaffected.
+    `job`, when given (a core.jobs.Job), replaces the status message
+    as the progress target AND makes the send cancellable: a Stop
+    tap raises StopTransmission from the upload progress callback
+    (Pyrogram then returns None from send_*), and this raises
+    JobCancelled so the flow unwinds."""
+    if job is not None:
+        job.check_cancelled()
     kind = guess_kind(path)
     meta: dict = {}
     if kind in ("document", "video") and not force_document:
@@ -352,12 +361,24 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
                     kind = "document"
     if force_document and kind == "video":
         kind = "document"
-    editor = ThrottledEditor(status_msg) if status_msg is not None else None
+    # A job IS the editor (Job.edit has ThrottledEditor.edit's shape),
+    # so upload progress lands in the shared message (v1.45.0).
+    editor = (job if job is not None else
+              (ThrottledEditor(status_msg) if status_msg is not None
+               else None))
     callbacks = []
     if editor is not None:
         callbacks.append(_progress_callback(editor, "Uploading…"))
     if progress_cb is not None:
         callbacks.append(progress_cb)
+    if job is not None:
+        async def _cancel_check(current: int, total: int):
+            # The documented mid-upload stop: Pyrogram catches
+            # StopTransmission from a progress callback and returns
+            # None from send_*, instead of the sent Message.
+            if job.cancelled:
+                raise StopTransmission
+        callbacks.append(_cancel_check)
 
     async def progress(current: int, total: int):
         for cb in callbacks:
@@ -399,6 +420,11 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
             lambda: client.send_document(chat_id, path, caption=caption,
                                          progress=progress),
             editor)
+    # None + a cancelled job means the Stop tap cut this upload
+    # short (StopTransmission) — unwind the flow as cancelled, not
+    # as a silent no-send.
+    if sent is None and job is not None and job.cancelled:
+        raise JobCancelled()
     return sent
 
 
@@ -424,7 +450,7 @@ async def _attach_mediainfo_button(sent) -> None:
 async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                      status_msg=None, mediainfo_button: bool = False,
                      progress_cb=None,
-                     force_document: bool = False) -> list:
+                     force_document: bool = False, job=None) -> list:
     """Send a job's resulting files; returns the sent Messages.
 
     `force_document` sends videos as plain files instead (the
@@ -446,13 +472,20 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     speed for the whole upload. Media groups report no live progress
     (Telegram's API has no progress hook for them), so the callback
     fires once per finished group instead of streaming.
+
+    `job`, when given (a core.jobs.Job), replaces the status message
+    as the progress target and makes the run cancellable between
+    files/groups (a media group already sending can't be cut).
     """
+    if job is not None:
+        job.check_cancelled()
     sent_all: list = []
     if not paths:
         return sent_all
     caption = await _rich_caption(caption, paths)
-    group_editor = (ThrottledEditor(status_msg)
-                    if status_msg is not None else None)
+    group_editor = (job if job is not None else
+                    (ThrottledEditor(status_msg)
+                     if status_msg is not None else None))
 
     total_all = 0
     sizes: dict[str, int] = {}
@@ -474,7 +507,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         sent = await send_file(client, chat_id, paths[0], caption, status_msg,
                                progress_cb=_per_file(0)
                                if progress_cb is not None else None,
-                               force_document=force_document)
+                               force_document=force_document, job=job)
         if sent is not None:
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
@@ -487,13 +520,15 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     first = True
 
     for i in range(0, len(photos), 10):
+        if job is not None:
+            job.check_cancelled()
         chunk = photos[i:i + 10]
         if len(chunk) == 1:
             sent = await send_file(client, chat_id, chunk[0],
                                    caption if first else "", status_msg,
                                    progress_cb=_per_file(sent_bytes)
                                    if progress_cb is not None else None,
-                                   force_document=force_document)
+                                   force_document=force_document, job=job)
             if sent is not None:
                 sent_all.append(sent)
         else:
@@ -518,6 +553,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     i = 0
     while i < len(others):
+        if job is not None:
+            job.check_cancelled()
         path = others[i]
         run = _split_run(others, i)
         if run is not None:
@@ -525,6 +562,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             # single media group (chunked at 10) instead of one
             # message per part.
             for k in range(0, len(run), 10):
+                if job is not None:
+                    job.check_cancelled()
                 chunk = run[k:k + 10]
                 media = [
                     InputMediaDocument(
@@ -550,7 +589,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                                caption if first else "", status_msg,
                                progress_cb=_per_file(sent_bytes)
                                if progress_cb is not None else None,
-                               force_document=force_document)
+                               force_document=force_document, job=job)
         if sent is not None:
             sent_all.append(sent)
         if progress_cb is not None:
@@ -567,7 +606,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
 async def send_files_split(bot_client, chat_id: int, paths: list[str],
                            feature: str, caption: str = "",
-                           status_msg=None) -> list[str]:
+                           status_msg=None, job=None,
+                           user_id=None) -> list[str]:
     """Split oversize files, then send_files_routed().
 
     Every file over Telegram's cap is chopped into .001/.002
@@ -576,7 +616,11 @@ async def send_files_split(bot_client, chat_id: int, paths: list[str],
     cap pass through untouched. Returns the paths that were
     sent, so the caller can delete them (split parts included —
     the original is already gone, deleted by the splitter).
-    """
+    `job`, when given, is the progress target + cancel handle
+    (see send_files). `user_id`, when given, picks that user's
+    own destination/send-as settings (v1.45.0)."""
+    if job is not None:
+        job.check_cancelled()
     send_paths: list[str] = []
     for path in paths:
         try:
@@ -585,9 +629,10 @@ async def send_files_split(bot_client, chat_id: int, paths: list[str],
             size = 0
         async with splitter.big_file_guard(splitter.needs_split(size)):
             send_paths.extend(
-                await splitter.maybe_split([path], None, status_msg))
+                await splitter.maybe_split([path], job, status_msg))
     await send_files_routed(bot_client, chat_id, send_paths, feature,
-                            caption=caption, status_msg=status_msg)
+                            caption=caption, status_msg=status_msg,
+                            job=job, user_id=user_id)
     return send_paths
 
 
@@ -595,7 +640,8 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                             feature: str, caption: str = "",
                             status_msg=None,
                             mediainfo_button: bool = False,
-                            force_document: bool | None = None) -> list:
+                            force_document: bool | None = None,
+                            job=None, user_id=None) -> list:
     """send_files() to the destination chosen for `feature`.
 
     Destinations (core/settings.py, /destination command):
@@ -611,13 +657,20 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
     "uploader" has one, everything else sends videos as video.
     An explicit True/False overrides the setting (live recordings
     and samples always pass False: they are meant to be watched).
+    `job`, when given, is the progress target + cancel handle
+    (see send_files). `user_id`, when given, picks that user's own
+    destination/send-as settings (v1.45.0); without it the shared
+    global settings apply.
     """
     from core import settings
     from core.userclient import SessionNotConfigured, get_user_client
 
+    if job is not None:
+        job.check_cancelled()
     if force_document is None:
-        force_document = settings.get_send_as(feature) == "document"
-    if settings.get_dest(feature) == "saved":
+        force_document = settings.get_send_as(feature, user_id) \
+            == "document"
+    if settings.get_dest(feature, user_id) == "saved":
         try:
             user = await get_user_client()
         except SessionNotConfigured:
@@ -626,8 +679,10 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
             return await send_files(user, "me", paths, caption=caption,
                                     status_msg=status_msg,
                                     mediainfo_button=False,
-                                    force_document=force_document)
+                                    force_document=force_document,
+                                    job=job)
     return await send_files(bot_client, chat_id, paths, caption=caption,
                             status_msg=status_msg,
                             mediainfo_button=mediainfo_button,
-                            force_document=force_document)
+                            force_document=force_document,
+                            job=job)

@@ -179,7 +179,8 @@ async def resolve(url: str) -> dict:
         "quality — the link may have expired, try again in a moment")
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     info = await resolve(url)
     referer = info.get("referer") or url
     parsed = urlparse(referer)
@@ -187,7 +188,8 @@ async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
                "User-Agent": BROWSER_UA}
     from core.extractors.ytdlp_engine import download as ytdlp_download
     paths = await ytdlp_download(info["media_url"], job_dir,
-                                 progress_cb=progress_cb, headers=headers)
+                                 progress_cb=progress_cb, headers=headers,
+                                 cancel_check=cancel_check)
     from core.extractors.direct import safe_filename
     title = safe_filename(info["title"], "missav video")
     video = [p for p in paths

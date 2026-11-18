@@ -299,7 +299,8 @@ async def resolve(url: str) -> dict:
     return info
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     info = await resolve(url)
     title = safe_filename(info["title"], "reddit post")
     kind = info.get("kind")
@@ -309,7 +310,8 @@ async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
         # vidara does for its playlists.
         from core.extractors.ytdlp_engine import download as ytdlp_download
         paths = await ytdlp_download(info["media_url"], job_dir,
-                                     progress_cb=progress_cb)
+                                     progress_cb=progress_cb,
+                                     cancel_check=cancel_check)
         media = [p for p in paths
                  if os.path.splitext(p)[1].lower() in
                  (".mp4", ".mkv", ".webm", ".ts")]

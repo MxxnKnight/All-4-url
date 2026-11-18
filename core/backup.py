@@ -1,11 +1,13 @@
 """Survive ephemeral disks (free hosts wipe on every redeploy).
 
-Small data files — cookie jars, data/sudo.json, data/stats.json — are
-backed up as documents in the vault chat: the private storage channel
-when STORAGE_CHANNEL_ID is set, otherwise the owner's PM with the bot
-(no setup needed). One message per file, captioned
-`#all4url-backup <kind>`; restored on startup when the local copy is
-missing.
+Small data files — cookie jars, data/sudo.json, data/settings.json,
+data/stats.json — are backed up as documents in the vault chat: the
+private storage channel when STORAGE_CHANNEL_ID is set, otherwise
+the owner's PM with the bot (no setup needed). One message per file,
+captioned `#all4url-backup <kind>`; restored on startup when the
+local copy is missing. Backups are sent SILENTLY (no ping): the
+owner asked not to be pinged by them (v1.45.0), and the files are
+only a safety net, not something to read.
 
 This vault is the NO-DATABASE fallback. When MongoDB is enabled
 (DB_URI set), the database is the durable store for all of the above,
@@ -39,6 +41,7 @@ def _caption(kind: str) -> str:
 def _local_path(kind: str):
     """Local path a backup kind restores to, or None if unknown."""
     from core import cookies as cookies_mod
+    from core import settings as settings_mod
     from core import sudo as sudo_mod
     from core import stats as stats_mod
     if kind.startswith("cookies/"):
@@ -49,6 +52,8 @@ def _local_path(kind: str):
         return os.path.join(cookies_mod.COOKIES_DIR, base)
     if kind == "data/sudo.json":
         return sudo_mod.DATA_FILE
+    if kind == "data/settings.json":
+        return settings_mod.DATA_FILE
     if kind == "data/stats.json":
         return stats_mod.DATA_FILE
     return None
@@ -85,7 +90,8 @@ async def backup_kind(app, kind: str, local_path: str) -> bool:
     try:
         olds = await _find_backups(app, kind)
         await app.send_document(vault, local_path,
-                                caption=_caption(kind))
+                                caption=_caption(kind),
+                                disable_notification=True)
         for old in olds:
             try:
                 await app.delete_messages(vault, old.id)

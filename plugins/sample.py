@@ -93,6 +93,7 @@ async def sample_callback(client: Client, query):
             client, dest, [sample_path], "uploader",
             caption=f"Sample ({seconds}s, middle) of {name}",
             status_msg=status,
+            user_id=query.from_user.id if query.from_user else None,
             force_document=False)  # a sample is a preview — it
         # is meant to be watched inline, whatever the URL-upload
         # "Send as" setting says.

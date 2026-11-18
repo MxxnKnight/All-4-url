@@ -86,7 +86,8 @@ async def _send_piped(client, message, file_obj, filename, status,
     stopped. The caller closes file_obj and records stats.
     """
     send_client, chat_id = client, message.chat.id
-    if settings.get_dest("uploader") == "saved":
+    user_id = message.from_user.id if message.from_user else None
+    if settings.get_dest("uploader", user_id) == "saved":
         try:
             from core.userclient import SessionNotConfigured, get_user_client
             user = await get_user_client()

@@ -32,7 +32,7 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 import config
 from core.extractors import (browser_scan, gallery_engine, scrape,
                              site_registry, terabox)
-from core import splitter, stats, unzip, upage
+from core import jobs, splitter, stats, unzip, upage
 from core.filename_parser import clean_display
 from core.extractors.direct import (check_direct, download_file,
                                     is_playlist_url, safe_filename)
@@ -40,12 +40,13 @@ from core.extractors.player_scan import FallThrough, HostError
 from core.extractors.ytdlp_engine import (YtdlpError, best_formats,
                                           carousel_image_urls, download,
                                           extract_info)
+from core.jobs import JobCancelled
 from core.sender import (send_files, send_files_routed,
                          send_files_split)
-from core.utils import (JOB_SEMAPHORE, SizeBlocked, ThrottledEditor,
-                        check_size, cleanup_dir, human_bytes, is_admin_id,
-                        is_owner_id, list_files, make_job_dir, admin_only,
-                        progress_text, react, react_to, run_blocking)
+from core.utils import (JOB_SEMAPHORE, SizeBlocked, check_size, cleanup_dir,
+                        human_bytes, is_admin_id, is_owner_id, list_files,
+                        make_job_dir, admin_only, progress_text, react,
+                        react_to, run_blocking)
 
 URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -67,18 +68,76 @@ def _prune_unzip_pending() -> None:
             PENDING_UNZIP.pop(job_id, None)
 
 
+def _unzip_prompt_text(job: dict) -> str:
+    """The prompt body for an unpack job (re-rendered on every
+    toggle tap, so the ticks always match the selection)."""
+    entries = job["entries"]
+    selected = job["selected"]
+    listed = []
+    for idx, (name, size) in enumerate(entries[:_MAX_LISTED_FILES]):
+        shown = clean_display(name) or name
+        shown = shown if len(shown) <= 55 else "…" + shown[-54:]
+        tick = "✅" if idx in selected else "⬜"
+        listed.append(f"{tick} {shown} ({human_bytes(size)})")
+    if len(entries) > _MAX_LISTED_FILES:
+        listed.append(f"• …and {len(entries) - _MAX_LISTED_FILES} more")
+    listing = ("\n" + "\n".join(listed)) if listed else ""
+    return (
+        f"📦 **{job['header']}**\n"
+        f"{job['kind_label']}: {human_bytes(job['size'])} · "
+        f"unpacks to {human_bytes(job['total'])} · "
+        f"{job['count']} file(s)"
+        + listing
+        + (f"\n⚠️ {len(job['encrypted'])} password-protected "
+           f"file(s) will be skipped" if job["encrypted"] else "")
+        + "\n\nTap a file to tick or untick it — Unpack sends only "
+          "the ticked files. Leave everything ticked to unpack it all.")
+
+
+def _unzip_prompt_markup(job: dict) -> InlineKeyboardMarkup:
+    """Toggle buttons for the listed files + the actions."""
+    rows = []
+    for idx, (name, _size) in enumerate(
+            job["entries"][:_MAX_LISTED_FILES]):
+        shown = clean_display(name) or name
+        shown = shown if len(shown) <= 24 else shown[:23] + "…"
+        tick = "✅" if idx in job["selected"] else "⬜"
+        rows.append([InlineKeyboardButton(
+            f"{tick} {shown}",
+            callback_data=f"unzip:{job['id']}:t:{idx}")])
+    n = len(job["selected"])
+    rows.append([
+        InlineKeyboardButton(f"📂 Unpack selected ({n})",
+                             callback_data=f"unzip:{job['id']}:go"),
+        InlineKeyboardButton("📦 Send archive as-is",
+                             callback_data=f"unzip:{job['id']}:asis"),
+    ])
+    rows.append([
+        InlineKeyboardButton("✅ All",
+                             callback_data=f"unzip:{job['id']}:all"),
+        InlineKeyboardButton("⬜ None",
+                             callback_data=f"unzip:{job['id']}:none"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
-                              caption: str, status: Message,
-                              job_dir: str) -> bool:
-    """Intercept a single downloaded zip with an unzip prompt.
+                              caption: str, job_dir: str) -> bool:
+    """Intercept a single downloaded archive with an unpack prompt.
 
     Returns True when the prompt is on screen — the caller must
     then NOT send the file and NOT clean up job_dir; the callback
-    owns both from here. Returns False when the file is not a zip
-    (or the prompt could not be shown), and the caller sends it
-    normally. A zip that fails the pre-check is NOT prompted:
-    the owner gets a persistent "exceeds" message and the zip
-    itself is sent as-is.
+    owns both from here. Returns False when the file is not an
+    archive (or the prompt could not be shown), and the caller
+    sends it normally. An archive that fails the pre-check is NOT
+    prompted: the owner gets a persistent "exceeds" message and
+    the archive itself is sent as-is.
+
+    The prompt is its OWN message (v1.45.0): the shared progress
+    message belongs to every running job, so a one-job question
+    can't take it over. The prompt lists the contents with
+    tap-to-tick buttons (v1.45.0) — the owner picks which files to
+    unpack instead of all-or-nothing.
     """
     if len(paths) != 1 or not unzip.is_archive_file(paths[0]):
         return False
@@ -109,72 +168,53 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
         return False
     _prune_unzip_pending()
     job_id = _next_job_id()
-    PENDING_UNZIP[job_id] = {"job_dir": job_dir, "path": zip_path,
-                             "chat_id": chat_id, "caption": caption,
-                             "ts": int(time.time())}
-    # What's inside, so the owner can see the episodes before
-    # choosing (v1.43.0): the first few entries with sizes, then
-    # a count of the rest. Names are shown cleaned (v1.44.0) —
-    # "Show S01E01" instead of the messy release name — and cut
-    # from the left, since the episode number and extension sit
-    # at the end.
     entries = info.get("entries") or [(name, 0)
                                       for name in info["files"]]
-    listed = []
-    for name, size in entries[:_MAX_LISTED_FILES]:
-        shown = clean_display(name) or name
-        shown = shown if len(shown) <= 55 else "…" + shown[-54:]
-        listed.append(f"• {shown} ({human_bytes(size)})")
-    if len(entries) > _MAX_LISTED_FILES:
-        listed.append(f"• …and {len(entries) - _MAX_LISTED_FILES} more")
-    listing = ("\n" + "\n".join(listed)) if listed else ""
-    # Header: the archive's clean title when it parses to one.
-    header = clean_display(os.path.basename(zip_path)) \
-        or os.path.basename(zip_path)
+    # Everything listed starts ticked: tapping Unpack without
+    # touching anything unpacks it all, exactly like before.
+    job = {"id": job_id, "job_dir": job_dir, "path": zip_path,
+           "chat_id": chat_id, "caption": caption,
+           "ts": int(time.time()), "entries": entries,
+           "selected": set(range(min(len(entries), _MAX_LISTED_FILES))),
+           "touched": False,
+           "header": clean_display(os.path.basename(zip_path))
+           or os.path.basename(zip_path),
+           "kind_label": kind_label, "size": os.path.getsize(zip_path),
+           "total": info["total"], "count": info["count"],
+           "encrypted": info["encrypted"]}
+    PENDING_UNZIP[job_id] = job
     try:
-        await status.edit_text(
-            f"📦 **{header}**\n"
-            f"{kind_label}: {human_bytes(os.path.getsize(zip_path))} · "
-            f"unpacks to {human_bytes(info['total'])} · "
-            f"{info['count']} file(s)"
-            + listing
-            + (f"\n⚠️ {len(info['encrypted'])} password-protected "
-               f"file(s) will be skipped" if info["encrypted"] else "")
-            + "\n\nUnpack it and send the contents, or send the archive itself?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Unpack & send contents",
-                                      callback_data=f"unzip:{job_id}:go")],
-                [InlineKeyboardButton("📦 Send archive as-is",
-                                      callback_data=f"unzip:{job_id}:asis")],
-            ]))
+        await client.send_message(chat_id, _unzip_prompt_text(job),
+                                  reply_markup=_unzip_prompt_markup(job))
     except Exception:
         PENDING_UNZIP.pop(job_id, None)
         return False
     return True
 
 
-#: How many zip entries the unzip prompt lists before "…and N more".
+#: How many archive entries the unzip prompt lists before "…and N more".
 _MAX_LISTED_FILES = 10
 
 
-async def _prompt_or_split(client, chat_id, paths, caption, status,
-                           job_dir, editor=None, status_msg=None):
-    """Ask to unzip a single zip BEFORE splitting it (v1.43.0).
+async def _prompt_or_split(client, chat_id, paths, caption,
+                           job_dir, job=None):
+    """Ask to unpack a single archive BEFORE splitting it (v1.43.0).
 
-    Returns (prompted, send_paths). A single zip within the unzip
-    caps gets the prompt and the callback owns the job (prompted
-    True, no paths) — so a season zip over Telegram's 2 GB cap is
-    unzipped and its episodes sent one by one instead of arriving
-    as .zip.001/.002 parts nobody asked for. Anything else is
-    split as usual and returned for sending — including a zip over
-    the unzip caps, which the prompt already refused with a
-    "can't unzip" message.
+    Returns (prompted, send_paths). A single archive within the
+    unpack caps gets the prompt and the callback owns the job
+    (prompted True, no paths) — so a season zip over Telegram's
+    2 GB cap is unpacked and its episodes sent one by one instead
+    of arriving as .zip.001/.002 parts nobody asked for. Anything
+    else is split as usual and returned for sending — including
+    an archive over the unpack caps, which the prompt already
+    refused with a "can't unpack" message.
+    `job`, when given, is the split progress target (see core/jobs).
     """
     if await _maybe_unzip_prompt(client, chat_id, paths, caption,
-                                 status, job_dir):
+                                 job_dir):
         return True, []
     return False, await splitter.maybe_split(
-        paths, editor=editor, status_msg=status_msg)
+        paths, editor=job, status_msg=None)
 
 
 def _next_job_id() -> str:
@@ -368,13 +408,13 @@ async def joinzip_cmd(client: Client, message: Message):
         await message.reply_text(stats.bandwidth_pause_text())
         return
     await react(message, "👀")
-    status = await message.reply_text(
-        f"Checking {len(parts)} parts of {stem}…")
-    editor = ThrottledEditor(status)
+    user_id = message.from_user.id if message.from_user else None
+    job = await jobs.register(client, message.chat.id,
+                              f"Join: {stem}", reply_to=message)
     job_dir = make_job_dir()
 
     async def _fail(text: str) -> None:
-        await status.edit_text(text)
+        await job.fail(text)
         await react(message, "👎")
         stats.record_job("uploader", ok=False)
 
@@ -385,6 +425,7 @@ async def joinzip_cmd(client: Client, message: Message):
             total = 0
             known = True
             for num, url, _name in parts:
+                job.check_cancelled()
                 info = await check_direct(url)
                 if info is None:
                     await _fail(
@@ -419,14 +460,15 @@ async def joinzip_cmd(client: Client, message: Message):
 
                     async def _prog(current, total_b, _label=label,
                                     _started=started):
-                        await editor.edit(progress_text(
+                        job.check_cancelled()
+                        await job.edit(progress_text(
                             _label, current, total_b, _started))
 
                     part_paths.append(await download_file(
                         url, job_dir, progress_cb=_prog,
                         filename=safe_filename(
                             name, f"part.{num:03d}")))
-                await editor.edit("Joining the parts…", force=True)
+                await job.edit("Joining the parts…", force=True)
                 joined_path = os.path.join(
                     job_dir, safe_filename(stem, "joined"))
                 await run_blocking(_join_parts_sync, part_paths,
@@ -437,22 +479,27 @@ async def joinzip_cmd(client: Client, message: Message):
                 caption = (f"Joined from {len(parts)} parts: {stem}")
                 prompted = await _maybe_unzip_prompt(
                     client, message.chat.id, [joined_path], caption,
-                    status, job_dir)
+                    job_dir)
                 if prompted:
                     job_dir = None  # the callback owns the dir now
                     return
                 paths = await splitter.maybe_split([joined_path],
-                                                   editor, status)
+                                                   job, None)
             await send_files_routed(client, message.chat.id, paths,
                                     "uploader", caption=caption,
-                                    status_msg=status)
+                                    job=job, user_id=user_id)
             await react(message, "👍")
             stats.record_job("uploader", ok=True)
+    except JobCancelled:
+        # Stopped by the owner: no 👎, no failed-job stat — a stop
+        # is a choice, not a failure.
+        await job.fail("⏹ Cancelled.")
     except SizeBlocked as exc:
         await _fail(f"❌ {exc}")
     except Exception as exc:
         await _fail(f"❌ Join failed: {exc}")
     finally:
+        await job.finish()
         if job_dir is not None:
             cleanup_dir(job_dir)
 
@@ -460,15 +507,16 @@ async def joinzip_cmd(client: Client, message: Message):
 # ---------------------------------------------------------------- Terabox UI
 
 async def _terabox_flow(client: Client, message: Message, url: str,
-                        status: Message, editor: ThrottledEditor) -> bool:
+                        job) -> bool:
     """Returns True when a file picker was shown (job not finished yet)."""
     files = await terabox.list_files(url)
     if len(files) == 1:
         check_size(files[0].get("size") or 0, files[0].get("name") or "file",
                    allow_split=True)
         return await _terabox_download(
-            client, message, url, 0, files[0], status, editor,
-            big_file=(files[0].get("size") or 0) > config.MAX_FILE_SIZE)
+            client, message, url, 0, files[0], job,
+            big_file=(files[0].get("size") or 0) > config.MAX_FILE_SIZE,
+            user_id=message.from_user.id if message.from_user else None)
     job_id = _next_job_id()
     PENDING[job_id] = {"type": "terabox", "url": url, "chat_id": message.chat.id,
                        "origin_chat": message.chat.id, "origin_msg": message.id}
@@ -481,14 +529,19 @@ async def _terabox_flow(client: Client, message: Message, url: str,
     via_note = (" (via FileSnag — its links expire in a few hours, "
                 "so pick promptly)" if files[0].get("via") == "filesnag"
                 else "")
-    await status.edit_text(
+    # The picker is its OWN message (v1.45.0): the shared progress
+    # message belongs to every running job, so a one-job question
+    # can't take it over. The download registers a fresh job when
+    # the owner picks.
+    await client.send_message(
+        message.chat.id,
         f"This Terabox share has several files — pick one:{via_note}",
         reply_markup=InlineKeyboardMarkup(buttons))
     return True
 
 
-async def _terabox_download(client, message, url, index, info, status, editor,
-                          big_file=False):
+async def _terabox_download(client, message, url, index, info, job,
+                          big_file=False, user_id=None):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
@@ -499,8 +552,9 @@ async def _terabox_download(client, message, url, index, info, status, editor,
                           else "Downloading from Terabox…")
 
         async def progress(done, total):
-            await editor.edit(progress_text(progress_label,
-                                            done, total, started))
+            job.check_cancelled()
+            await job.edit(progress_text(progress_label,
+                                         done, total, started))
         prompted = False
         try:
             async with splitter.big_file_guard(big_file):
@@ -508,15 +562,14 @@ async def _terabox_download(client, message, url, index, info, status, editor,
                                               progress_cb=progress)
                 prompted, paths = await _prompt_or_split(
                     client, message.chat.id, [path],
-                    f"Terabox · {info['name'] if info else ''}", status,
-                    job_dir, editor=editor)
+                    f"Terabox · {info['name'] if info else ''}",
+                    job_dir, job=job)
             if not prompted:
-                await editor.edit("Uploading…", force=True)
+                await job.edit("Uploading…", force=True)
                 await send_files_routed(
                     client, message.chat.id, paths, "uploader",
                     caption=f"Terabox · {info['name'] if info else ''}",
-                    status_msg=status)
-                await status.delete()
+                    job=job, user_id=user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -526,8 +579,7 @@ async def _terabox_download(client, message, url, index, info, status, editor,
 # ---------------------------------------------------------------- custom sites
 
 async def _custom_flow(client: Client, message: Message, url: str,
-                       status: Message, editor: ThrottledEditor,
-                       site) -> bool:
+                       job, site) -> bool:
     """A registered custom-site extractor (see site_registry).
 
     Returns True when an unzip prompt is on screen (job pending),
@@ -540,8 +592,11 @@ async def _custom_flow(client: Client, message: Message, url: str,
         job_dir = make_job_dir()
         started = time.time()
 
+        user_id = message.from_user.id if message.from_user else None
+
         async def progress(done, total):
-            await editor.edit(progress_text("Downloading…", done, total, started))
+            job.check_cancelled()
+            await job.edit(progress_text("Downloading…", done, total, started))
 
         prompted = False
         try:
@@ -566,18 +621,18 @@ async def _custom_flow(client: Client, message: Message, url: str,
                            allow_split=True)
             big = (info.get("approx_size") or 0) > config.MAX_FILE_SIZE
             async with splitter.big_file_guard(big):
-                paths = await site.download(url, job_dir, progress_cb=progress)
+                paths = await site.download(
+                    url, job_dir, progress_cb=progress,
+                    cancel_check=lambda: job.cancelled)
                 prompted, paths = await _prompt_or_split(
                     client, message.chat.id, paths,
-                    info.get("title", "")[:200], status, job_dir,
-                    editor=editor)
+                    info.get("title", "")[:200], job_dir, job=job)
             if not prompted:
-                await editor.edit("Uploading…", force=True)
+                await job.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
                                         "uploader",
                                         caption=info.get("title", "")[:200],
-                                        status_msg=status)
-                await status.delete()
+                                        job=job, user_id=user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -587,8 +642,7 @@ async def _custom_flow(client: Client, message: Message, url: str,
 # ---------------------------------------------------------------- yt-dlp flow
 
 async def _ytdlp_flow(client: Client, message: Message, url: str,
-                      status: Message, editor: ThrottledEditor,
-                      ask_format: bool = True) -> bool:
+                      job, ask_format: bool = True) -> bool:
     """extract_info first; ask which format when there is a real choice.
 
     Returns True when a format picker was shown (job not finished yet)."""
@@ -613,7 +667,12 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
                 callback_data=f"fmt:{job_id}:{fmt['format_id']}")])
         buttons.append([InlineKeyboardButton(
             "🎧 Audio only (mp3)", callback_data=f"fmt:{job_id}:audio")])
-        await status.edit_text(
+        # The picker is its OWN message (v1.45.0): the shared
+        # progress message belongs to every running job, so a
+        # one-job question can't take it over. The download
+        # registers a fresh job when the owner picks.
+        await client.send_message(
+            message.chat.id,
             f"**{title[:120]}**\nPick a quality:",
             reply_markup=InlineKeyboardMarkup(buttons))
         return True
@@ -624,35 +683,38 @@ async def _ytdlp_flow(client: Client, message: Message, url: str,
         # splitter, in which case it goes out in parts.
         check_size(formats[0].get("filesize") or 0, title, allow_split=True)
     return await _ytdlp_download(
-        client, message, url, title, status, editor,
+        client, message, url, title, job,
         big_file=bool(formats)
-        and (formats[0].get("filesize") or 0) > config.MAX_FILE_SIZE)
+        and (formats[0].get("filesize") or 0) > config.MAX_FILE_SIZE,
+        user_id=message.from_user.id if message.from_user else None)
 
 
-async def _ytdlp_download(client, message, url, title, status, editor,
-                          format_id=None, audio_only=False, big_file=False):
+async def _ytdlp_download(client, message, url, title, job,
+                          format_id=None, audio_only=False, big_file=False,
+                          user_id=None):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
 
         async def progress(done, total):
-            await editor.edit(progress_text("Downloading…", done, total, started))
+            job.check_cancelled()
+            await job.edit(progress_text("Downloading…", done, total, started))
 
         prompted = False
         try:
             async with splitter.big_file_guard(big_file):
                 paths = await download(url, job_dir, format_id=format_id,
                                        audio_only=audio_only,
-                                       progress_cb=progress)
+                                       progress_cb=progress,
+                                       cancel_check=lambda: job.cancelled)
                 prompted, paths = await _prompt_or_split(
-                    client, message.chat.id, paths, title[:200], status,
-                    job_dir, editor=editor)
+                    client, message.chat.id, paths, title[:200],
+                    job_dir, job=job)
             if not prompted:
-                await editor.edit("Uploading…", force=True)
+                await job.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
                                         "uploader", caption=title[:200],
-                                        status_msg=status)
-                await status.delete()
+                                        job=job, user_id=user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -661,36 +723,39 @@ async def _ytdlp_download(client, message, url, title, status, editor,
 
 # ---------------------------------------------------------------- fallbacks
 
-async def _gallery_flow(client, message, url, status):
+async def _gallery_flow(client, message, url, job):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         prompted = False
         try:
-            await status.edit_text("Fetching with gallery-dl…")
-            paths = await gallery_engine.download(url, job_dir)
+            await job.edit("Fetching with gallery-dl…")
+            paths = await gallery_engine.download(
+                url, job_dir, cancel_check=lambda: job.cancelled)
             # gallery-dl never tells us the size up front, so a big
             # file only shows itself here — maybe_split's own disk
             # check is what keeps the split safe.
             prompted, paths = await _prompt_or_split(
-                client, message.chat.id, paths, url, status, job_dir,
-                status_msg=status)
+                client, message.chat.id, paths, url, job_dir, job=job)
             if not prompted:
-                await send_files_routed(client, message.chat.id, paths, "uploader",
-                                 caption=url, status_msg=status)
-                await status.delete()
+                await send_files_routed(
+                    client, message.chat.id, paths, "uploader",
+                    caption=url, job=job,
+                    user_id=message.from_user.id
+                    if message.from_user else None)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
         return prompted
 
 
-async def _direct_flow(client, message, url, info, status, editor):
+async def _direct_flow(client, message, url, info, job):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
 
         async def progress(done, total):
-            await editor.edit(progress_text("Downloading…", done, total, started))
+            job.check_cancelled()
+            await job.edit(progress_text("Downloading…", done, total, started))
 
         prompted = False
         try:
@@ -701,22 +766,22 @@ async def _direct_flow(client, message, url, info, status, editor):
                                            filename=info.get("filename"))
                 prompted, paths = await _prompt_or_split(
                     client, message.chat.id, [path],
-                    info.get("filename", ""), status, job_dir,
-                    editor=editor)
+                    info.get("filename", ""), job_dir, job=job)
             if not prompted:
-                await editor.edit("Uploading…", force=True)
+                await job.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
                                         "uploader",
                                         caption=info.get("filename", ""),
-                                        status_msg=status)
-                await status.delete()
+                                        job=job,
+                                        user_id=message.from_user.id
+                                        if message.from_user else None)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
         return prompted
 
 
-async def _scrape_flow(client, message, url, status, editor,
+async def _scrape_flow(client, message, url, job,
                    force_browser=False):
     """Static scrape, data: playlist, then the browser — unless
     force_browser (/browser command) skips straight to the browser."""
@@ -725,7 +790,8 @@ async def _scrape_flow(client, message, url, status, editor,
         started = time.time()
 
         async def progress(done, total):
-            await editor.edit(progress_text("Downloading…", done, total, started))
+            job.check_cancelled()
+            await job.edit(progress_text("Downloading…", done, total, started))
 
         async def _download_media(media_url, headers=None, playlist=None):
             """A found media URL -> downloaded paths (a stream playlist
@@ -739,11 +805,12 @@ async def _scrape_flow(client, message, url, status, editor,
                 # The page embeds a stream manifest, not a file — let
                 # yt-dlp fetch the real segments instead of saving the
                 # playlist text.
-                await status.edit_text(
+                await job.edit(
                     "Found a stream playlist — downloading the video…")
                 return await download(media_url, job_dir,
                                       progress_cb=progress,
-                                      headers=headers)
+                                      headers=headers,
+                                      cancel_check=lambda: job.cancelled)
             path = await download_file(media_url, job_dir,
                                        progress_cb=progress,
                                        headers=headers or {"Referer": url})
@@ -754,10 +821,11 @@ async def _scrape_flow(client, message, url, status, editor,
             reveal the video URL once their JavaScript has run (or
             their play button is clicked). Returns the media dict
             (url + playlist flag + session headers)."""
-            await status.edit_text(
+            await job.edit(
                 "Opening the page in a browser to find the video…")
             try:
-                return await browser_scan.find_media(url)
+                return await browser_scan.find_media(
+                    url, cancel_check=lambda: job.cancelled)
             except browser_scan.BrowserError as exc:
                 raise scrape.ScrapeError(
                     "no embedded media URL found in the page "
@@ -797,11 +865,12 @@ async def _scrape_flow(client, message, url, status, editor,
                         # load nothing until clicked — so the browser
                         # gets its turn, and the thumbnail is only the
                         # fallback.
-                        await status.edit_text(
+                        await job.edit(
                             "That page only shows a thumbnail — opening "
                             "it in a browser to find the video…")
                         try:
-                            found = await browser_scan.find_media(url)
+                            found = await browser_scan.find_media(
+                                url, cancel_check=lambda: job.cancelled)
                         except browser_scan.BrowserError:
                             found = None  # keep the thumbnail; it beats nothing
                     if found:
@@ -811,20 +880,20 @@ async def _scrape_flow(client, message, url, status, editor,
                     else:
                         paths = await _download_media(media_url)
             prompted, paths = await _prompt_or_split(
-                client, message.chat.id, paths, url, status, job_dir,
-                editor=editor)
+                client, message.chat.id, paths, url, job_dir, job=job)
             if not prompted:
-                await editor.edit("Uploading…", force=True)
+                await job.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths, "uploader",
-                                 caption=url, status_msg=status)
-                await status.delete()
+                                 caption=url, job=job,
+                                 user_id=message.from_user.id
+                                 if message.from_user else None)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
         return prompted
 
 
-async def _instagram_carousel(client, message, url, status) -> bool:
+async def _instagram_carousel(client, message, url, job) -> bool:
     """Image posts: yt-dlp metadata carries every carousel image URL."""
     try:
         info = await extract_info(url, ignore_no_formats=True)
@@ -836,14 +905,16 @@ async def _instagram_carousel(client, message, url, status) -> bool:
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         try:
-            await status.edit_text(f"Found {len(urls)} images — downloading…")
+            await job.edit(f"Found {len(urls)} images — downloading…")
             paths = []
             for i, img_url in enumerate(urls):
+                job.check_cancelled()
                 paths.append(await download_file(
                     img_url, job_dir, filename=f"instagram_{i + 1}.jpg"))
             await send_files_routed(client, message.chat.id, paths, "uploader",
-                             caption=url, status_msg=status)
-            await status.delete()
+                             caption=url, job=job,
+                             user_id=message.from_user.id
+                             if message.from_user else None)
             return True
         finally:
             cleanup_dir(job_dir)
@@ -870,23 +941,25 @@ async def browser_cmd(client: Client, message: Message):
     urls = urls[:MAX_MULTI_LINKS]
     total = len(urls)
     for i, url in enumerate(urls, 1):
-        label = f" ({i} of {total})" if total > 1 else ""
-        status = await message.reply_text(
-            f"Opening the page in a browser…{label}")
-        editor = ThrottledEditor(status)
+        job = await jobs.register(
+            client, message.chat.id, _job_label(url), reply_to=message)
         try:
-            await _scrape_flow(client, message, url, status, editor,
+            await _scrape_flow(client, message, url, job,
                                force_browser=True)
+        except JobCancelled:
+            await job.fail("⏹ Cancelled.")
         except scrape.ScrapeError as exc:
-            await status.edit_text(
+            await job.fail(
                 f"❌ The browser found no video: {exc}\n\n"
                 "If that page needs a login or a captcha, open it in "
                 "your own browser, download the file there, and send "
                 "it to me instead.")
         except SizeBlocked as exc:
-            await status.edit_text(f"❌ {exc}")
+            await job.fail(f"❌ {exc}")
         except Exception as exc:
-            await status.edit_text(f"❌ Failed: {exc}")
+            await job.fail(f"❌ Failed: {exc}")
+        finally:
+            await job.finish()
 
 
 @Client.on_message(filters.command("gallery") & filters.private
@@ -899,13 +972,18 @@ async def gallery_cmd(client: Client, message: Message):
             "Usage: `/gallery <link>` — I'll fetch it with gallery-dl "
             "only (galleries, image posts, multi-image pages).")
         return
-    status = await message.reply_text("Fetching with gallery-dl…")
+    job = await jobs.register(client, message.chat.id,
+                              _job_label(url), reply_to=message)
     try:
-        await _gallery_flow(client, message, url, status)
+        await _gallery_flow(client, message, url, job)
+    except JobCancelled:
+        await job.fail("⏹ Cancelled.")
     except gallery_engine.GalleryError as exc:
-        await status.edit_text(f"❌ gallery-dl found nothing: {exc}")
+        await job.fail(f"❌ gallery-dl found nothing: {exc}")
     except Exception as exc:
-        await status.edit_text(f"❌ Failed: {exc}")
+        await job.fail(f"❌ Failed: {exc}")
+    finally:
+        await job.finish()
 
 
 # ---------------------------------------------------------------- entry point
@@ -915,9 +993,20 @@ async def gallery_cmd(client: Client, message: Message):
                                        "mediainfo", "live", "pipe",
                                        "vidsplit", "browser", "gallery",
                                        "joinzip"]))
+def _job_label(url: str) -> str:
+    """One line naming a link in the shared progress message:
+    the site plus the file name when the URL carries one."""
+    host = urlparse(url).netloc or url
+    host = host[4:] if host.startswith("www.") else host
+    name = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+    name = clean_display(name) or name
+    label = f"{host} / {name}" if name else host
+    return label[:40]
+
+
 async def _run_links(client: Client, message: Message,
                      urls: list[str]) -> None:
-    """Run links through _dispatch, one status message each.
+    """Run links through _dispatch, one shared progress line each.
 
     Shared by url_handler (links in a chat message) and the .txt
     file handler (plugins/filetolink.py): one after another — each
@@ -925,19 +1014,20 @@ async def _run_links(client: Client, message: Message,
     parallel would fight over the 2 CPUs and the job slots. A
     failed link never stops the rest; a "pending" link (a picker
     is on screen) resolves through its own button callback, so
-    the loop moves on; a "blocked" link (bandwidth cap) stops
-    the loop, since the rest would block too. The final reaction
-    (👍 all done, 👎 all failed) goes on the source message —
-    "pending" gets none, since its button callback reacts when
-    the job actually finishes.
+    the loop moves on; a "cancelled" link (stopped by the owner)
+    is neither a success nor a failure; a "blocked" link
+    (bandwidth cap) stops the loop, since the rest would block
+    too. The final reaction (👍 all done, 👎 all failed) goes on
+    the source message — "pending" and "cancelled" get none.
     """
-    total = len(urls)
     outcomes = []
-    for i, url in enumerate(urls, 1):
-        label = f" ({i} of {total})" if total > 1 else ""
-        status = await message.reply_text(f"Working on it…{label}")
-        editor = ThrottledEditor(status)
-        outcome = await _dispatch(client, message, url, status, editor)
+    for url in urls:
+        job = await jobs.register(client, message.chat.id,
+                                  _job_label(url), reply_to=message)
+        try:
+            outcome = await _dispatch(client, message, url, job)
+        finally:
+            await job.finish()
         outcomes.append(outcome)
         if outcome == "done":
             stats.record_job("uploader", ok=True)
@@ -966,7 +1056,7 @@ async def url_handler(client: Client, message: Message):
 
 
 async def _upage_local_flow(client: Client, message: Message, url: str,
-                            status: Message) -> str:
+                            job) -> str:
     """Upload a web-upload file to Telegram from the disk copy.
 
     The link is single-use by design: the file is deleted the moment
@@ -978,20 +1068,20 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
     try:
         fid = upage.verify_download_token(token)
     except upage.TokenError:
-        await status.edit_text(
+        await job.fail(
             "❌ That upload link is invalid or expired. Make a fresh "
             "one with /fileuploadpage.")
         return "failed"
     rec = upage.lookup_file(fid)
     if rec is None:
-        await status.edit_text(
+        await job.fail(
             "❌ That upload link was already used or expired — the "
             "file is gone from the server. Upload it again with /fileuploadpage.")
         return "failed"
     path, name, size = rec["path"], rec["name"], rec["size"]
     if not os.path.exists(path):
         upage.consume(fid)
-        await status.edit_text(
+        await job.fail(
             "❌ The file is no longer on the server. Upload it again "
             "with /fileuploadpage.")
         return "failed"
@@ -1015,12 +1105,14 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
         note_to_sender = (
             f"✅ {name} ({human_bytes(size)}) is now on Telegram "
             f"in the admin's bot PM, and the server copy is deleted.")
-    await status.edit_text(
+    await job.edit(
         f"Uploading {name} ({human_bytes(size)}) from your web upload…")
     try:
         if sender_is_owner:
             await send_files_routed(client, target_chat, [path],
-                                    "uploader", caption=name)
+                                    "uploader", caption=name, job=job,
+                                    user_id=message.from_user.id
+                                    if message.from_user else None)
         else:
             # Tell the owner who sent it, before the file itself,
             # so the file does not arrive anonymously.
@@ -1031,14 +1123,18 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
                     f"📤 Upage upload from {sender_label} — file below:")
             except Exception:
                 pass
-            await send_files(client, target_chat, [path], caption=name)
+            await send_files(client, target_chat, [path], caption=name,
+                             job=job)
+    except JobCancelled:
+        await job.fail("⏹ Cancelled.")
+        return "cancelled"
     except Exception as exc:
-        await status.edit_text(
+        await job.fail(
             f"❌ Telegram upload failed: {exc}\nThe file is still on "
             "the server — you can retry this link.")
         return "failed"
     upage.consume(fid)
-    await status.edit_text(
+    await job.finish(
         note_to_sender or
         f"✅ {name} ({human_bytes(size)}) is now on Telegram, and the "
         f"server copy is deleted.")
@@ -1046,13 +1142,15 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
 
 
 async def _dispatch(client: Client, message: Message, url: str,
-                    status: Message, editor: ThrottledEditor) -> str:
+                    job) -> str:
     """Run the resolver chain.
 
-    Returns "done" | "pending" | "failed" | "blocked" (bandwidth cap).
+    Returns "done" | "pending" | "failed" | "blocked" (bandwidth cap)
+    | "cancelled" (stopped by the owner). `job` is the shared
+    progress line for this link (see core/jobs).
     """
     if stats.bandwidth_blocked():
-        await status.edit_text(stats.bandwidth_pause_text())
+        await job.fail(stats.bandwidth_pause_text())
         return "blocked"
     errors: list[str] = []
     try:
@@ -1064,20 +1162,18 @@ async def _dispatch(client: Client, message: Message, url: str,
             base = urlparse(config.BASE_URL)
             if parsed.netloc == base.netloc \
                     and parsed.path.startswith("/u/"):
-                return await _upage_local_flow(client, message, url,
-                                               status)
+                return await _upage_local_flow(client, message, url, job)
 
         # 1) Terabox gets its own extractor, always first for its domains.
         if terabox.is_terabox_url(url):
             try:
-                picker = await _terabox_flow(client, message, url,
-                                             status, editor)
+                picker = await _terabox_flow(client, message, url, job)
                 return "pending" if picker else "done"
             except SizeBlocked as exc:
-                await status.edit_text(f"❌ {exc}")
+                await job.fail(f"❌ {exc}")
                 return "failed"
             except Exception as exc:
-                await status.edit_text(f"Terabox failed: {exc}")
+                await job.fail(f"Terabox failed: {exc}")
                 return "failed"
 
         # 1b) Custom-site extractors (luluvido etc.) — sites yt-dlp
@@ -1086,10 +1182,10 @@ async def _dispatch(client: Client, message: Message, url: str,
         if site:
             try:
                 prompted = await _custom_flow(client, message, url,
-                                              status, editor, site)
+                                              job, site)
                 return "pending" if prompted else "done"
             except SizeBlocked as exc:
-                await status.edit_text(f"❌ {exc}")
+                await job.fail(f"❌ {exc}")
                 return "failed"
             except FallThrough as exc:
                 # Matched the URL but not the media (a link post, a
@@ -1098,7 +1194,7 @@ async def _dispatch(client: Client, message: Message, url: str,
                 errors.append(
                     f"{site.__name__.rsplit('.', 1)[-1]}: {exc}")
             except Exception as exc:
-                await status.edit_text(
+                await job.fail(
                     f"{site.__name__.rsplit('.', 1)[-1]} failed: {exc}")
                 return "failed"
 
@@ -1107,10 +1203,10 @@ async def _dispatch(client: Client, message: Message, url: str,
 
         # 2) Instagram photo posts are images, not videos.
         if is_post:
-            if await _instagram_carousel(client, message, url, status):
+            if await _instagram_carousel(client, message, url, job):
                 return "done"
             try:
-                prompted = await _gallery_flow(client, message, url, status)
+                prompted = await _gallery_flow(client, message, url, job)
                 return "pending" if prompted else "done"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
@@ -1123,22 +1219,22 @@ async def _dispatch(client: Client, message: Message, url: str,
                            direct_info.get("filename") or "file",
                            allow_split=True)
             except SizeBlocked as exc:
-                await status.edit_text(f"❌ {exc}")
+                await job.fail(f"❌ {exc}")
                 return "failed"
             try:
                 prompted = await _direct_flow(client, message, url, direct_info,
-                                              status, editor)
+                                              job)
                 return "pending" if prompted else "done"
             except Exception as exc:
                 errors.append(f"direct: {exc}")
 
         # 4) yt-dlp — reels and every other video/audio site.
         try:
-            picker = await _ytdlp_flow(client, message, url, status, editor,
+            picker = await _ytdlp_flow(client, message, url, job,
                                         ask_format=not is_reel)
             return "pending" if picker else "done"
         except SizeBlocked as exc:
-            await status.edit_text(f"❌ {exc}")
+            await job.fail(f"❌ {exc}")
             return "failed"
         except Exception as exc:
             errors.append(f"yt-dlp: {exc}")
@@ -1146,13 +1242,13 @@ async def _dispatch(client: Client, message: Message, url: str,
         # 5) gallery-dl also covers many video-page galleries as backup.
         if not is_post:
             try:
-                prompted = await _gallery_flow(client, message, url, status)
+                prompted = await _gallery_flow(client, message, url, job)
                 return "pending" if prompted else "done"
             except SizeBlocked as exc:
                 # A file gallery-dl downloaded turned out too big to
                 # split — retrying it through the scrape would just
                 # download the same giant file a second time.
-                await status.edit_text(f"❌ {exc}")
+                await job.fail(f"❌ {exc}")
                 return "failed"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
@@ -1160,10 +1256,10 @@ async def _dispatch(client: Client, message: Message, url: str,
         # 6) Last resort: scrape the page's meta tags — and, if the
         # static HTML holds nothing, a real browser.
         try:
-            prompted = await _scrape_flow(client, message, url, status, editor)
+            prompted = await _scrape_flow(client, message, url, job)
             return "pending" if prompted else "done"
         except SizeBlocked as exc:
-            await status.edit_text(f"❌ {exc}")
+            await job.fail(f"❌ {exc}")
             return "failed"
         except Exception as exc:
             errors.append(f"scrape: {exc}")
@@ -1186,14 +1282,19 @@ async def _dispatch(client: Client, message: Message, url: str,
                     "YouTube warns if the file isn't a logged-in session; "
                     "3) cookies from a different Google account — YouTube "
                     "sometimes flags the account+IP combo.")
-        await status.edit_text(
+        await job.fail(
             "I couldn't download that with any engine:\n"
             + "\n".join(f"• {e}" for e in errors)
             + hint)
         return "failed"
-    except Exception as exc:  # never leave a stuck status message
+    except JobCancelled:
+        # Stopped by the owner mid-chain: the shared line clears and
+        # a short note says so. Not a failure — no 👎, no failed stat.
+        await job.fail("⏹ Cancelled.")
+        return "cancelled"
+    except Exception as exc:  # never leave a stuck progress line
         try:
-            await status.edit_text(f"Something went wrong: {exc}")
+            await job.fail(f"Something went wrong: {exc}")
         except Exception:
             pass
         return "failed"
@@ -1203,9 +1304,9 @@ def _check_picked_format(job: dict, choice: str) -> dict | None:
     """Refuse a quality-button tap when that format is too big.
 
     Raises SizeBlocked; the callback's except turns it into a
-    "Download failed: …" message on the status line. Returns the
-    picked format dict (None for audio-only / no formats) so the
-    caller can tell a big-file download from a normal one.
+    "Download failed: …" note. Returns the picked format dict
+    (None for audio-only / no formats) so the caller can tell a
+    big-file download from a normal one.
     """
     formats = job.get("formats") or []
     if not formats or choice == "audio":
@@ -1233,12 +1334,52 @@ async def unzip_callback(client: Client, query: CallbackQuery):
         return
     job_id, choice = parts[1], parts[2]
     _prune_unzip_pending()
+    # Picker taps (v1.45.0) don't consume the job — they just flip
+    # a tick and re-render the prompt in place.
+    if choice in ("t", "all", "none"):
+        job = PENDING_UNZIP.get(job_id)
+        if not job:
+            await query.answer("This unzip job expired — send the link "
+                               "again.", show_alert=True)
+            return
+        listed = min(len(job["entries"]), _MAX_LISTED_FILES)
+        if choice == "t" and len(parts) >= 4 and parts[3].isdigit():
+            idx = int(parts[3])
+            if 0 <= idx < listed:
+                if idx in job["selected"]:
+                    job["selected"].discard(idx)
+                else:
+                    job["selected"].add(idx)
+                job["touched"] = True
+        elif choice == "all":
+            job["selected"] = set(range(listed))
+            job["touched"] = True
+        elif choice == "none":
+            job["selected"] = set()
+            job["touched"] = True
+        try:
+            await query.message.edit_text(
+                _unzip_prompt_text(job),
+                reply_markup=_unzip_prompt_markup(job))
+        except Exception:
+            pass
+        await query.answer()
+        return
+    if choice == "go":
+        # Nothing ticked: refuse with a hint instead of unpacking
+        # an empty set (and keep the prompt alive).
+        job = PENDING_UNZIP.get(job_id)
+        if job and job["touched"] and not job["selected"]:
+            await query.answer("Tick at least one file first.",
+                               show_alert=True)
+            return
     job = PENDING_UNZIP.pop(job_id, None)
     if not job:
         await query.answer("This unzip job expired — send the link again.",
                            show_alert=True)
         return
     status = query.message
+    user_id = query.from_user.id if query.from_user else None
     job_dir, zip_path = job["job_dir"], job["path"]
     try:
         if choice == "asis":
@@ -1246,7 +1387,7 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             await status.edit_text("Uploading the archive…")
             await send_files_split(client, job["chat_id"], [zip_path],
                                    "uploader", caption=job["caption"],
-                                   status_msg=status)
+                                   status_msg=status, user_id=user_id)
         else:
             await query.answer("Unpacking…")
             await status.edit_text("Unpacking…")
@@ -1255,6 +1396,16 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                 info = unzip.archive_info(zip_path)
             except Exception:
                 info = {"count": 0}
+            # Tick-selected files only (v1.45.0): when the owner
+            # touched the picker, only the ticked entries come
+            # out — unlisted files beyond the first 10 are skipped
+            # too. Untouched, everything comes out as before.
+            only_names = None
+            total = info["count"]
+            if job.get("touched"):
+                only_names = {job["entries"][i][0]
+                              for i in job["selected"]}
+                total = len(only_names)
             # One by one: extract one file, upload it, delete
             # it, then extract the next — disk never holds
             # more than the archive plus one file.
@@ -1262,7 +1413,8 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             failed: list[str] = []
             sent_count = 0
             bandwidth_stopped = False
-            gen = unzip.iter_extracted(zip_path, extract_dir, skipped)
+            gen = unzip.iter_extracted(zip_path, extract_dir, skipped,
+                                       only_names)
             try:
                 for path in gen:
                     if stats.bandwidth_blocked():
@@ -1271,7 +1423,7 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                     try:
                         await status.edit_text(
                             f"Uploading {sent_count + 1} of "
-                            f"{info['count']}: "
+                            f"{total}: "
                             f"{os.path.basename(path)}…")
                     except Exception:
                         pass
@@ -1290,7 +1442,7 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                         sent_paths = await send_files_split(
                             client, job["chat_id"], [path],
                             "uploader", caption=file_caption,
-                            status_msg=status)
+                            status_msg=status, user_id=user_id)
                         sent_count += 1
                     except Exception as exc:
                         failed.append(f"{os.path.basename(path)} ({exc})")
@@ -1311,7 +1463,7 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                     + ".\nSending the zip itself as-is instead.")
                 await send_files_split(client, job["chat_id"], [zip_path],
                                        "uploader", caption=job["caption"],
-                                       status_msg=status)
+                                       status_msg=status, user_id=user_id)
                 return
             if bandwidth_stopped:
                 try:
@@ -1373,8 +1525,16 @@ async def format_callback(client: Client, query: CallbackQuery):
             pass
         return
     await query.answer("Starting…")
-    status = query.message
-    editor = ThrottledEditor(status)
+    # The pick is made — the picker message goes away and the
+    # download registers a fresh line in the shared progress
+    # message (v1.45.0).
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    user_id = query.from_user.id if query.from_user else None
+    live = await jobs.register(client, job["chat_id"],
+                               _job_label(job["url"]))
     fake_message = query.message  # carries chat.id for the send helpers
 
     try:
@@ -1387,19 +1547,21 @@ async def format_callback(client: Client, query: CallbackQuery):
                            allow_split=True)
             prompted = await _terabox_download(
                 client, fake_message, job["url"],
-                index, info, status, editor,
+                index, info, live,
                 big_file=bool(info)
-                and (info.get("size") or 0) > config.MAX_FILE_SIZE)
+                and (info.get("size") or 0) > config.MAX_FILE_SIZE,
+                user_id=user_id)
         else:
             choice = parts[2]
             picked = _check_picked_format(job, choice)
             prompted = await _ytdlp_download(
                 client, fake_message, job["url"], job.get("title", "Download"),
-                status, editor,
+                live,
                 format_id=None if choice in ("best", "audio") else choice,
                 audio_only=choice == "audio",
                 big_file=bool(picked)
-                and (picked.get("filesize") or 0) > config.MAX_FILE_SIZE)
+                and (picked.get("filesize") or 0) > config.MAX_FILE_SIZE,
+                user_id=user_id)
         if prompted:
             # Unzip prompt is on screen; the unzip callback will
             # finish (and react to) the job. Do not mark it done yet.
@@ -1407,11 +1569,40 @@ async def format_callback(client: Client, query: CallbackQuery):
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👍")
         stats.record_job("uploader", ok=True)
+    except JobCancelled:
+        await live.fail("⏹ Cancelled.")
     except Exception as exc:
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👎")
         stats.record_job("uploader", ok=False)
-        try:
-            await status.edit_text(f"Download failed: {exc}")
-        except Exception:
-            pass
+        await live.fail(f"Download failed: {exc}")
+    finally:
+        await live.finish()
+
+
+@Client.on_callback_query(filters.regex(r"^jb:stop:"))
+async def stop_job_callback(client: Client, query: CallbackQuery):
+    """⏹ Stop button on the shared progress message (v1.45.0).
+
+    Flags the job cancelled — the download/upload loops notice
+    within a second or two (progress callbacks raise JobCancelled,
+    yt-dlp's hook aborts the transfer, gallery-dl's process is
+    killed) and the job's line clears with a "Cancelled." note.
+    Anyone admin may stop any job in the chat: the shared message
+    is one per chat, and a stuck download blocks the job slots
+    for everyone in it.
+    """
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) < 3:
+        await query.answer("Stale button.")
+        return
+    job = jobs.get_job(parts[2])
+    if job is None:
+        await query.answer("That job already finished.")
+        return
+    job.cancel()
+    await query.answer("Stopping…")
+    await job.edit("⏹ Stopping…", force=True)

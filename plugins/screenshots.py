@@ -90,7 +90,8 @@ async def screenshot_callback(client: Client, query):
         await status.edit_text(f"📸 Sending {len(shots)} screenshot(s)…")
         await send_files_routed(
             client, dest, shots, "uploader",
-            caption=f"Screenshots from {name}", status_msg=status)
+            caption=f"Screenshots from {name}", status_msg=status,
+            user_id=query.from_user.id if query.from_user else None)
         stats.record_job("screenshots", ok=True)
         await status.edit_text(
             f"✅ Sent {len(shots)} screenshot(s) from {name}.",

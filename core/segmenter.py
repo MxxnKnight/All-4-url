@@ -284,7 +284,9 @@ async def run_segment_job(client, message, url: str, info: dict,
                 await send_files_routed(client, message.chat.id,
                                         [out_path], "uploader",
                                         caption=caption,
-                                        status_msg=status)
+                                        status_msg=status,
+                                        user_id=message.from_user.id
+                                        if message.from_user else None)
                 lines.append(f"• Part {part_no}: "
                              f"{fmt_time(start)}–{fmt_time(end)} · "
                              f"{human_bytes(actual_size)}")

@@ -270,7 +270,8 @@ async def resolve(url: str) -> dict:
         "may have changed its player")
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     """Resolve the page and download the video; returns file paths."""
     info = await resolve(url)
     title = safe_filename(info["title"], "lulustream video")
@@ -280,7 +281,8 @@ async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
         from core.extractors.ytdlp_engine import download as ytdlp_download
         paths = await ytdlp_download(media_url, job_dir,
                                      progress_cb=progress_cb,
-                                     headers={"Referer": referer})
+                                     headers={"Referer": referer},
+                                     cancel_check=cancel_check)
         # Give the file the page's title instead of yt-dlp's
         # playlist-derived name (subtitles, if any, keep theirs).
         media = [p for p in paths

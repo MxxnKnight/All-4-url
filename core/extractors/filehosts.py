@@ -69,6 +69,20 @@ HOSTS = {
     "flash-files.com": {"name": "FlashFiles"},
     # Next.js-hosted video/file panel.
     "myupload.us": {"name": "myUpload"},
+    # XFileSharing panels added from the WZML-X round-3 review
+    # (2026-11-18). None of the three could be verified live from
+    # the sandbox: racaty.net does not answer there at all (and
+    # public status reports disagree on whether it is even alive),
+    # hxfile.co's free downloads need login cookies per WZML-X (the
+    # walker has none, so it will fail honestly on a login wall),
+    # and devuploads.com mints its download tokens through a
+    # JavaScript dance the walker cannot do — the walker tries the
+    # plain XFS forms and, if they do not open the gate, the job
+    # falls through to the browser step. A real link from the owner
+    # is the live proof for each.
+    "racaty.net": {"name": "Racaty"},
+    "hxfile.co": {"name": "Hxfile"},
+    "devuploads.com": {"name": "DevUploads"},
 }
 
 #: Bare (scheme-less) or www-prefixed spellings of the same hosts.
@@ -320,7 +334,8 @@ async def resolve(url: str) -> dict:
             ("title", "media_url", "approx_size", "is_playlist")}
 
 
-async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
+async def download(url: str, job_dir: str, progress_cb=None,
+                     cancel_check=None) -> list[str]:
     profile = _profile(url)
     info = await _walk(url, images=profile.get("images", False))
     title = safe_filename(info["title"], f"{profile['name']} file")
@@ -329,7 +344,8 @@ async def download(url: str, job_dir: str, progress_cb=None) -> list[str]:
         from core.extractors.ytdlp_engine import download as ytdlp_download
         paths = await ytdlp_download(media_url, job_dir,
                                      progress_cb=progress_cb,
-                                     headers={"Referer": info["referer"]})
+                                     headers={"Referer": info["referer"]},
+                                     cancel_check=cancel_check)
         media = [p for p in paths
                  if os.path.splitext(p)[1].lower() in
                  (".mp4", ".mkv", ".webm", ".ts")]
