@@ -9,14 +9,86 @@ from pyrogram.errors import FloodPremiumWait, FloodWait, SlowmodeWait
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
                             InputMediaDocument, InputMediaPhoto)
 
-from core import splitter, stats
+from core import splitter, stats, tmdb
+from core.filename_parser import clean_display, parse_filename
 from core.splitter import is_split_part
 from core.utils import (ThrottledEditor, guess_kind, human_bytes,
                         progress_text, run_blocking)
 
 
+#: ISO 639 language codes (2- and 3-letter) to display names, for
+#: the audio/subtitle languages in upload captions (v1.44.0).
+#: ffprobe usually reports 3-letter codes in stream tags.
+_LANG_NAMES = {
+    "en": "English", "eng": "English",
+    "hi": "Hindi", "hin": "Hindi",
+    "ml": "Malayalam", "mal": "Malayalam",
+    "ta": "Tamil", "tam": "Tamil",
+    "te": "Telugu", "tel": "Telugu",
+    "kn": "Kannada", "kan": "Kannada",
+    "mr": "Marathi", "mar": "Marathi",
+    "bn": "Bengali", "ben": "Bengali",
+    "pa": "Punjabi", "pan": "Punjabi",
+    "gu": "Gujarati", "guj": "Gujarati",
+    "or": "Odia", "ori": "Odia",
+    "as": "Assamese", "asm": "Assamese",
+    "ur": "Urdu", "urd": "Urdu",
+    "es": "Spanish", "spa": "Spanish",
+    "fr": "French", "fra": "French", "fre": "French",
+    "de": "German", "deu": "German", "ger": "German",
+    "it": "Italian", "ita": "Italian",
+    "pt": "Portuguese", "por": "Portuguese",
+    "ru": "Russian", "rus": "Russian",
+    "ja": "Japanese", "jpn": "Japanese",
+    "ko": "Korean", "kor": "Korean",
+    "zh": "Chinese", "zho": "Chinese", "chi": "Chinese",
+    "ar": "Arabic", "ara": "Arabic",
+    "nl": "Dutch", "nld": "Dutch", "dut": "Dutch",
+    "sv": "Swedish", "swe": "Swedish",
+    "tr": "Turkish", "tur": "Turkish",
+    "id": "Indonesian", "ind": "Indonesian",
+    "ms": "Malay", "msa": "Malay", "may": "Malay",
+    "th": "Thai", "tha": "Thai",
+    "vi": "Vietnamese", "vie": "Vietnamese",
+    "pl": "Polish", "pol": "Polish",
+    "uk": "Ukrainian", "ukr": "Ukrainian",
+}
+
+#: Video codecs that are still images, not video — cover art
+#: embedded in audio files (v1.44.0). An mp3 with a cover must
+#: not be sent as a video.
+_IMAGE_CODECS = {"mjpeg", "png", "bmp", "gif", "webp", "tiff"}
+
+
+def _lang_name(code: str) -> str | None:
+    """'mal' -> 'Malayalam'; None for unknown/undetermined codes."""
+    if not code:
+        return None
+    code = code.strip().lower()
+    if code in {"und", "unknown", "none", "zxx", "mis"}:
+        return None
+    return _LANG_NAMES.get(code, code.upper() if len(code) <= 3 else code)
+
+
+def _quality_bucket(height: int) -> str:
+    """1080 -> '1080p' (the label moon reads at a glance)."""
+    height = int(height or 0)
+    if height <= 0:
+        return ""
+    for cap in (480, 540, 720, 1080, 2160, 4320):
+        if height <= cap:
+            return f"{cap}p"
+    return f"{height}p"
+
+
 def _ffprobe(path: str) -> dict:
-    """Best-effort width/height/duration for a video ({} when unavailable)."""
+    """Best-effort media facts for a file ({} when unavailable).
+
+    Keys: width/height/duration (video only), has_video (a REAL
+    video stream — image codecs like mjpeg cover art don't count),
+    has_audio, audio_langs/sub_langs (display names, de-duplicated,
+    in stream order), probed (True when ffprobe actually ran).
+    """
     import subprocess
 
     try:
@@ -26,18 +98,68 @@ def _ffprobe(path: str) -> dict:
             capture_output=True, text=True, timeout=20,
         )
         data = json.loads(out.stdout or "{}")
-        info = {}
+        info: dict = {"probed": True}
+        audio_langs: list[str] = []
+        sub_langs: list[str] = []
         for stream in data.get("streams", []):
-            if stream.get("codec_type") == "video":
-                info["width"] = stream.get("width") or 0
-                info["height"] = stream.get("height") or 0
-                break
+            ctype = stream.get("codec_type", "")
+            if ctype == "video":
+                codec = (stream.get("codec_name") or "").lower()
+                if codec in _IMAGE_CODECS:
+                    continue  # cover art, not a video stream
+                if "width" not in info:
+                    info["width"] = stream.get("width") or 0
+                    info["height"] = stream.get("height") or 0
+                info["has_video"] = True
+            elif ctype == "audio":
+                info["has_audio"] = True
+                name = _lang_name(
+                    (stream.get("tags") or {}).get("language", ""))
+                if name and name not in audio_langs:
+                    audio_langs.append(name)
+            elif ctype == "subtitle":
+                name = _lang_name(
+                    (stream.get("tags") or {}).get("language", ""))
+                if name and name not in sub_langs:
+                    sub_langs.append(name)
+        if audio_langs:
+            info["audio_langs"] = audio_langs
+        if sub_langs:
+            info["sub_langs"] = sub_langs
         duration = float(data.get("format", {}).get("duration") or 0)
         if duration:
             info["duration"] = int(duration)
         return info
     except Exception:
         return {}
+
+
+async def _poster_thumb(video_path: str) -> str | None:
+    """A TMDB poster as the video thumbnail (v1.44.0).
+
+    Needs a TMDB token configured (else None immediately, no
+    network) and a parseable title from the filename. The poster
+    bytes are written next to the video; the caller deletes the
+    file after sending, like a frame thumbnail. Any failure
+    returns None and the frame thumbnail is used instead.
+    """
+    parsed = parse_filename(os.path.basename(video_path))
+    title = parsed.get("title") or ""
+    if not title:
+        return None
+    try:
+        data = await tmdb.get_poster(title, parsed.get("year"))
+    except Exception:
+        return None
+    if not data:
+        return None
+    thumb = video_path + ".poster.jpg"
+    try:
+        with open(thumb, "wb") as fh:
+            fh.write(data)
+        return thumb if os.path.getsize(thumb) > 0 else None
+    except OSError:
+        return None
 
 
 def _make_thumb(video_path: str) -> str | None:
@@ -114,11 +236,22 @@ async def _rich_caption(caption: str, paths: list[str]) -> str:
     """Append a size/duration/quality line to an upload caption.
 
     Total size covers every path (for split parts, the whole file).
-    Duration + resolution come from ffprobing the first path when
-    it is a video (best-effort — a split part's header usually still
+    Duration + resolution + quality bucket + audio/subtitle
+    languages come from ffprobing the first path when it is a
+    video (best-effort — a split part's header usually still
     carries the full duration). When nothing can be measured, the
     caption is returned unchanged.
+
+    When a single file is sent with no caption, or with its raw
+    filename as the caption (the direct/custom flows), the
+    caption head becomes the file's clean title ("Show S01E01")
+    instead of the messy release name (v1.44.0).
     """
+    if len(paths) == 1 and (not caption
+                            or caption == os.path.basename(paths[0])):
+        clean = clean_display(os.path.basename(paths[0]))
+        if clean:
+            caption = clean
     total = 0
     for path in paths:
         try:
@@ -135,6 +268,19 @@ async def _rich_caption(caption: str, paths: list[str]) -> str:
             bits.append(_fmt_duration(meta["duration"]))
         if meta.get("width") and meta.get("height"):
             bits.append(f"{meta['width']}x{meta['height']}")
+            bits.append(_quality_bucket(meta["height"]))
+        audio = meta.get("audio_langs") or []
+        if audio:
+            shown = audio[:4]
+            bits.append("Audio: " + ", ".join(shown)
+                        + (f" +{len(audio) - 4} more"
+                           if len(audio) > 4 else ""))
+        subs = meta.get("sub_langs") or []
+        if subs:
+            shown = subs[:4]
+            bits.append("Subs: " + ", ".join(shown)
+                        + (f" +{len(subs) - 4} more"
+                           if len(subs) > 4 else ""))
     if not bits:
         return caption
     line = " • ".join(bits)
@@ -179,19 +325,31 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
     split parts are unaffected."""
     kind = guess_kind(path)
     meta: dict = {}
-    if kind == "document" and not force_document:
-        # A video wearing a wrong/no extension (or an unknown MIME in
-        # this container) would leave as a document. Trust the CONTENT
-        # instead: if ffprobe finds a video stream, send it as video.
-        # Split parts (.001/.002) are the exception: they are byte
-        # ranges, not videos — even though the FIRST part still
-        # carries the video header ffprobe would happily recognise.
-        # Sending it as video would show a broken clip with a wrong
-        # duration, so parts always stay documents.
+    if kind in ("document", "video") and not force_document:
+        # Trust the CONTENT, not the extension (v1.44.0): a video
+        # wearing a wrong/no extension (or an unknown MIME in this
+        # container) would leave as a document, an audio file with
+        # cover art would leave as a video (its mjpeg "video"
+        # stream is just the cover), and an audio file with a
+        # video extension would leave as a broken video. ffprobe
+        # now reports has_video (real video streams only — image
+        # codecs don't count) and has_audio, so the kind follows
+        # the streams. Split parts (.001/.002) are the exception:
+        # they are byte ranges, not videos — even though the FIRST
+        # part still carries the video header ffprobe would happily
+        # recognise. Sending it as video would show a broken clip
+        # with a wrong duration, so parts always stay documents.
+        # When the probe itself fails ({}), the extension kind
+        # stands — a failed probe must never demote a real video.
         if not is_split_part(path):
             meta = await run_blocking(_ffprobe, path)
-            if meta.get("duration") or meta.get("width"):
-                kind = "video"
+            if meta.get("probed"):
+                if meta.get("has_video"):
+                    kind = "video"
+                elif meta.get("has_audio"):
+                    kind = "audio"
+                elif kind == "video":
+                    kind = "document"
     if force_document and kind == "video":
         kind = "document"
     editor = ThrottledEditor(status_msg) if status_msg is not None else None
@@ -211,7 +369,9 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
     if kind == "video":
         if not meta:
             meta = await run_blocking(_ffprobe, path)
-        thumb = await run_blocking(_make_thumb, path)
+        thumb = await _poster_thumb(path)
+        if thumb is None:
+            thumb = await run_blocking(_make_thumb, path)
         sent = await _with_flood_retry(
             lambda: client.send_video(
                 chat_id, path, caption=caption, supports_streaming=True,

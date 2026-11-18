@@ -41,7 +41,9 @@ HF PRO ($9/mo).
      cookie; either cookie alone enables the Terabox cookie route),
      `REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET` (if used — Reddit
      app login for the OAuth extractor; without them Reddit stays
-     on gallery-dl + cookies).
+     on gallery-dl + cookies), `TMDB_API_KEY` or
+     `TMDB_ACCESS_TOKEN` (if used — free from themoviedb.org;
+     videos get real posters as thumbnails instead of frames).
    - Variables: `OWNER_ID`, `SUDO_USERS` (if any), `DB_NAME=all4url`,
      `PORT=7860`, `BASE_URL=https://<user>-<space>.hf.space`
      (no trailing slash, no `/app`), `LINK_EXPIRY_HOURS=72`,

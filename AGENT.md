@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.43.0** (2026-11-18).
+- **Current version: v1.44.0** (2026-11-18).
 
 ## How moon works — the contract
 
@@ -267,8 +267,43 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-18) — v1.43.0
+## Current status (2026-11-18) — v1.44.0
 
+- v1.44.0 is the WZML-X round-2 batch (moon's "Make all" on the
+  7-item pick-list; ideas/patterns only, AGPL, no copy-paste):
+  (1) clean filenames — new core/filename_parser.py (title/year/
+  S-E/quality/clean; hex names yield no title; quality read
+  before bracket-strip so [1080p] counts); captions show the
+  clean title when the caption was the raw filename, the unzip
+  prompt header + entry list show cleaned names, each unzipped
+  file goes out under its own clean title. (2) TMDB posters —
+  new core/tmdb.py (v4 token preferred, v3 key fallback, no
+  token = None before any network, in-memory cache incl.
+  misses); sender tries the poster before the frame thumbnail.
+  Needs moon's free TMDB key as a Space Secret (TMDB_API_KEY
+  or TMDB_ACCESS_TOKEN) — without it, frames as before.
+  (3) captions gain a quality bucket + audio/subtitle languages
+  from ffprobe (sender._ffprobe now reports has_video/has_audio/
+  audio_langs/sub_langs/probed; language map covers 2- and
+  3-letter codes). (4) smarter file typing — send_file follows
+  the streams, not the extension: image-codec "video" streams
+  (mjpeg/png cover art) don't count as video, audio-only files
+  send as audio, and a failed probe keeps the extension kind.
+  (5) /metadata — new plugins/metadata.py (reply to a video/
+  audio file, `key=value | key=value`, ffmpeg stream-copy
+  remux; menu is 24 commands now). (6) .rar/.7z unpacking —
+  core/unzip.py generalised (archive_kind/is_archive_file/
+  archive_info; 7z l -slt listing + 7z e one entry at a time;
+  p7zip-full in the Dockerfile; prompt + /unzip + file menu
+  all say Unpack now; the `unzip:` callback prefix is kept).
+  (7) .txt file of links — plugins/filetolink.py intercepts
+  .txt documents (≤1 MB, ≤50 links, one per line) and runs
+  them through the shared _run_links helper (url_handler's
+  loop, extracted unchanged). Verified: 33 checks in
+  /tmp/test_v144_parser_tmdb.py + 47 in /tmp/test_v144.py
+  (real ffmpeg fixtures for the ffprobe/language/remux checks,
+  mocked 7z for the rar/7z listing + extraction — no 7z binary
+  in the sandbox).
 - v1.43.0 fixes the season-zip gap (moon's order): a zip link
   over 2 GB used to arrive as .zip.001/.002 parts with NO unzip
   question, because every dispatch flow split first and prompted

@@ -12,7 +12,8 @@ File types, plainly:
     MIME is video/* or whose extension is a video extension (an mp4
     sent as a document is still a video, just wearing a document
     coat). Only video content gets Convert / Screenshots / Sample.
-  * zip = a document whose name ends in .zip. Only zips get Unzip.
+  * archive = a document whose name ends in .zip/.rar/.7z. Only
+    archives get Unpack.
   * everything else gets Links + MediaInfo + Close only — converting
     a PDF to a video, or screenshotting a PDF, would only fail.
 """
@@ -25,7 +26,7 @@ from core.utils import VIDEO_EXTS, human_bytes
 
 
 def file_info(message):
-    """(name, size, mime, kind, is_video, is_zip) for a media message."""
+    """(name, size, mime, kind, is_video, is_archive) for a media message."""
     kind = None
     media = None
     for k in ("video", "document", "audio", "voice", "animation"):
@@ -44,8 +45,8 @@ def file_info(message):
     ext = os.path.splitext(name)[1].lower()
     is_video = kind in ("video", "animation") \
         or mime.startswith("video/") or ext in VIDEO_EXTS
-    is_zip = name.lower().endswith(".zip")
-    return (name, size, mime, kind, is_video, is_zip)
+    is_archive = ext in {".zip", ".rar", ".7z"}
+    return (name, size, mime, kind, is_video, is_archive)
 
 
 def menu_text(name, size):
@@ -53,7 +54,7 @@ def menu_text(name, size):
             f"What do you want to do with this file?")
 
 
-def main_menu_markup(chat_id, msg_id, is_video, is_zip):
+def main_menu_markup(chat_id, msg_id, is_video, is_archive):
     """The file menu itself. MediaInfo reuses the existing
     ``mi:<chat>:<msg>`` callback, so that button needs no new handler."""
     base = f"fm:{chat_id}:{msg_id}"
@@ -71,8 +72,8 @@ def main_menu_markup(chat_id, msg_id, is_video, is_zip):
                                  callback_data=f"{base}:shot"),
             InlineKeyboardButton("🎬 Sample video",
                                  callback_data=f"{base}:samp")])
-    if is_zip:
-        rows.append([InlineKeyboardButton("📂 Unzip & send contents",
+    if is_archive:
+        rows.append([InlineKeyboardButton("📂 Unpack & send contents",
                                           callback_data=f"{base}:unzip")])
     rows.append([InlineKeyboardButton("❌ Close",
                                       callback_data=f"{base}:close")])

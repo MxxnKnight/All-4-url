@@ -64,17 +64,28 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >re-send it as the other type (video ↔ document, same file, no
 >re-upload). Files sent to me also get a menu with links,
 >MediaInfo, Convert, Screenshots (1/3/5/10), Sample video
->(15/30/60s from the middle), Unzip (zips only), and Close.
->**Unzip**: if a downloaded file is a zip, I'll ask whether to unzip
->it and send the contents instead (caps: zip ≤ 20 GB, unzipped
->total ≤ 20 GB, ≤ 1000 files, extracted and sent one by one so
->disk never holds more than the zip plus one file — bigger
->zips get a plain "exceeds"
->message and are sent as-is). A video inside that's over 2 GB
->arrives split into .mkv.001/.002 parts. The question comes
->even for a zip over 2 GB, and it lists what's inside so you
->can see the files before choosing. Or send me a zip and
->reply to it with `/unzip` and I'll unzip that one the same way.
+>(15/30/60s from the middle), Unpack (archives), and Close.
+>**Metadata**: reply to a video/audio file with `/metadata
+>title=Name | artist=Who` and I'll write those tags into a
+>copy and send it back (no re-encoding, the file itself is
+>untouched). `/mediainfo` still does the reading.
+>**Unzip**: if a downloaded file is a .zip/.rar/.7z archive,
+>I'll ask whether to unpack it and send the contents instead
+>(caps: archive ≤ 20 GB, unpacked total ≤ 20 GB, ≤ 1000 files,
+>extracted and sent one by one so disk never holds more than
+>the archive plus one file — bigger archives get a plain
+>"exceeds" message and are sent as-is). A video inside that's
+>over 2 GB arrives split into .mkv.001/.002 parts. The question
+>comes even for an archive over 2 GB, and it lists what's
+>inside (cleaned episode names) so you can see the files
+>before choosing. Or send me an archive and reply to it with
+>`/unzip` and I'll unpack that one the same way.
+>**Clean names**: messy release names are tidied before
+>sending — captions show "Show S01E01" instead of
+>"Show.S01E01.720p.WEB-DL.x264-GROUP", and video captions also
+>list the audio and subtitle languages inside. With a TMDB
+>token set, videos arrive with the real poster as the
+>thumbnail instead of a video frame.
 >**Join split archives**: `/joinzip <link1> <link2> …` — send ALL
 >the links of one split archive in one message (like
 >`movie.zip.001`, `movie.zip.002`, …). I'll download the parts,
@@ -106,7 +117,9 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 SECTION_UPLOADER = """📥 **URL Uploader**
 
 Just send any link in this chat — or several links in one message,
-and I'll download them one after another (up to 10 at a time):
+and I'll download them one after another (up to 10 at a time).
+For bigger batches, send me a .txt file with one link per line
+(up to 50) and I'll work through the whole file the same way:
 • Videos/audio from YouTube, Instagram, TikTok, X, Reddit, … (yt-dlp,
   with quality buttons when several resolutions are offered)
 • Instagram photo posts & carousels, Pinterest, Pixiv galleries (gallery-dl)
@@ -120,7 +133,7 @@ SECTION_FILETOLINK = """🔗 **File-to-Link**
 Send or forward any file **right here in this chat** and I'll reply
 with a menu instead of dumping links directly: Generate links,
 MediaInfo, Convert (video ↔ document), Screenshots, Sample video,
-Unzip (zips only), Close — each button opens its own sub-menu.
+Unpack (archives), Close — each button opens its own sub-menu.
 
 No channel needed: the links read the file back from the message you
 sent here — so don't delete that message, or the links break.

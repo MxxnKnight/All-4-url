@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
 # ffmpeg powers yt-dlp merging and the bot's video thumbnails/probing;
-# mediainfo powers the /mediainfo partial-probe reports.
+# mediainfo powers the /mediainfo partial-probe reports; p7zip-full
+# powers .rar/.7z listing + extraction (core/unzip.py).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg mediainfo \
+    && apt-get install -y --no-install-recommends ffmpeg mediainfo p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
 # Playwright + Chromium for the headless browser scraper

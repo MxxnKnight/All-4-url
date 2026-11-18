@@ -33,6 +33,7 @@ import config
 from core.extractors import (browser_scan, gallery_engine, scrape,
                              site_registry, terabox)
 from core import splitter, stats, unzip, upage
+from core.filename_parser import clean_display
 from core.extractors.direct import (check_direct, download_file,
                                     is_playlist_url, safe_filename)
 from core.extractors.player_scan import FallThrough, HostError
@@ -79,24 +80,26 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
     the owner gets a persistent "exceeds" message and the zip
     itself is sent as-is.
     """
-    if len(paths) != 1 or not unzip.is_zip_file(paths[0]):
+    if len(paths) != 1 or not unzip.is_archive_file(paths[0]):
         return False
     zip_path = paths[0]
+    kind = unzip.archive_kind(zip_path) or "zip"
+    kind_label = {"zip": "Zip", "rar": "Rar", "7z": "7z"}.get(kind, "Archive")
     try:
         if os.path.getsize(zip_path) > unzip.MAX_ZIP_BYTES:
             raise unzip.ZipTooBig(
-                f"this zip is {human_bytes(os.path.getsize(zip_path))} — "
-                f"over the {human_bytes(unzip.MAX_ZIP_BYTES)} unzip "
-                f"limit, so I can't unzip it here")
-        info = unzip.zip_info(zip_path)
+                f"this archive is {human_bytes(os.path.getsize(zip_path))} — "
+                f"over the {human_bytes(unzip.MAX_ZIP_BYTES)} unpack "
+                f"limit, so I can't unpack it here")
+        info = unzip.archive_info(zip_path)
         unzip.check_disk_room(zip_path, info["largest"])
     except unzip.ZipTooBig as exc:
         # Persistent message (status is deleted after a normal send).
         try:
             await client.send_message(
                 chat_id,
-                f"📦 This zip is a zip, but I can't unzip it: {exc}\n"
-                f"Sending the zip itself as-is instead.")
+                f"📦 This archive is a {kind}, but I can't unpack it: {exc}\n"
+                f"Sending the archive itself as-is instead.")
         except Exception:
             pass
         return False
@@ -111,31 +114,37 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
                              "ts": int(time.time())}
     # What's inside, so the owner can see the episodes before
     # choosing (v1.43.0): the first few entries with sizes, then
-    # a count of the rest. Names are cut from the left — the
-    # episode number and extension sit at the end.
+    # a count of the rest. Names are shown cleaned (v1.44.0) —
+    # "Show S01E01" instead of the messy release name — and cut
+    # from the left, since the episode number and extension sit
+    # at the end.
     entries = info.get("entries") or [(name, 0)
                                       for name in info["files"]]
     listed = []
     for name, size in entries[:_MAX_LISTED_FILES]:
-        shown = name if len(name) <= 55 else "…" + name[-54:]
+        shown = clean_display(name) or name
+        shown = shown if len(shown) <= 55 else "…" + shown[-54:]
         listed.append(f"• {shown} ({human_bytes(size)})")
     if len(entries) > _MAX_LISTED_FILES:
         listed.append(f"• …and {len(entries) - _MAX_LISTED_FILES} more")
     listing = ("\n" + "\n".join(listed)) if listed else ""
+    # Header: the archive's clean title when it parses to one.
+    header = clean_display(os.path.basename(zip_path)) \
+        or os.path.basename(zip_path)
     try:
         await status.edit_text(
-            f"📦 **{os.path.basename(zip_path)}**\n"
-            f"Zip: {human_bytes(os.path.getsize(zip_path))} · "
-            f"unzips to {human_bytes(info['total'])} · "
+            f"📦 **{header}**\n"
+            f"{kind_label}: {human_bytes(os.path.getsize(zip_path))} · "
+            f"unpacks to {human_bytes(info['total'])} · "
             f"{info['count']} file(s)"
             + listing
             + (f"\n⚠️ {len(info['encrypted'])} password-protected "
                f"file(s) will be skipped" if info["encrypted"] else "")
-            + "\n\nUnzip it and send the contents, or send the zip itself?",
+            + "\n\nUnpack it and send the contents, or send the archive itself?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Unzip & send contents",
+                [InlineKeyboardButton("📂 Unpack & send contents",
                                       callback_data=f"unzip:{job_id}:go")],
-                [InlineKeyboardButton("📦 Send zip as-is",
+                [InlineKeyboardButton("📦 Send archive as-is",
                                       callback_data=f"unzip:{job_id}:asis")],
             ]))
     except Exception:
@@ -906,23 +915,24 @@ async def gallery_cmd(client: Client, message: Message):
                                        "mediainfo", "live", "pipe",
                                        "vidsplit", "browser", "gallery",
                                        "joinzip"]))
-async def url_handler(client: Client, message: Message):
-    urls = _extract_urls(message)
-    if not urls:
-        return
-    await react(message, "👀")
-    if len(urls) > MAX_MULTI_LINKS:
-        await message.reply_text(
-            f"Taking the first {MAX_MULTI_LINKS} links — the rest were "
-            "skipped. Send them in another message.")
-        urls = urls[:MAX_MULTI_LINKS]
+async def _run_links(client: Client, message: Message,
+                     urls: list[str]) -> None:
+    """Run links through _dispatch, one status message each.
+
+    Shared by url_handler (links in a chat message) and the .txt
+    file handler (plugins/filetolink.py): one after another — each
+    link is a full download + upload job, and running them in
+    parallel would fight over the 2 CPUs and the job slots. A
+    failed link never stops the rest; a "pending" link (a picker
+    is on screen) resolves through its own button callback, so
+    the loop moves on; a "blocked" link (bandwidth cap) stops
+    the loop, since the rest would block too. The final reaction
+    (👍 all done, 👎 all failed) goes on the source message —
+    "pending" gets none, since its button callback reacts when
+    the job actually finishes.
+    """
     total = len(urls)
     outcomes = []
-    # One after another: each link is a full download + upload job,
-    # and running them in parallel would fight over the 2 CPUs and
-    # the job slots. A failed link never stops the rest; a
-    # "pending" link (a picker is on screen) resolves through its
-    # own button callback, so the loop moves on.
     for i, url in enumerate(urls, 1):
         label = f" ({i} of {total})" if total > 1 else ""
         status = await message.reply_text(f"Working on it…{label}")
@@ -935,13 +945,24 @@ async def url_handler(client: Client, message: Message):
             stats.record_job("uploader", ok=False)
         elif outcome == "blocked":
             break  # bandwidth cap: the rest would block too
-    # "pending" = a picker is on screen; the reaction comes from the
-    # button callback when the job actually finishes.
     settled = [o for o in outcomes if o in ("done", "failed")]
     if settled and all(o == "done" for o in settled):
         await react(message, "👍")
     elif settled and all(o == "failed" for o in settled):
         await react(message, "👎")
+
+
+async def url_handler(client: Client, message: Message):
+    urls = _extract_urls(message)
+    if not urls:
+        return
+    await react(message, "👀")
+    if len(urls) > MAX_MULTI_LINKS:
+        await message.reply_text(
+            f"Taking the first {MAX_MULTI_LINKS} links — the rest were "
+            "skipped. Send them in another message.")
+        urls = urls[:MAX_MULTI_LINKS]
+    await _run_links(client, message, urls)
 
 
 async def _upage_local_flow(client: Client, message: Message, url: str,
@@ -1221,22 +1242,22 @@ async def unzip_callback(client: Client, query: CallbackQuery):
     job_dir, zip_path = job["job_dir"], job["path"]
     try:
         if choice == "asis":
-            await query.answer("Sending the zip…")
-            await status.edit_text("Uploading the zip…")
+            await query.answer("Sending the archive…")
+            await status.edit_text("Uploading the archive…")
             await send_files_split(client, job["chat_id"], [zip_path],
                                    "uploader", caption=job["caption"],
                                    status_msg=status)
         else:
-            await query.answer("Unzipping…")
-            await status.edit_text("Unzipping…")
+            await query.answer("Unpacking…")
+            await status.edit_text("Unpacking…")
             extract_dir = os.path.join(job_dir, "extracted")
             try:
-                info = unzip.zip_info(zip_path)
+                info = unzip.archive_info(zip_path)
             except Exception:
                 info = {"count": 0}
             # One by one: extract one file, upload it, delete
             # it, then extract the next — disk never holds
-            # more than the zip plus one file.
+            # more than the archive plus one file.
             skipped: list[str] = []
             failed: list[str] = []
             sent_count = 0
@@ -1260,9 +1281,15 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                     # mkv.002, … instead of failing the cap.
                     sent_paths = [path]
                     try:
+                        # Each file goes out under its OWN clean
+                        # title ("Show S01E01"), not the archive's
+                        # name (v1.44.0).
+                        file_caption = (
+                            clean_display(os.path.basename(path))
+                            or job["caption"])
                         sent_paths = await send_files_split(
                             client, job["chat_id"], [path],
-                            "uploader", caption=job["caption"],
+                            "uploader", caption=file_caption,
                             status_msg=status)
                         sent_count += 1
                     except Exception as exc:

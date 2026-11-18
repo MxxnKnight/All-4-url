@@ -68,10 +68,10 @@ async def _main_menu(client, query, chat_id, msg_id):
         await query.answer("That file message is gone.",
                            show_alert=True)
         return
-    name, size, _mime, _kind, is_video, is_zip = filemenu.file_info(target)
+    name, size, _mime, _kind, is_video, is_archive = filemenu.file_info(target)
     await _edit_menu(
         query, filemenu.menu_text(name, size),
-        filemenu.main_menu_markup(chat_id, msg_id, is_video, is_zip))
+        filemenu.main_menu_markup(chat_id, msg_id, is_video, is_archive))
 
 
 @Client.on_callback_query(filters.regex(r"^fm:"))
@@ -104,7 +104,7 @@ async def filemenu_callback(client: Client, query):
         await query.answer("That file message is gone — links die with it.",
                            show_alert=True)
         return
-    name, size, _mime, kind, is_video, is_zip = filemenu.file_info(target)
+    name, size, _mime, kind, is_video, is_archive = filemenu.file_info(target)
     if action == "conv":
         if not is_video:
             await query.answer("Convert only works for videos.",
@@ -163,35 +163,36 @@ async def filemenu_callback(client: Client, query):
         stats.record_job("file-to-link", ok=True)
         return
     if action == "unzip":
-        if not is_zip:
-            await query.answer("That file is not a zip.",
+        if not is_archive:
+            await query.answer("That file is not an archive.",
                                show_alert=True)
             return
-        await query.answer("Unzipping…")
+        await query.answer("Unpacking…")
         status = query.message
         job_dir = make_job_dir()
         try:
             try:
                 info = None
+                ext = os.path.splitext(name)[1].lower() or ".zip"
                 zip_path = await client.download_media(
-                    target, file_name=os.path.join(job_dir, "input.zip"))
+                    target, file_name=os.path.join(job_dir, "input" + ext))
                 if zip_path is None or not os.path.exists(zip_path):
                     await status.edit_text(
-                        "❌ Couldn't download that zip back.",
+                        "❌ Couldn't download that archive back.",
                         reply_markup=filemenu.back_close_markup(
                             chat_id, msg_id))
                     return
-                if not unzip.is_zip_file(zip_path):
+                if not unzip.is_archive_file(zip_path):
                     await status.edit_text(
-                        "❌ That file isn't actually a zip.",
+                        "❌ That file isn't actually an archive.",
                         reply_markup=filemenu.back_close_markup(
                             chat_id, msg_id))
                     return
-                info = unzip.zip_info(zip_path)
+                info = unzip.archive_info(zip_path)
                 unzip.check_disk_room(zip_path, info["largest"])
             except unzip.ZipTooBig as exc:
                 await status.edit_text(
-                    f"📦 Can't unzip this one: {exc}",
+                    f"📦 Can't unpack this one: {exc}",
                     reply_markup=filemenu.back_close_markup(
                         chat_id, msg_id))
                 return
@@ -221,7 +222,7 @@ async def filemenu_callback(client: Client, query):
                     try:
                         await send_files_routed(
                             client, status.chat.id, [path],
-                            "uploader", caption=f"Unzipped from {name}",
+                            "uploader", caption=f"Unpacked from {name}",
                             status_msg=status)
                         sent_count += 1
                         sent_bytes += sz
@@ -235,7 +236,7 @@ async def filemenu_callback(client: Client, query):
                     await asyncio.sleep(1)
             finally:
                 gen.close()
-            summary = (f"✅ Unzipped {sent_count} file(s) "
+            summary = (f"✅ Unpacked {sent_count} file(s) "
                        f"({human_bytes(sent_bytes)}) from {name}.")
             if bandwidth_stopped:
                 summary += ("\n⚠️ Stopped early: monthly bandwidth "
@@ -250,7 +251,7 @@ async def filemenu_callback(client: Client, query):
         except Exception as exc:
             try:
                 await status.edit_text(
-                    f"❌ Unzip failed: {exc}",
+                    f"❌ Unpack failed: {exc}",
                     reply_markup=filemenu.back_close_markup(chat_id, msg_id))
             except Exception:
                 pass

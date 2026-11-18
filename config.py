@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.43.0"
+BOT_VERSION = "1.44.0"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -132,6 +132,13 @@ TERABOX_BDUSS = (os.environ.get("TERABOX_BDUSS") or "").strip()
 # the extractor stays off and Reddit flows through gallery-dl as
 # before. Both are secrets: Space Secrets, never the repo.
 REDDIT_CLIENT_ID = (os.environ.get("REDDIT_CLIENT_ID") or "").strip()
+
+# TMDB (v1.44.0): optional, for real movie/show posters as video
+# thumbnails. Either a v3 API key or a v4 read-access token works;
+# without either, thumbnails are video frames as before. Both are
+# free from themoviedb.org (account Settings > API).
+TMDB_API_KEY = (os.environ.get("TMDB_API_KEY") or "").strip()
+TMDB_ACCESS_TOKEN = (os.environ.get("TMDB_ACCESS_TOKEN") or "").strip()
 REDDIT_CLIENT_SECRET = (os.environ.get("REDDIT_CLIENT_SECRET") or "").strip()
 
 # --- Behaviour ---------------------------------------------------------------
