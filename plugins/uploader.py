@@ -109,12 +109,26 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
     PENDING_UNZIP[job_id] = {"job_dir": job_dir, "path": zip_path,
                              "chat_id": chat_id, "caption": caption,
                              "ts": int(time.time())}
+    # What's inside, so the owner can see the episodes before
+    # choosing (v1.43.0): the first few entries with sizes, then
+    # a count of the rest. Names are cut from the left — the
+    # episode number and extension sit at the end.
+    entries = info.get("entries") or [(name, 0)
+                                      for name in info["files"]]
+    listed = []
+    for name, size in entries[:_MAX_LISTED_FILES]:
+        shown = name if len(name) <= 55 else "…" + name[-54:]
+        listed.append(f"• {shown} ({human_bytes(size)})")
+    if len(entries) > _MAX_LISTED_FILES:
+        listed.append(f"• …and {len(entries) - _MAX_LISTED_FILES} more")
+    listing = ("\n" + "\n".join(listed)) if listed else ""
     try:
         await status.edit_text(
             f"📦 **{os.path.basename(zip_path)}**\n"
             f"Zip: {human_bytes(os.path.getsize(zip_path))} · "
             f"unzips to {human_bytes(info['total'])} · "
             f"{info['count']} file(s)"
+            + listing
             + (f"\n⚠️ {len(info['encrypted'])} password-protected "
                f"file(s) will be skipped" if info["encrypted"] else "")
             + "\n\nUnzip it and send the contents, or send the zip itself?",
@@ -128,6 +142,30 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
         PENDING_UNZIP.pop(job_id, None)
         return False
     return True
+
+
+#: How many zip entries the unzip prompt lists before "…and N more".
+_MAX_LISTED_FILES = 10
+
+
+async def _prompt_or_split(client, chat_id, paths, caption, status,
+                           job_dir, editor=None, status_msg=None):
+    """Ask to unzip a single zip BEFORE splitting it (v1.43.0).
+
+    Returns (prompted, send_paths). A single zip within the unzip
+    caps gets the prompt and the callback owns the job (prompted
+    True, no paths) — so a season zip over Telegram's 2 GB cap is
+    unzipped and its episodes sent one by one instead of arriving
+    as .zip.001/.002 parts nobody asked for. Anything else is
+    split as usual and returned for sending — including a zip over
+    the unzip caps, which the prompt already refused with a
+    "can't unzip" message.
+    """
+    if await _maybe_unzip_prompt(client, chat_id, paths, caption,
+                                 status, job_dir):
+        return True, []
+    return False, await splitter.maybe_split(
+        paths, editor=editor, status_msg=status_msg)
 
 
 def _next_job_id() -> str:
@@ -459,10 +497,10 @@ async def _terabox_download(client, message, url, index, info, status, editor,
             async with splitter.big_file_guard(big_file):
                 path = await terabox.download(url, job_dir, index=index,
                                               progress_cb=progress)
-                paths = await splitter.maybe_split([path], editor=editor)
-            prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, paths,
-                f"Terabox · {info['name'] if info else ''}", status, job_dir)
+                prompted, paths = await _prompt_or_split(
+                    client, message.chat.id, [path],
+                    f"Terabox · {info['name'] if info else ''}", status,
+                    job_dir, editor=editor)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
                 await send_files_routed(
@@ -520,10 +558,10 @@ async def _custom_flow(client: Client, message: Message, url: str,
             big = (info.get("approx_size") or 0) > config.MAX_FILE_SIZE
             async with splitter.big_file_guard(big):
                 paths = await site.download(url, job_dir, progress_cb=progress)
-                paths = await splitter.maybe_split(paths, editor=editor)
-            prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, paths, info.get("title", "")[:200],
-                status, job_dir)
+                prompted, paths = await _prompt_or_split(
+                    client, message.chat.id, paths,
+                    info.get("title", "")[:200], status, job_dir,
+                    editor=editor)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
@@ -597,9 +635,9 @@ async def _ytdlp_download(client, message, url, title, status, editor,
                 paths = await download(url, job_dir, format_id=format_id,
                                        audio_only=audio_only,
                                        progress_cb=progress)
-                paths = await splitter.maybe_split(paths, editor=editor)
-            prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, paths, title[:200], status, job_dir)
+                prompted, paths = await _prompt_or_split(
+                    client, message.chat.id, paths, title[:200], status,
+                    job_dir, editor=editor)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
@@ -617,18 +655,24 @@ async def _ytdlp_download(client, message, url, title, status, editor,
 async def _gallery_flow(client, message, url, status):
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
+        prompted = False
         try:
             await status.edit_text("Fetching with gallery-dl…")
             paths = await gallery_engine.download(url, job_dir)
             # gallery-dl never tells us the size up front, so a big
             # file only shows itself here — maybe_split's own disk
             # check is what keeps the split safe.
-            paths = await splitter.maybe_split(paths, status_msg=status)
-            await send_files_routed(client, message.chat.id, paths, "uploader",
-                             caption=url, status_msg=status)
-            await status.delete()
+            prompted, paths = await _prompt_or_split(
+                client, message.chat.id, paths, url, status, job_dir,
+                status_msg=status)
+            if not prompted:
+                await send_files_routed(client, message.chat.id, paths, "uploader",
+                                 caption=url, status_msg=status)
+                await status.delete()
         finally:
-            cleanup_dir(job_dir)
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
 
 
 async def _direct_flow(client, message, url, info, status, editor):
@@ -646,10 +690,10 @@ async def _direct_flow(client, message, url, info, status, editor):
                 path = await download_file(info.get("final_url") or url, job_dir,
                                            progress_cb=progress,
                                            filename=info.get("filename"))
-                paths = await splitter.maybe_split([path], editor=editor)
-            prompted = await _maybe_unzip_prompt(
-                client, message.chat.id, paths, info.get("filename", ""),
-                status, job_dir)
+                prompted, paths = await _prompt_or_split(
+                    client, message.chat.id, [path],
+                    info.get("filename", ""), status, job_dir,
+                    editor=editor)
             if not prompted:
                 await editor.edit("Uploading…", force=True)
                 await send_files_routed(client, message.chat.id, paths,
@@ -710,6 +754,7 @@ async def _scrape_flow(client, message, url, status, editor,
                     "no embedded media URL found in the page "
                     f"(browser: {exc})") from exc
 
+        prompted = False
         try:
             if force_browser:
                 found = await _browser_media()
@@ -756,13 +801,18 @@ async def _scrape_flow(client, message, url, status, editor,
                             playlist=found.get("playlist"))
                     else:
                         paths = await _download_media(media_url)
-            paths = await splitter.maybe_split(paths, editor=editor)
-            await editor.edit("Uploading…", force=True)
-            await send_files_routed(client, message.chat.id, paths, "uploader",
-                             caption=url, status_msg=status)
-            await status.delete()
+            prompted, paths = await _prompt_or_split(
+                client, message.chat.id, paths, url, status, job_dir,
+                editor=editor)
+            if not prompted:
+                await editor.edit("Uploading…", force=True)
+                await send_files_routed(client, message.chat.id, paths, "uploader",
+                                 caption=url, status_msg=status)
+                await status.delete()
         finally:
-            cleanup_dir(job_dir)
+            if not prompted:
+                cleanup_dir(job_dir)
+        return prompted
 
 
 async def _instagram_carousel(client, message, url, status) -> bool:
@@ -1039,8 +1089,8 @@ async def _dispatch(client: Client, message: Message, url: str,
             if await _instagram_carousel(client, message, url, status):
                 return "done"
             try:
-                await _gallery_flow(client, message, url, status)
-                return "done"
+                prompted = await _gallery_flow(client, message, url, status)
+                return "pending" if prompted else "done"
             except Exception as exc:
                 errors.append(f"gallery-dl: {exc}")
 
@@ -1075,8 +1125,8 @@ async def _dispatch(client: Client, message: Message, url: str,
         # 5) gallery-dl also covers many video-page galleries as backup.
         if not is_post:
             try:
-                await _gallery_flow(client, message, url, status)
-                return "done"
+                prompted = await _gallery_flow(client, message, url, status)
+                return "pending" if prompted else "done"
             except SizeBlocked as exc:
                 # A file gallery-dl downloaded turned out too big to
                 # split — retrying it through the scrape would just
@@ -1089,8 +1139,8 @@ async def _dispatch(client: Client, message: Message, url: str,
         # 6) Last resort: scrape the page's meta tags — and, if the
         # static HTML holds nothing, a real browser.
         try:
-            await _scrape_flow(client, message, url, status, editor)
-            return "done"
+            prompted = await _scrape_flow(client, message, url, status, editor)
+            return "pending" if prompted else "done"
         except SizeBlocked as exc:
             await status.edit_text(f"❌ {exc}")
             return "failed"

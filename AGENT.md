@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.42.0** (2026-11-18).
+- **Current version: v1.43.0** (2026-11-18).
 
 ## How moon works — the contract
 
@@ -267,8 +267,25 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-18) — v1.42.0
+## Current status (2026-11-18) — v1.43.0
 
+- v1.43.0 fixes the season-zip gap (moon's order): a zip link
+  over 2 GB used to arrive as .zip.001/.002 parts with NO unzip
+  question, because every dispatch flow split first and prompted
+  after (and the prompt only fires for a single file). New
+  `plugins/uploader.py::_prompt_or_split` asks FIRST: a single
+  zip within the unzip caps gets the prompt (the callback's
+  send_files_split already splits oversize episodes), anything
+  else is split as before — including an over-cap zip, which
+  the prompt refuses with a "can't unzip" message first. All
+  six dispatch flows use it (direct, custom, terabox, yt-dlp,
+  gallery, scrape; joinzip was already prompt-first); gallery
+  and scrape gained the prompted-flag + "pending" return so
+  _dispatch reports them right. The prompt now LISTS the
+  contents (first 10 entries with sizes, "…and N more") from
+  a new `zip_info` "entries" key [(name, size)] — `files`
+  (names only) is unchanged for existing callers. Verified:
+  26 checks in /tmp/test_v143.py.
 - v1.42.0 fixes the two sites moon reported on 2026-11-18 (MissAV
   page links, Stripchat live recordings) with two new extractors.
   (1) **Stripchat — the "free model shown as paid" bug is gone.**

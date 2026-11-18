@@ -71,7 +71,9 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >disk never holds more than the zip plus one file — bigger
 >zips get a plain "exceeds"
 >message and are sent as-is). A video inside that's over 2 GB
->arrives split into .mkv.001/.002 parts. Or send me a zip and
+>arrives split into .mkv.001/.002 parts. The question comes
+>even for a zip over 2 GB, and it lists what's inside so you
+>can see the files before choosing. Or send me a zip and
 >reply to it with `/unzip` and I'll unzip that one the same way.
 >**Join split archives**: `/joinzip <link1> <link2> …` — send ALL
 >the links of one split archive in one message (like

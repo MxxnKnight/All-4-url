@@ -131,6 +131,8 @@ def zip_info(path: str) -> dict:
 
     Returns {"total": uncompressed bytes of sendable files,
     "count": sendable file entries, "files": [names],
+    "entries": [(name, size)] in zip order (for listing the
+    contents in the unzip prompt — v1.43.0),
     "encrypted": [names], "skipped": [names],
     "too_big": [] (kept for callers — oversize entries are
     sendable since v1.40.0, split into parts before sending),
@@ -146,7 +148,7 @@ def zip_info(path: str) -> dict:
         raise ZipBad(f"not a readable zip file ({exc})")
     total = 0
     largest = 0
-    files, encrypted, skipped, too_big = [], [], [], []
+    files, entries, encrypted, skipped, too_big = [], [], [], [], []
     for info in infos:
         if _is_dir_entry(info):
             continue
@@ -169,6 +171,7 @@ def zip_info(path: str) -> dict:
         total += size
         largest = max(largest, size)
         files.append(info.filename)
+        entries.append((info.filename, size))
     if len(files) > MAX_EXTRACT_FILES:
         raise ZipTooBig(
             f"this zip has {len(files)} files — over the "
@@ -179,6 +182,7 @@ def zip_info(path: str) -> dict:
             f"{human_bytes(MAX_EXTRACT_BYTES)} total unzip limit, "
             f"so I can't unzip it here")
     return {"total": total, "count": len(files), "files": files,
+            "entries": entries,
             "encrypted": encrypted, "skipped": skipped,
             "too_big": too_big, "largest": largest}
 
