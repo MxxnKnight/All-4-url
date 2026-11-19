@@ -8,7 +8,7 @@ import time
 from pyrogram import StopTransmission
 from pyrogram.errors import FloodPremiumWait, FloodWait, SlowmodeWait
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
-                            InputMediaDocument, InputMediaPhoto)
+                            InputMediaPhoto)
 
 from core import splitter, stats, tmdb
 from core.filename_parser import clean_display, parse_filename
@@ -244,14 +244,25 @@ async def _rich_caption(caption: str, paths: list[str]) -> str:
     carries the full duration). When nothing can be measured, the
     caption is returned unchanged.
 
-    When a single file is sent with no caption, or with its raw
-    filename as the caption (the direct/custom flows), the
-    caption head becomes the file's clean title ("Show S01E01")
-    instead of the messy release name (v1.44.0).
+    When a single file — or one file's whole split run — is sent
+    with no caption, or with its raw filename as the caption (the
+    direct/custom flows), the caption head becomes the file's
+    clean title ("Show S01E01") instead of the messy release
+    name (v1.44.0; split runs v1.47.0).
     """
-    if len(paths) == 1 and (not caption
-                            or caption == os.path.basename(paths[0])):
-        clean = clean_display(os.path.basename(paths[0]))
+    # The name to clean: one file's basename, or a split run's stem
+    # (every path a .001/.002 part of the SAME file — a mixed batch
+    # never qualifies, so a folder of different files keeps its
+    # folder-name caption).
+    head_name = None
+    if len(paths) == 1:
+        head_name = os.path.basename(paths[0])
+    elif len(paths) > 1 and all(is_split_part(p) for p in paths):
+        stems = {p.rsplit(".", 1)[0] for p in paths}
+        if len(stems) == 1:
+            head_name = os.path.basename(stems.pop())
+    if head_name and (not caption or caption == head_name):
+        clean = clean_display(head_name)
         if clean:
             caption = clean
     total = 0
@@ -458,9 +469,13 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     split parts are unaffected.
 
     Photo sets (carousels, gallery dumps) go out as media groups of up to
-    10, and so do consecutive .001/.002 parts of one split file;
-    everything else is sent one by one. The caption rides on the
-    first item only, like Telegram clients do it, and gains a
+    10; everything else is sent one by one. Split .001/.002 parts
+    used to go as a media group too, but a group takes a caption
+    only on its first item and Telegram reports no live progress
+    for it — so since v1.47.0 parts go one by one, each with the
+    caption plus a "Part N of M" line and its own live progress
+    bar. The caption rides on the first item only for other
+    multi-file sends, like Telegram clients do it, and gains a
     size/duration/quality line (see _rich_caption). Every send rides
     out short Telegram FloodWaits instead of failing the job.
 
@@ -469,9 +484,9 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     `progress_cb`, when given, is awaited with (sent_so_far, total)
     across ALL files — cumulative, so a caller can show one bar and one
-    speed for the whole upload. Media groups report no live progress
-    (Telegram's API has no progress hook for them), so the callback
-    fires once per finished group instead of streaming.
+    speed for the whole upload. Photo media groups report no live
+    progress (Telegram's API has no progress hook for them), so the
+    callback fires once per finished group instead of streaming.
 
     `job`, when given (a core.jobs.Job), replaces the status message
     as the progress target and makes the run cancellable between
@@ -558,31 +573,32 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         path = others[i]
         run = _split_run(others, i)
         if run is not None:
-            # Consecutive .001/.002 parts of one file go out as a
-            # single media group (chunked at 10) instead of one
-            # message per part.
-            for k in range(0, len(run), 10):
+            # Consecutive .001/.002 parts of one file go out ONE BY
+            # ONE (v1.47.0), not as a media group: a group takes a
+            # caption only on its first item and Telegram reports no
+            # live upload progress for it, so a 13 GB upload sat at
+            # a bare "Uploading…" for hours. One by one, every part
+            # carries the caption (plus its "Part N of M" line) and
+            # its own live progress bar; the cost is separate
+            # messages instead of one album.
+            total_parts = len(run)
+            for n, part in enumerate(run, 1):
                 if job is not None:
                     job.check_cancelled()
-                chunk = run[k:k + 10]
-                media = [
-                    InputMediaDocument(
-                        p, caption=caption if (first and m == 0) else "")
-                    for m, p in enumerate(chunk)
-                ]
-                group = await _with_flood_retry(
-                    lambda media=media: client.send_media_group(
-                        chat_id, media),
-                    group_editor)
-                if group:
-                    sent_all.extend(group)
-                # No live progress for a media group — report it as
-                # done in one jump once the group is sent.
+                base = caption if first else ""
+                part_caption = (f"{base}\nPart {n} of {total_parts}"
+                                if base else f"Part {n} of {total_parts}")
+                sent = await send_file(
+                    client, chat_id, part, part_caption, status_msg,
+                    progress_cb=_per_file(sent_bytes)
+                    if progress_cb is not None else None,
+                    force_document=force_document, job=job)
+                if sent is not None:
+                    sent_all.append(sent)
                 if progress_cb is not None:
-                    sent_bytes += sum(sizes.get(p, 0) for p in chunk)
-                    await progress_cb(sent_bytes, total_all)
-                first = False
+                    sent_bytes += sizes.get(part, 0)
                 await asyncio.sleep(1)
+            first = False
             i += len(run)
             continue
         sent = await send_file(client, chat_id, path,

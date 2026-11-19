@@ -130,7 +130,7 @@ async def _register_panel_button(app: Client) -> None:
     try:
         from pyrogram.types import MenuButtonWebApp, WebAppInfo
         button = MenuButtonWebApp(
-            text="🎛 Panel",
+            text="Panel",
             web_app=WebAppInfo(url=config.PANEL_URL))
         await app.set_chat_menu_button(menu_button=button)
         # A previous bot on this token may have set a *per-chat* menu

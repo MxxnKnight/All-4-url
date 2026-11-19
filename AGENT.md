@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.46.0** (2026-11-19).
+- **Current version: v1.47.0** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -286,6 +286,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-19) — v1.47.0
+
+- v1.47.0 (moon's QA on the live 13 GB transfer.it job, same
+  day): split parts now go one by one instead of as a media
+  group (core/sender.py send_files) — a group takes a caption
+  only on its first item and Telegram reports no live progress
+  for it, so the 13 GB upload sat at a bare "Uploading…" for
+  hours. Every part now carries the caption plus a "Part N of
+  M" line and its own live progress bar; the cost is separate
+  messages instead of one album. _rich_caption applies the
+  clean title ("Show S01E01") to a whole split run too (stem
+  must match, mixed batches excluded). The Panel menu button
+  lost its emoji (main.py _register_panel_button: "Panel" —
+  Telegram already shows its own icon). Photo media groups are
+  unchanged (still grouped, still one caption + no live
+  progress).
 
 ## Current status (2026-11-19) — v1.46.0
 
