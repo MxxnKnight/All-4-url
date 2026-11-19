@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.47.0** (2026-11-19).
+- **Current version: v1.47.1** (2026-11-19).
 
 ## How moon works — the contract
 
@@ -286,6 +286,22 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-19) — v1.47.1
+
+- v1.47.1 (hotfix, moon's report same day): every restricted
+  download failed with KeyError 'sendas_restricted'. Root cause
+  (latent since the v1.45.x per-user settings refactor, NOT
+  v1.47.0): get_send_as("restricted") built the key
+  "sendas_restricted" and _get validated it against _VALID,
+  which only knows sendas_uploader — the docstring always said
+  other features send videos as video, but the code raised
+  instead. The restricted plugin is the only caller with a
+  feature other than "uploader". Fix (core/settings.py):
+  get_send_as returns "video" for any feature without a
+  send-as setting, set_send_as ignores those features.
+  test_v1471.py pins it (13 checks; the suite fails on the old
+  code with the exact KeyError).
 
 ## Current status (2026-11-19) — v1.47.0
 

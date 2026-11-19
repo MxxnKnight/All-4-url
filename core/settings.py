@@ -193,8 +193,18 @@ def get_send_as(feature: str, user_id=None) -> str:
     """How video files are sent for `feature`: "video" (inline player)
     or "document" (plain file). Only "uploader" has the setting —
     every other feature always sends videos as video."""
-    return _get(f"sendas_{feature}", "video", user_id)
+    base = f"sendas_{feature}"
+    if base not in _VALID:
+        # No such setting (e.g. "restricted"): _get would raise
+        # KeyError on the _VALID lookup, which killed every
+        # restricted download until v1.47.1 — return the
+        # documented always-video default instead.
+        return "video"
+    return _get(base, "video", user_id)
 
 
 def set_send_as(feature: str, value: str, user_id=None) -> None:
-    _set(f"sendas_{feature}", value, user_id)
+    base = f"sendas_{feature}"
+    if base not in _VALID:
+        return
+    _set(base, value, user_id)
