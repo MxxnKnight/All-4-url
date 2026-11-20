@@ -470,14 +470,20 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     Photo sets (carousels, gallery dumps) go out as media groups of up to
     10; everything else is sent one by one. Split .001/.002 parts
-    used to go as a media group too, but a group takes a caption
-    only on its first item and Telegram reports no live progress
-    for it — so since v1.47.0 parts go one by one, each with the
-    caption plus a "Part N of M" line and its own live progress
-    bar. The caption rides on the first item only for other
-    multi-file sends, like Telegram clients do it, and gains a
-    size/duration/quality line (see _rich_caption). Every send rides
-    out short Telegram FloodWaits instead of failing the job.
+    used to go as a media group too, but since v1.47.0 they go one
+    by one: each part is its own message with the full caption
+    (plus its "Part N of M" line) visible in the chat, one
+    cumulative progress bar across all parts, and a Stop that
+    works between parts. An album would also keep each part's own
+    caption — Telegram accepts a caption on every item and shows
+    it when the item is opened — but the album view shows no
+    caption under the group when several items have one, and the
+    group's progress bar restarts per file instead of running
+    across the whole upload. The caption rides on the first item
+    only for other multi-file sends, like Telegram clients do it,
+    and gains a size/duration/quality line (see _rich_caption).
+    Every send rides out short Telegram FloodWaits instead of
+    failing the job.
 
     With mediainfo_button=True and exactly one resulting message, a
     📊 MediaInfo callback button is attached under it.
@@ -485,8 +491,10 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     `progress_cb`, when given, is awaited with (sent_so_far, total)
     across ALL files — cumulative, so a caller can show one bar and one
     speed for the whole upload. Photo media groups report no live
-    progress (Telegram's API has no progress hook for them), so the
-    callback fires once per finished group instead of streaming.
+    progress (we don't pass a progress callback to
+    send_media_group — Pyrogram does accept one, per file, not
+    cumulative), so the callback fires once per finished group
+    instead of streaming.
 
     `job`, when given (a core.jobs.Job), replaces the status message
     as the progress target and makes the run cancellable between
@@ -556,8 +564,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                 group_editor)
             if group:
                 sent_all.extend(group)
-            # No live progress for a media group — report it as done
-            # in one jump once the group is sent.
+            # No live progress wired for a media group — report it as
+            # done in one jump once the group is sent.
             if progress_cb is not None:
                 sent_bytes += sum(sizes.get(p, 0) for p in chunk)
                 await progress_cb(sent_bytes, total_all)
@@ -574,13 +582,16 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         run = _split_run(others, i)
         if run is not None:
             # Consecutive .001/.002 parts of one file go out ONE BY
-            # ONE (v1.47.0), not as a media group: a group takes a
-            # caption only on its first item and Telegram reports no
-            # live upload progress for it, so a 13 GB upload sat at
-            # a bare "Uploading…" for hours. One by one, every part
-            # carries the caption (plus its "Part N of M" line) and
-            # its own live progress bar; the cost is separate
-            # messages instead of one album.
+            # ONE (v1.47.0), not as a media group: one by one,
+            # every part is its own message with the full caption
+            # (plus its "Part N of M" line) visible in the chat,
+            # one cumulative progress bar across the whole upload,
+            # and a Stop that works between parts. An album would
+            # also keep each part's own caption (Telegram accepts
+            # a caption on every item, shown when the item is
+            # opened) and Pyrogram reports per-file progress for
+            # groups — but the album view shows no caption under
+            # the group, and the bar restarts per file.
             total_parts = len(run)
             for n, part in enumerate(run, 1):
                 if job is not None:

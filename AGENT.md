@@ -307,10 +307,18 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 
 - v1.47.0 (moon's QA on the live 13 GB transfer.it job, same
   day): split parts now go one by one instead of as a media
-  group (core/sender.py send_files) — a group takes a caption
-  only on its first item and Telegram reports no live progress
-  for it, so the 13 GB upload sat at a bare "Uploading…" for
-  hours. Every part now carries the caption plus a "Part N of
+  group (core/sender.py send_files) — each part is its own
+  message with the full caption (plus a "Part N of M" line)
+  visible in the chat, one cumulative progress bar across the
+  whole upload, and a Stop that works between parts. CORRECTION
+  (2026-11-20, moon's catch): the original reason written here
+  was wrong — Telegram DOES accept a caption on every album
+  item (each keeps its own, shown when opened; the album view
+  just shows no caption under the group when several items have
+  one), and Pyrogram reports per-file progress for media groups.
+  One-by-one stays the better choice for big splits (visible
+  captions + one cumulative bar), but not for the reasons first
+  written. Every part now carries the caption plus a "Part N of
   M" line and its own live progress bar; the cost is separate
   messages instead of one album. _rich_caption applies the
   clean title ("Show S01E01") to a whole split run too (stem
