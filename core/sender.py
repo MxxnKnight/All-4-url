@@ -492,7 +492,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     across ALL files — cumulative, so a caller can show one bar and one
     speed for the whole upload. Photo media groups report no live
     progress (we don't pass a progress callback to
-    send_media_group — Pyrogram does accept one, per file, not
+    send_media_group — WzGram does accept one, per file, not
     cumulative), so the callback fires once per finished group
     instead of streaming.
 
@@ -589,7 +589,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             # and a Stop that works between parts. An album would
             # also keep each part's own caption (Telegram accepts
             # a caption on every item, shown when the item is
-            # opened) and Pyrogram reports per-file progress for
+            # opened) and WzGram reports per-file progress for
             # groups — but the album view shows no caption under
             # the group, and the bar restarts per file.
             total_parts = len(run)

@@ -315,7 +315,7 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   was wrong — Telegram DOES accept a caption on every album
   item (each keeps its own, shown when opened; the album view
   just shows no caption under the group when several items have
-  one), and Pyrogram reports per-file progress for media groups.
+  one), and WzGram reports per-file progress for media groups.
   One-by-one stays the better choice for big splits (visible
   captions + one cumulative bar), but not for the reasons first
   written. Every part now carries the caption plus a "Part N of
