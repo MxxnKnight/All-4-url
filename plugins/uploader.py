@@ -595,21 +595,50 @@ async def _terabox_download(client, message, url, index, info, job,
 
 # ---------------------------------------------------------------- custom sites
 
+def _gdflix_telegram_choice(info: dict) -> dict | None:
+    """The Telegram-link choice for a resolved gdflix page, if the
+    page offers one (v1.50.0). Returns {"links": [(name, url), ...],
+    "total": N} — the files with a Telegram deep link, plus how
+    many files the page holds in all — or None when no file has
+    one. Only hubcloud returns telegram links, so other sites
+    never see the prompt."""
+    files = info.get("files")
+    if files:
+        links = [(f["name"], f["telegram_url"]) for f in files
+                 if f.get("telegram_url")]
+        if not links:
+            return None
+        return {"links": links, "total": len(files)}
+    url = info.get("telegram_url")
+    if not url:
+        return None
+    return {"links": [(info.get("title") or "file", url)], "total": 1}
+
+
 async def _custom_flow(client: Client, message: Message, url: str,
-                       job, site) -> bool:
+                       job, site, offer_telegram: bool = True,
+                       user_id: int | None = None) -> bool:
     """A registered custom-site extractor (see site_registry).
 
-    Returns True when an unzip prompt is on screen (job pending),
+    Returns True when a prompt is on screen (job pending),
     else False. Resolves once for a size check, then downloads —
     the download resolves again so the media URL it uses is
     fresh (HLS tokens are short-lived; reusing an older one
     would fail for the same reason a 1DM link fails).
+
+    `offer_telegram` asks the owner to choose between downloading
+    and taking the page's Telegram link when one exists (gdflix,
+    v1.50.0) — the choice callback re-enters with False so the
+    download doesn't prompt again. `user_id`, when given,
+    overrides the message's sender (the choice callback's
+    message belongs to the bot, not the owner).
     """
     async with JOB_SEMAPHORE:
         job_dir = make_job_dir()
         started = time.time()
 
-        user_id = message.from_user.id if message.from_user else None
+        if user_id is None:
+            user_id = message.from_user.id if message.from_user else None
 
         async def progress(done, total):
             job.check_cancelled()
@@ -636,6 +665,56 @@ async def _custom_flow(client: Client, message: Message, url: str,
             if info.get("approx_size"):
                 check_size(info["approx_size"], info.get("title") or "file",
                            allow_split=True)
+            if offer_telegram:
+                choice = _gdflix_telegram_choice(info)
+                if choice is not None:
+                    # The page offers a Telegram link: let the owner
+                    # pick between downloading here and taking the
+                    # link. The picker is its OWN message (v1.45.0):
+                    # the shared progress message belongs to every
+                    # running job, so a one-job question can't take
+                    # it over. The download registers a fresh job
+                    # when the owner picks.
+                    job_id = _next_job_id()
+                    PENDING[job_id] = {
+                        "type": "gdflix", "url": url,
+                        "chat_id": message.chat.id,
+                        "title": info.get("title", "")[:200],
+                        "origin_chat": message.chat.id,
+                        "origin_msg": message.id,
+                        "telegram": choice}
+                    title = info.get("title", "")[:120]
+                    total = info.get("approx_size") or 0
+                    have = len(choice["links"])
+                    files = info.get("files")
+                    if files:
+                        text = (f"**{title}**\n{choice['total']} files"
+                                + (f" · {human_bytes(total)}" if total
+                                   else ""))
+                        dl_label = (f"⬇️ Download all "
+                                    f"{choice['total']} files")
+                        tg_label = "✈️ Telegram links"
+                        if have < choice["total"]:
+                            text += (f"\n{have} of {choice['total']} "
+                                     f"files have a Telegram link.")
+                    else:
+                        text = f"**{title}**"
+                        if total:
+                            text += f"\n{human_bytes(total)}"
+                        dl_label = "⬇️ Download the file"
+                        tg_label = "✈️ Telegram link"
+                    text += ("\nDownload it here, or take the "
+                             "Telegram link instead?")
+                    buttons = [[InlineKeyboardButton(
+                        dl_label,
+                        callback_data=f"gdf:{job_id}:dl")],
+                        [InlineKeyboardButton(
+                            tg_label,
+                            callback_data=f"gdf:{job_id}:tg")]]
+                    await client.send_message(
+                        message.chat.id, text,
+                        reply_markup=InlineKeyboardMarkup(buttons))
+                    return True
             big = (info.get("approx_size") or 0) > config.MAX_FILE_SIZE
             async with splitter.big_file_guard(big):
                 paths = await site.download(
@@ -1642,6 +1721,102 @@ async def format_callback(client: Client, query: CallbackQuery):
     except Exception as exc:
         if job.get("origin_chat") and job.get("origin_msg"):
             await react_to(client, job["origin_chat"], job["origin_msg"], "👎")
+        stats.record_job("uploader", ok=False)
+        await live.fail(f"Download failed: {exc}")
+    finally:
+        await live.finish()
+
+
+@Client.on_callback_query(filters.regex(r"^gdf:"))
+async def gdflix_callback(client: Client, query: CallbackQuery):
+    """The gdflix download-or-Telegram-link choice (v1.50.0).
+
+    `gdf:<job_id>:dl` downloads the file(s) here; `gdf:<job_id>:tg`
+    just sends the page's Telegram link(s) — no download, no
+    upload. The link branch costs no bandwidth, so it skips the
+    bandwidth check the download branch still honors.
+    """
+    if not is_admin_id(query.from_user.id if query.from_user else None):
+        await query.answer()
+        return
+    parts = (query.data or "").split(":")
+    if len(parts) < 3:
+        await query.answer("Stale button.")
+        return
+    job_id, choice = parts[1], parts[2]
+    job = PENDING.pop(job_id, None)
+    if not job:
+        await query.answer("This job expired — send the link again.",
+                           show_alert=True)
+        return
+    if choice == "tg":
+        await query.answer("Sending the Telegram link…")
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        telegram = job.get("telegram") or {}
+        links = telegram.get("links") or []
+        total = telegram.get("total") or len(links)
+        lines = [f"Telegram link for {job.get('title') or 'the file'}:"]
+        for name, url in links:
+            lines.append(f"\n{name}\n{url}")
+        if len(links) < total:
+            lines.append(
+                f"\n{total - len(links)} file(s) have no Telegram link — "
+                f"send the link again and pick Download for those.")
+        try:
+            await client.send_message(job["chat_id"], "\n".join(lines))
+        except Exception:
+            pass
+        if job.get("origin_chat") and job.get("origin_msg"):
+            await react_to(client, job["origin_chat"], job["origin_msg"],
+                           "👍")
+        stats.record_job("uploader", ok=True)
+        return
+    if choice != "dl":
+        await query.answer("Stale button.")
+        return
+    if stats.bandwidth_blocked():
+        await query.answer("⛔ Bandwidth paused", show_alert=True)
+        try:
+            await query.message.edit_text(stats.bandwidth_pause_text())
+        except Exception:
+            pass
+        return
+    await query.answer("Starting…")
+    # The pick is made — the picker message goes away and the
+    # download registers a fresh line in the shared progress
+    # message (v1.45.0).
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    user_id = query.from_user.id if query.from_user else None
+    live = await jobs.register(client, job["chat_id"],
+                               _job_label(job["url"]))
+    fake_message = query.message  # carries chat.id for the send helpers
+    site = site_registry.match(job["url"])
+    try:
+        if site is None:
+            raise ValueError("no extractor matches this link anymore")
+        prompted = await _custom_flow(client, fake_message, job["url"],
+                                      live, site, offer_telegram=False,
+                                      user_id=user_id)
+        if prompted:
+            # Unzip prompt is on screen; the unzip callback will
+            # finish (and react to) the job. Do not mark it done yet.
+            return
+        if job.get("origin_chat") and job.get("origin_msg"):
+            await react_to(client, job["origin_chat"], job["origin_msg"],
+                           "👍")
+        stats.record_job("uploader", ok=True)
+    except JobCancelled:
+        await live.fail("⏹ Cancelled.")
+    except Exception as exc:
+        if job.get("origin_chat") and job.get("origin_msg"):
+            await react_to(client, job["origin_chat"], job["origin_msg"],
+                           "👎")
         stats.record_job("uploader", ok=False)
         await live.fail(f"Download failed: {exc}")
     finally:

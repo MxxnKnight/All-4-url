@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.49.0** (2026-11-20).
+- **Current version: v1.50.0** (2026-11-20).
 
 ## How moon works — the contract
 
@@ -286,6 +286,57 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-20) — v1.50.0
+
+- v1.50.0 (moon's pack link, same day): gdflix works again, plus
+  a Telegram-link choice. The site changed since the extractor
+  was written (Nov 16): the Instant DL button is JS-driven now —
+  it POSTs to /mfile/<id> with the page's own key (per-page, read
+  from the page's script, never hardcoded) and an empty Turnstile
+  token, and the server answers JSON {url} — a direct
+  video-downloads.googleusercontent.com link. The old plain
+  instant anchor is gone; the extractor now POSTs first and only
+  falls back to the anchor hunt for old-layout pages.
+  Three traps found live, all fixed in this version:
+  (1) _alive read the whole response body — a server that ignores
+  Range and answers 200 with a multi-GB file (googleusercontent
+  does exactly this) stalled the probe 20 s per file and blew
+  the 45 s resolve budget; it now reads headers only.
+  (2) Pack items skipped the size probe (the pack page lists
+  each file's size in the link text) so 8 probes can't burn the
+  budget. (3) The pack path built file URLs against the INPUT
+  origin (gdflix.vip), but the page redirects to new10.gdflix.io
+  — a POST to the old host gets a 302, which turns the POST into
+  a GET and the server answers HTML instead of JSON; all URLs
+  now use ps_request's FINAL host. Media URLs are short-lived
+  (one expired within ~25 min, answering 400) — downloads
+  always re-resolve fresh (already the _custom_flow design).
+  Verified live against moon's pack link: 8 files, 19.38 GB,
+  every file with a media URL and a Telegram deep link, in ~3 s.
+  Sandbox note: the egress proxy stalls on
+  video-downloads.googleusercontent.com (curl hangs there too),
+  so the size probe is covered by unit checks + the live curl
+  probe, not by a sandbox resolve.
+- The Telegram choice (moon's ask): gdflix file pages carry a
+  "Telegram Generate" button — a bot deep link (_bot?start=;
+  the channel links t.me/gdflix_com / the release-group channel
+  are NOT file links). hubcloud returns it as telegram_url
+  (single) / per-file (packs). _custom_flow prompts after
+  resolve when one exists: "Download the file" vs "Telegram
+  link" (packs: "Download all N files" vs "Telegram links",
+  noting when only some files have one). The choice callback
+  (gdf:<id>:dl / :tg, PENDING type "gdflix") either re-enters
+  _custom_flow with offer_telegram=False (fresh job, user_id
+  passed explicitly — the callback's message belongs to the bot)
+  or just sends the link(s) as a message (no bandwidth check —
+  it downloads nothing) and reacts thumbs-up. Only hubcloud
+  returns telegram links, so other sites never see the prompt.
+  test_v1500.py pins it (38 checks: POST flow, pack sizes,
+  redirect origin, fallback, _alive headers-only, the choice
+  helper, prompt + both callback branches, stale + non-admin
+  taps). test_v1453.py now also pins gdflix_callback as a
+  registered handler.
 
 ## Current status (2026-11-20) — v1.49.0
 
