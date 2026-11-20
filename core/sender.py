@@ -8,7 +8,7 @@ import time
 from pyrogram import StopTransmission
 from pyrogram.errors import FloodPremiumWait, FloodWait, SlowmodeWait
 from pyrogram.types import (InlineKeyboardButton, InlineKeyboardMarkup,
-                            InputMediaPhoto)
+                            InputMediaDocument, InputMediaPhoto)
 
 from core import splitter, stats, tmdb
 from core.filename_parser import clean_display, parse_filename
@@ -190,7 +190,8 @@ def _progress_callback(editor: ThrottledEditor, action: str):
 
 
 def _media_group_progress(editor, progress_cb, base_bytes: int,
-                          total_all: int, started: float):
+                          total_all: int, started: float,
+                          action: str = "Uploading…"):
     """Stitch a media group's per-file progress into one bar.
 
     WzGram's send_media_group reports progress per file (the bar
@@ -215,7 +216,7 @@ def _media_group_progress(editor, progress_cb, base_bytes: int,
         overall = state["done"] + current
         if editor is not None:
             await editor.edit(
-                progress_text("Uploading…", overall, total_all, started))
+                progress_text(action, overall, total_all, started))
         if progress_cb is not None:
             await progress_cb(overall, total_all)
 
@@ -508,21 +509,20 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     split parts are unaffected.
 
     Photo sets (carousels, gallery dumps) go out as media groups of up to
-    10; everything else is sent one by one. Split .001/.002 parts
-    used to go as a media group too, but since v1.47.0 they go one
-    by one: each part is its own message with the full caption
-    (plus its "Part N of M" line) visible in the chat, one
-    cumulative progress bar across all parts, and a Stop that
-    works between parts. An album would also keep each part's own
-    caption — and for DOCUMENTS each card shows its caption
+    10; everything else is sent one by one — except split .001/.002
+    parts, which go out as a DOCUMENT album (v1.49.0, moon's pick;
+    v1.47.0 sent them one by one). Each card shows its own caption
     inline in the chat (moon screenshot 2026-11-20: a .zip.001 /
-    .zip.002 album with a caption under each card; the "no
-    caption under the group" rule is only about photo/video
-    grids). The album's real costs are the per-file progress bar
-    (restarts per file) and no Stop mid-group. The caption rides
-    on the first item only for other multi-file sends, like
-    Telegram clients do it, and gains a size/duration/quality
-    line (see _rich_caption).
+    .zip.002 album with a caption under each card; the "no caption
+    under the group" rule is only about photo/video grids), so
+    every part carries the full caption plus just the total
+    ("7 parts" — the filename already shows which part it is).
+    The bar is cumulative across the group via
+    _media_group_progress; Stop works between groups only (a
+    group already sending can't be cut). The caption rides on
+    the first item only for other multi-file sends, like Telegram
+    clients do it, and gains a size/duration/quality line (see
+    _rich_caption).
     Every send rides out short Telegram FloodWaits instead of
     failing the job.
 
@@ -531,10 +531,11 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     `progress_cb`, when given, is awaited with (sent_so_far, total)
     across ALL files — cumulative, so a caller can show one bar and one
-    speed for the whole upload. Photo media groups stream live
-    progress through _media_group_progress, which stitches WzGram's
-    per-file callbacks into one cumulative bar; the callback still
-    fires once per finished group as the final correction.
+    speed for the whole upload. Media groups (photo and document)
+    stream live progress through _media_group_progress, which
+    stitches WzGram's per-file callbacks into one cumulative bar;
+    the callback still fires once per finished group as the final
+    correction.
 
     `progress_label`, when given, replaces the generic "Uploading…"
     line on the bar for every file in the run (see send_file).
@@ -612,7 +613,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                 if group_editor is not None or progress_cb is not None:
                     group_progress = _media_group_progress(
                         group_editor, progress_cb, sent_bytes, total_all,
-                        time.time())
+                        time.time(),
+                        action=progress_label or "Uploading…")
                 return client.send_media_group(chat_id, media,
                                                progress=group_progress)
 
@@ -636,34 +638,50 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             job.check_cancelled()
         path = others[i]
         run = _split_run(others, i)
-        if run is not None:
-            # Consecutive .001/.002 parts of one file go out ONE BY
-            # ONE (v1.47.0), not as a media group: one by one,
-            # every part is its own message with the full caption
-            # (plus its "Part N of M" line) visible in the chat,
-            # one cumulative progress bar across the whole upload,
-            # and a Stop that works between parts. An album would
-            # also keep each part's own caption — for documents
-            # each card shows it inline in the chat (moon
-            # screenshot 2026-11-20) — but the bar restarts per
-            # file and a group already sending can't be cut.
+        if run is not None and len(run) > 1:
+            # Consecutive .001/.002 parts of one file go out as a
+            # DOCUMENT album (v1.49.0 — back to albums after the
+            # v1.47.0 one-by-one round, moon's pick): each card
+            # shows its own caption inline in the chat (moon
+            # screenshot 2026-11-20), so every part carries the
+            # full caption plus just the total ("7 parts" — the
+            # filename already shows which part it is). The bar
+            # is cumulative across the group via
+            # _media_group_progress; Stop works between groups
+            # only (a group already sending can't be cut), so a
+            # run of 10 or fewer parts can't be stopped
+            # mid-upload. A lone part (no siblings) falls through
+            # to the plain single-file send below.
             total_parts = len(run)
-            for n, part in enumerate(run, 1):
+            base = caption if first else ""
+            part_caption = (f"{base}\n{total_parts} parts"
+                            if base else f"{total_parts} parts")
+            for start in range(0, total_parts, 10):
                 if job is not None:
                     job.check_cancelled()
-                base = caption if first else ""
-                part_caption = (f"{base}\nPart {n} of {total_parts}"
-                                if base else f"Part {n} of {total_parts}")
-                sent = await send_file(
-                    client, chat_id, part, part_caption, status_msg,
-                    progress_cb=_per_file(sent_bytes)
-                    if progress_cb is not None else None,
-                    force_document=force_document, job=job,
-                    progress_label=progress_label)
-                if sent is not None:
-                    sent_all.append(sent)
+                chunk = run[start:start + 10]
+                media = [InputMediaDocument(p, caption=part_caption)
+                         for p in chunk]
+
+                def _send_group(media=media):
+                    # Fresh progress wrapper per attempt: a FloodWait
+                    # retry restarts the upload from byte 0, and a
+                    # reused wrapper would double-count finished bytes.
+                    group_progress = None
+                    if group_editor is not None or progress_cb is not None:
+                        group_progress = _media_group_progress(
+                            group_editor, progress_cb, sent_bytes,
+                            total_all, time.time(),
+                            action=progress_label or "Uploading…")
+                    return client.send_media_group(chat_id, media,
+                                                   progress=group_progress)
+
+                group = await _with_flood_retry(_send_group, group_editor)
+                if group:
+                    sent_all.extend(group)
                 if progress_cb is not None:
-                    sent_bytes += sizes.get(part, 0)
+                    sent_bytes += sum(sizes.get(p, 0) for p in chunk)
+                    await progress_cb(sent_bytes, total_all)
                 await asyncio.sleep(1)
             first = False
             i += len(run)

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.48.0** (2026-11-20).
+- **Current version: v1.49.0** (2026-11-20).
 
 ## How moon works — the contract
 
@@ -287,6 +287,25 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
+## Current status (2026-11-20) — v1.49.0
+
+- v1.49.0 (moon's pick, same day): split parts go back out as a
+  DOCUMENT album (reversing v1.47.0's one-by-one), each part
+  captioned with the full rich caption plus just the total
+  ("7 parts" — moon's pick: the filename already shows which
+  part it is, only the total is new info). Runs chunk at 10
+  (Telegram's group cap); a lone part falls through to the
+  plain single-file send. The bar is cumulative across the
+  group via _media_group_progress (v1.48.0's wrapper, now with
+  an `action` parameter so the unzip label rides the group bar
+  too); Stop works between groups only — a run of 10 or fewer
+  parts can't be stopped mid-upload. test_v1490.py pins it
+  (20 checks: album shape, total-only captions, cumulative
+  progress, 10+2 chunking, lone part, mixed batch, cancelled
+  job, label on the group bar). test_v1470.py's one-by-one
+  A-checks now fail BY DESIGN (behavior intentionally
+  changed); its _rich_caption B-checks still pass.
+
 ## Current status (2026-11-20) — v1.48.0
 
 - v1.48.0 (moon's picks, same day): unzip runs + photo albums.
@@ -314,10 +333,9 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   or a total change; a fresh wrapper per send attempt, so a
   FloodWait retry can't double-count). test_v1480.py pins it
   (23 checks, incl. a full unzip-callback run against a real
-  .zip with a fake client). NOT in this version: split parts
-  as an album (moon's pick pending on the "Part N of M"
-  caption — the filename already shows N, only the total M is
-  new info) — see the v1.47.0 entry's caption correction.
+  .zip with a fake client). Split parts as an album was NOT in
+  this version (moon's caption pick was still open) — built in
+  v1.49.0 after he picked the total-only line.
 
 ## Current status (2026-11-19) — v1.47.1
 
