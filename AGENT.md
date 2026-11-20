@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.47.1** (2026-11-19).
+- **Current version: v1.48.0** (2026-11-20).
 
 ## How moon works — the contract
 
@@ -287,6 +287,38 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
+## Current status (2026-11-20) — v1.48.0
+
+- v1.48.0 (moon's picks, same day): unzip runs + photo albums.
+  (1) The progress bar keeps the filename and file number:
+  send_file/send_files/send_files_split/send_files_routed take
+  an optional `progress_label` that replaces the generic
+  "Uploading…" line; the unzip flow passes "Uploading 2 of 5:
+  name…". (2) The extract phase shows "Unpacking file N of M…"
+  — the loop is a manual next() so the line is set BEFORE the
+  extraction starts (a `for path in gen` only learns the name
+  after the file is out). (3) Unzip runs join the shared
+  progress message (core/jobs): one line with a Stop button.
+  The picker message is deleted once the job registers; the
+  tap is answered FIRST (Telegram only waits so long); cancel
+  is checked between files and mid-upload via the job, and a
+  cancelled run ends with "⏹ Unzip cancelled — sent N of M
+  files." via job.fail(). (4) The run ends with a summary as
+  its own message via job.finish(text) — "✅ Unpacked x.zip:
+  sent 5 of 5 file(s)" (_unzip_summary; counts skipped/failed
+  and the bandwidth stop) — instead of the status message just
+  vanishing. The as-is path also runs under a job but finishes
+  quietly. (5) Photo media groups stream live progress:
+  _media_group_progress stitches WzGram's per-file callbacks
+  into one cumulative bar (new file detected by a current drop
+  or a total change; a fresh wrapper per send attempt, so a
+  FloodWait retry can't double-count). test_v1480.py pins it
+  (23 checks, incl. a full unzip-callback run against a real
+  .zip with a fake client). NOT in this version: split parts
+  as an album (moon's pick pending on the "Part N of M"
+  caption — the filename already shows N, only the total M is
+  new info) — see the v1.47.0 entry's caption correction.
+
 ## Current status (2026-11-19) — v1.47.1
 
 - v1.47.1 (hotfix, moon's report same day): every restricted
@@ -313,12 +345,15 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   whole upload, and a Stop that works between parts. CORRECTION
   (2026-11-20, moon's catch): the original reason written here
   was wrong — Telegram DOES accept a caption on every album
-  item (each keeps its own, shown when opened; the album view
-  just shows no caption under the group when several items have
-  one), and WzGram reports per-file progress for media groups.
-  One-by-one stays the better choice for big splits (visible
-  captions + one cumulative bar), but not for the reasons first
-  written. Every part now carries the caption plus a "Part N of
+  item (each keeps its own), and WzGram reports per-file progress
+  for media groups. Refined the same day by moon's screenshot: the
+  "no caption under the group" rule is only about photo/video
+  grids — for DOCUMENT albums each card shows its own caption
+  inline in the chat (.zip.001/.002 album, caption under each
+  card). So the caption argument against albums was wrong twice
+  over. One-by-one stays the better choice for big splits (one
+  cumulative bar + Stop between parts), but not for the reasons
+  first written. Every part now carries the caption plus a "Part N of
   M" line and its own live progress bar; the cost is separate
   messages instead of one album. _rich_caption applies the
   clean title ("Show S01E01") to a whole split run too (stem

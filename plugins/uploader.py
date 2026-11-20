@@ -94,6 +94,23 @@ def _unzip_prompt_text(job: dict) -> str:
           "the ticked files. Leave everything ticked to unpack it all.")
 
 
+def _unzip_summary(job: dict, sent: int, total: int,
+                   skipped: list[str], failed: list[str],
+                   stopped: bool) -> str:
+    """Final notice for an unpack run, sent as its own message
+    (v1.48.0 — the run's status message used to just vanish)."""
+    name = os.path.basename(job["path"])
+    count = f"{sent} of {total}" if total else str(sent)
+    text = f"✅ Unpacked {name}: sent {count} file(s)"
+    if stopped:
+        text += " — stopped early (bandwidth cap)"
+    if skipped:
+        text += f" · {len(skipped)} skipped"
+    if failed:
+        text += f" · {len(failed)} failed"
+    return text + "."
+
+
 def _unzip_prompt_markup(job: dict) -> InlineKeyboardMarkup:
     """Toggle buttons for the listed files + the actions."""
     rows = []
@@ -1383,19 +1400,35 @@ async def unzip_callback(client: Client, query: CallbackQuery):
         await query.answer("This unzip job expired — send the link again.",
                            show_alert=True)
         return
-    status = query.message
     user_id = query.from_user.id if query.from_user else None
     job_dir, zip_path = job["job_dir"], job["path"]
+    # The run joins the shared progress message (v1.48.0): one line
+    # with a Stop button, and the final summary as its own message.
+    # Answer the tap first (Telegram only waits so long), then
+    # register the job and delete the spent picker message.
+    sent_count = 0
+    total = 0
+    ujob = None
     try:
+        await query.answer("Sending the archive…" if choice == "asis"
+                           else "Unpacking…")
+        label = "📦 " + (clean_display(os.path.basename(zip_path))
+                         or os.path.basename(zip_path))[:37]
+        ujob = await jobs.register(client, job["chat_id"], label,
+                                   reply_to=query.message)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         if choice == "asis":
-            await query.answer("Sending the archive…")
-            await status.edit_text("Uploading the archive…")
+            await ujob.edit("Uploading the archive…")
             await send_files_split(client, job["chat_id"], [zip_path],
                                    "uploader", caption=job["caption"],
-                                   status_msg=status, user_id=user_id)
+                                   job=ujob, user_id=user_id)
+            await ujob.finish()
+            return
         else:
-            await query.answer("Unpacking…")
-            await status.edit_text("Unpacking…")
+            await ujob.edit("Unpacking…")
             extract_dir = os.path.join(job_dir, "extracted")
             try:
                 info = unzip.archive_info(zip_path)
@@ -1416,22 +1449,36 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             # more than the archive plus one file.
             skipped: list[str] = []
             failed: list[str] = []
-            sent_count = 0
             bandwidth_stopped = False
             gen = unzip.iter_extracted(zip_path, extract_dir, skipped,
                                        only_names)
             try:
-                for path in gen:
+                # A manual next() loop (not `for path in gen`) so the
+                # line can say which file is being unpacked BEFORE
+                # the extraction starts — the for loop only learns
+                # the name after the file is already out.
+                while True:
+                    ujob.check_cancelled()
                     if stats.bandwidth_blocked():
                         bandwidth_stopped = True
                         break
+                    await ujob.edit(
+                        f"Unpacking file {sent_count + 1} of {total}…"
+                        if total else "Unpacking…")
                     try:
-                        await status.edit_text(
-                            f"Uploading {sent_count + 1} of "
-                            f"{total}: "
-                            f"{os.path.basename(path)}…")
-                    except Exception:
-                        pass
+                        path = next(gen)
+                    except StopIteration:
+                        break
+                    name = os.path.basename(path)
+                    if total:
+                        await ujob.edit(
+                            f"Uploading {sent_count + 1} of {total}: "
+                            f"{name}…")
+                        bar_label = (f"Uploading {sent_count + 1} of "
+                                     f"{total}: {name[:40]}")
+                    else:
+                        await ujob.edit(f"Uploading {name}…")
+                        bar_label = f"Uploading {name[:40]}"
                     # Oversize files are split into .001/.002
                     # parts before sending (v1.40.0) — a 10 GB
                     # video inside the zip arrives as mkv.001,
@@ -1442,15 +1489,15 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                         # title ("Show S01E01"), not the archive's
                         # name (v1.44.0).
                         file_caption = (
-                            clean_display(os.path.basename(path))
-                            or job["caption"])
+                            clean_display(name) or job["caption"])
                         sent_paths = await send_files_split(
                             client, job["chat_id"], [path],
                             "uploader", caption=file_caption,
-                            status_msg=status, user_id=user_id)
+                            job=ujob, user_id=user_id,
+                            progress_label=bar_label)
                         sent_count += 1
                     except Exception as exc:
-                        failed.append(f"{os.path.basename(path)} ({exc})")
+                        failed.append(f"{name} ({exc})")
                     for sent in sent_paths:
                         try:
                             os.unlink(sent)
@@ -1461,14 +1508,18 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             finally:
                 gen.close()
             if sent_count == 0 and not bandwidth_stopped:
-                await status.edit_text(
+                await ujob.edit(
                     "❌ Nothing could be unzipped from this file"
                     + (f" (skipped: {', '.join(skipped[:5])})"
                        if skipped else "")
                     + ".\nSending the zip itself as-is instead.")
                 await send_files_split(client, job["chat_id"], [zip_path],
                                        "uploader", caption=job["caption"],
-                                       status_msg=status, user_id=user_id)
+                                       job=ujob, user_id=user_id)
+                await ujob.finish(
+                    f"📦 Nothing unzipped from "
+                    f"{os.path.basename(zip_path)} — sent the archive "
+                    f"as-is.")
                 return
             if bandwidth_stopped:
                 try:
@@ -1494,15 +1545,27 @@ async def unzip_callback(client: Client, query: CallbackQuery):
                         + ", ".join(skipped[:10]))
                 except Exception:
                     pass
-        try:
-            await status.delete()
-        except Exception:
-            pass
+            await ujob.finish(_unzip_summary(job, sent_count, total,
+                                             skipped, failed,
+                                             bandwidth_stopped))
+    except JobCancelled:
+        # Stopped by the owner (Stop button or the run's own check):
+        # the shared line clears and a short note says how far it
+        # got. fail() sends the note as its own message.
+        if ujob is not None:
+            count = f" — sent {sent_count} of {total} files." \
+                if total else f" — sent {sent_count} file(s)."
+            await ujob.fail(f"⏹ Unzip cancelled{count}")
     except Exception as exc:
-        try:
-            await status.edit_text(f"Unzip failed: {exc}")
-        except Exception:
-            pass
+        if ujob is not None:
+            await ujob.fail(f"Unzip failed: {exc}")
+        else:
+            # The job never registered (answer/registration failed):
+            # the picker message is still there — say so on it.
+            try:
+                await query.message.edit_text(f"Unzip failed: {exc}")
+            except Exception:
+                pass
     finally:
         cleanup_dir(job_dir)
 

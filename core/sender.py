@@ -189,6 +189,39 @@ def _progress_callback(editor: ThrottledEditor, action: str):
     return callback
 
 
+def _media_group_progress(editor, progress_cb, base_bytes: int,
+                          total_all: int, started: float):
+    """Stitch a media group's per-file progress into one bar.
+
+    WzGram's send_media_group reports progress per file (the bar
+    restarts at 0 for each file). This wrapper detects a new file
+    starting (current drops, or the total changes) and carries the
+    finished bytes forward, so the editor and progress_cb see one
+    cumulative upload. A file whose first chunk already exceeds
+    the previous file's total can slip past the reset check — the
+    caller corrects the total with one final jump after the group
+    (see send_files). Build one wrapper per send attempt: a
+    FloodWait retry restarts the upload from byte 0, and a reused
+    wrapper would double-count the finished bytes.
+    """
+    state = {"done": base_bytes, "last_current": 0, "last_total": 0}
+
+    async def callback(current: int, total: int):
+        if state["last_total"] and (current < state["last_current"]
+                                    or total != state["last_total"]):
+            state["done"] += state["last_total"]
+        state["last_current"] = current
+        state["last_total"] = total
+        overall = state["done"] + current
+        if editor is not None:
+            await editor.edit(
+                progress_text("Uploading…", overall, total_all, started))
+        if progress_cb is not None:
+            await progress_cb(overall, total_all)
+
+    return callback
+
+
 #: Longest single Telegram-imposed wait a send will sit through
 #: before giving up (10 minutes). Longer waits fail the job with a
 #: clear error instead of holding the job slot for hours.
@@ -326,13 +359,17 @@ def _split_run(paths: list[str], start: int) -> list[str] | None:
 
 async def send_file(client, chat_id: int, path: str, caption: str = "",
                     status_msg=None, progress_cb=None,
-                    force_document: bool = False, job=None):
+                    force_document: bool = False, job=None,
+                    progress_label: str | None = None):
     """Send one local file as video / photo / audio / document.
 
     Returns the sent Message (or None if the client returned nothing).
     `progress_cb`, when given, is awaited with (current, total) bytes
     as Telegram reports them — in addition to the status-message
     editor, not instead of it.
+    `progress_label`, when given, replaces the generic "Uploading…"
+    line on the bar — the unzip flow passes "Uploading 2 of 5:
+    name…" so the bar keeps saying which file it is (v1.48.0).
     `force_document` sends a video as a plain file instead (the
     /destination "Send URL uploads as" setting); photos, audio and
     split parts are unaffected.
@@ -379,7 +416,8 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
                else None))
     callbacks = []
     if editor is not None:
-        callbacks.append(_progress_callback(editor, "Uploading…"))
+        callbacks.append(_progress_callback(
+            editor, progress_label or "Uploading…"))
     if progress_cb is not None:
         callbacks.append(progress_cb)
     if job is not None:
@@ -461,7 +499,8 @@ async def _attach_mediainfo_button(sent) -> None:
 async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                      status_msg=None, mediainfo_button: bool = False,
                      progress_cb=None,
-                     force_document: bool = False, job=None) -> list:
+                     force_document: bool = False, job=None,
+                     progress_label: str | None = None) -> list:
     """Send a job's resulting files; returns the sent Messages.
 
     `force_document` sends videos as plain files instead (the
@@ -475,13 +514,15 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
     (plus its "Part N of M" line) visible in the chat, one
     cumulative progress bar across all parts, and a Stop that
     works between parts. An album would also keep each part's own
-    caption — Telegram accepts a caption on every item and shows
-    it when the item is opened — but the album view shows no
-    caption under the group when several items have one, and the
-    group's progress bar restarts per file instead of running
-    across the whole upload. The caption rides on the first item
-    only for other multi-file sends, like Telegram clients do it,
-    and gains a size/duration/quality line (see _rich_caption).
+    caption — and for DOCUMENTS each card shows its caption
+    inline in the chat (moon screenshot 2026-11-20: a .zip.001 /
+    .zip.002 album with a caption under each card; the "no
+    caption under the group" rule is only about photo/video
+    grids). The album's real costs are the per-file progress bar
+    (restarts per file) and no Stop mid-group. The caption rides
+    on the first item only for other multi-file sends, like
+    Telegram clients do it, and gains a size/duration/quality
+    line (see _rich_caption).
     Every send rides out short Telegram FloodWaits instead of
     failing the job.
 
@@ -490,12 +531,13 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     `progress_cb`, when given, is awaited with (sent_so_far, total)
     across ALL files — cumulative, so a caller can show one bar and one
-    speed for the whole upload. Photo media groups report no live
-    progress (we don't pass a progress callback to
-    send_media_group — WzGram does accept one, per file, not
-    cumulative), so the callback fires once per finished group
-    instead of streaming.
+    speed for the whole upload. Photo media groups stream live
+    progress through _media_group_progress, which stitches WzGram's
+    per-file callbacks into one cumulative bar; the callback still
+    fires once per finished group as the final correction.
 
+    `progress_label`, when given, replaces the generic "Uploading…"
+    line on the bar for every file in the run (see send_file).
     `job`, when given (a core.jobs.Job), replaces the status message
     as the progress target and makes the run cancellable between
     files/groups (a media group already sending can't be cut).
@@ -530,7 +572,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
         sent = await send_file(client, chat_id, paths[0], caption, status_msg,
                                progress_cb=_per_file(0)
                                if progress_cb is not None else None,
-                               force_document=force_document, job=job)
+                               force_document=force_document, job=job,
+                               progress_label=progress_label)
         if sent is not None:
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
@@ -551,7 +594,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                                    caption if first else "", status_msg,
                                    progress_cb=_per_file(sent_bytes)
                                    if progress_cb is not None else None,
-                                   force_document=force_document, job=job)
+                                   force_document=force_document, job=job,
+                                   progress_label=progress_label)
             if sent is not None:
                 sent_all.append(sent)
         else:
@@ -559,13 +603,25 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                 InputMediaPhoto(p, caption=caption if (first and j == 0) else "")
                 for j, p in enumerate(chunk)
             ]
-            group = await _with_flood_retry(
-                lambda media=media: client.send_media_group(chat_id, media),
-                group_editor)
+
+            def _send_group(media=media):
+                # Fresh progress wrapper per attempt: a FloodWait
+                # retry restarts the upload from byte 0, and a
+                # reused wrapper would double-count finished bytes.
+                group_progress = None
+                if group_editor is not None or progress_cb is not None:
+                    group_progress = _media_group_progress(
+                        group_editor, progress_cb, sent_bytes, total_all,
+                        time.time())
+                return client.send_media_group(chat_id, media,
+                                               progress=group_progress)
+
+            group = await _with_flood_retry(_send_group, group_editor)
             if group:
                 sent_all.extend(group)
-            # No live progress wired for a media group — report it as
-            # done in one jump once the group is sent.
+            # Final correction: the per-file wrapper can under-count
+            # a tiny file — report the whole group as done in one
+            # jump once it is sent.
             if progress_cb is not None:
                 sent_bytes += sum(sizes.get(p, 0) for p in chunk)
                 await progress_cb(sent_bytes, total_all)
@@ -587,11 +643,10 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
             # (plus its "Part N of M" line) visible in the chat,
             # one cumulative progress bar across the whole upload,
             # and a Stop that works between parts. An album would
-            # also keep each part's own caption (Telegram accepts
-            # a caption on every item, shown when the item is
-            # opened) and WzGram reports per-file progress for
-            # groups — but the album view shows no caption under
-            # the group, and the bar restarts per file.
+            # also keep each part's own caption — for documents
+            # each card shows it inline in the chat (moon
+            # screenshot 2026-11-20) — but the bar restarts per
+            # file and a group already sending can't be cut.
             total_parts = len(run)
             for n, part in enumerate(run, 1):
                 if job is not None:
@@ -603,7 +658,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                     client, chat_id, part, part_caption, status_msg,
                     progress_cb=_per_file(sent_bytes)
                     if progress_cb is not None else None,
-                    force_document=force_document, job=job)
+                    force_document=force_document, job=job,
+                    progress_label=progress_label)
                 if sent is not None:
                     sent_all.append(sent)
                 if progress_cb is not None:
@@ -616,7 +672,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                                caption if first else "", status_msg,
                                progress_cb=_per_file(sent_bytes)
                                if progress_cb is not None else None,
-                               force_document=force_document, job=job)
+                               force_document=force_document, job=job,
+                               progress_label=progress_label)
         if sent is not None:
             sent_all.append(sent)
         if progress_cb is not None:
@@ -634,7 +691,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 async def send_files_split(bot_client, chat_id: int, paths: list[str],
                            feature: str, caption: str = "",
                            status_msg=None, job=None,
-                           user_id=None) -> list[str]:
+                           user_id=None,
+                           progress_label: str | None = None) -> list[str]:
     """Split oversize files, then send_files_routed().
 
     Every file over Telegram's cap is chopped into .001/.002
@@ -645,7 +703,9 @@ async def send_files_split(bot_client, chat_id: int, paths: list[str],
     the original is already gone, deleted by the splitter).
     `job`, when given, is the progress target + cancel handle
     (see send_files). `user_id`, when given, picks that user's
-    own destination/send-as settings (v1.45.0)."""
+    own destination/send-as settings (v1.45.0). `progress_label`,
+    when given, replaces the generic "Uploading…" line on the
+    bar (see send_file)."""
     if job is not None:
         job.check_cancelled()
     send_paths: list[str] = []
@@ -659,7 +719,8 @@ async def send_files_split(bot_client, chat_id: int, paths: list[str],
                 await splitter.maybe_split([path], job, status_msg))
     await send_files_routed(bot_client, chat_id, send_paths, feature,
                             caption=caption, status_msg=status_msg,
-                            job=job, user_id=user_id)
+                            job=job, user_id=user_id,
+                            progress_label=progress_label)
     return send_paths
 
 
@@ -668,7 +729,8 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                             status_msg=None,
                             mediainfo_button: bool = False,
                             force_document: bool | None = None,
-                            job=None, user_id=None) -> list:
+                            job=None, user_id=None,
+                            progress_label: str | None = None) -> list:
     """send_files() to the destination chosen for `feature`.
 
     Destinations (core/settings.py, /destination command):
@@ -709,9 +771,11 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                                     status_msg=status_msg,
                                     mediainfo_button=False,
                                     force_document=force_document,
-                                    job=job)
+                                    job=job,
+                                    progress_label=progress_label)
     return await send_files(bot_client, chat_id, paths, caption=caption,
                             status_msg=status_msg,
                             mediainfo_button=mediainfo_button,
                             force_document=force_document,
-                            job=job)
+                            job=job,
+                            progress_label=progress_label)
