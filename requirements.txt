@@ -8,6 +8,11 @@ wzgram==3.1.5
 
 uvloop
 yt-dlp[default,curl-cffi]
+# JavaScript challenge solver for yt-dlp (v1.51.4): YouTube's
+# signature/PO-token challenges need these scripts plus a JS runtime
+# (Deno, installed in the Dockerfile). Without it yt-dlp warns "n
+# challenge solving failed" and drops formats.
+yt-dlp-ejs
 gallery-dl
 aiohttp
 curl-cffi

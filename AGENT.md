@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.3** (2026-11-23).
+- **Current version: v1.51.4** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,36 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-23) — v1.51.3
+## Current status (2026-11-23) — v1.51.4
+
+- v1.51.4 (same night): v1.51.3's retest failed with "The
+  page needs to be reloaded" — YouTube's own player-response
+  reason, still zero formats. Root cause (read from yt-dlp
+  2026.10.26 source): when a login session is present yt-dlp
+  SILENTLY DROPS visionos/android/ios from the client list
+  (they don't support cookies), so the forced list collapsed
+  to [tv, web] — both JS-needing, and the Space had no JS
+  runtime. There is no client that is both JS-less and
+  cookie-supporting, so the real fix is a JS runtime:
+  Dockerfile installs Deno v2.9.8 (pinned, checksum-verified,
+  yt-dlp's default runtime — no code config needed) and
+  requirements.txt adds yt-dlp-ejs (the challenge-solver
+  scripts; without it yt-dlp warns "n challenge solving
+  failed" even with a runtime). The forced player_client
+  list is REMOVED — defaults are correct again with JS.
+  Verified in the sandbox: node + yt-dlp-ejs extracts the
+  Avengers trailer fine (impersonation + cookies + default
+  clients), where every no-JS attempt failed. The live
+  retest is still the verdict for the Space (Deno there,
+  node here). Notes: nodejs-bin on PyPI is a dead end
+  (18.4.0a4 alpha, no node binary lands in the venv bin);
+  Debian's nodejs 18 lacks the permission flags yt-dlp's
+  node provider passes. The sandbox proxy stalls YouTube
+  API POSTs intermittently — a trailer failure here is not
+  conclusive; a success is.
+- v1.51.3 (2026-11-23) below.
+
+## Previous status (2026-11-23) — v1.51.3
 
 - v1.51.3 (same night): v1.51.2 got further — impersonation
   works, the extractor now reaches YouTube — but the Avengers

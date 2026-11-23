@@ -66,17 +66,13 @@ def _base_opts(dest_dir: str, url: str | None = None,
     except ImportError:
         pass
 
-    # YouTube player clients (v1.51.3): with a logged-in session yt-dlp
-    # defaults to web-family clients (web_embedded, tv_samsung, web),
-    # which need a JavaScript runtime to unscramble video URLs — and the
-    # Space has no JS runtime, so every format was dropped and the
-    # trailer failed with "Requested format is not available". These
-    # clients return plain URLs that need no JS; web stays last as a
-    # fallback. Keyed to the youtube extractor only — other sites are
-    # unaffected.
-    opts["extractor_args"] = {
-        "youtube": {"player_client": ["visionos", "android", "ios", "tv", "web"]},
-    }
+    # No forced player_client list (v1.51.4): v1.51.3 forced JS-less
+    # clients, but yt-dlp silently drops those when a login session is
+    # present (they don't support cookies), leaving only JS-needing
+    # clients — so the real fix is the JS runtime (Deno in the
+    # Dockerfile) plus yt-dlp-ejs, and yt-dlp's default client
+    # selection is correct again. Do not re-add a forced list without
+    # re-checking the SUPPORTS_COOKIES interaction above.
     if state is not None:
         def hook(d):
             state.update(d)

@@ -4,8 +4,24 @@ FROM python:3.11-slim
 # mediainfo powers the /mediainfo partial-probe reports; p7zip-full
 # powers .rar/.7z listing + extraction (core/unzip.py).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg mediainfo p7zip-full \
+    && apt-get install -y --no-install-recommends ffmpeg mediainfo p7zip-full curl unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno: yt-dlp's JavaScript runtime (v1.51.4). YouTube's web clients
+# need JS to unscramble video URLs and solve PO-token challenges; the
+# Space had no JS runtime, so every format was dropped ("Requested
+# format is not available") and the JS-less clients were refused
+# ("The page needs to be reloaded"). Deno is a single static binary
+# and yt-dlp enables it by default, so no code config is needed.
+# Pinned to v2.9.8; the zip is checksum-verified at build time.
+RUN cd /tmp \
+    && curl -fsSL -O https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip \
+    && curl -fsSL -O https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-unknown-linux-gnu.zip.sha256sum \
+    && sha256sum -c deno-x86_64-unknown-linux-gnu.zip.sha256sum \
+    && unzip -o deno-x86_64-unknown-linux-gnu.zip -d /usr/local/bin deno \
+    && chmod +x /usr/local/bin/deno \
+    && rm deno-x86_64-unknown-linux-gnu.zip deno-x86_64-unknown-linux-gnu.zip.sha256sum \
+    && deno --version
 
 # Playwright + Chromium for the headless browser scraper
 # (core/extractors/browser_scan.py). Installed as root because
