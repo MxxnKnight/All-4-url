@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.0** (2026-11-23).
+- **Current version: v1.51.1** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,29 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-23) — v1.51.0
+## Current status (2026-11-23) — v1.51.1
+
+- v1.51.1 (same night): v1.51.0's retest failed with a BLANK
+  yt-dlp error line — the SSL EOF was gone, but the failure
+  carried no message at all, and /updateytdlp showed the Space
+  already on 2026.10.26 (same version as the working sandbox
+  smoke test, so stale versions are ruled out). A killed
+  connection does NOT explain the blank: a local RST-server
+  experiment gives full error text in both the urllib and the
+  curl-cffi paths, and impersonation + a fake HttpOnly cookie
+  jar extracts fine from the sandbox. So this version adds
+  diagnostics instead of another blind fix: _extract_sync and
+  _download_sync now catch Exception (JobCancelled is a
+  BaseException, so cancels still propagate) and wrap it via
+  _wrap_error, which puts the exception TYPE in the message
+  (a bare failure now shows e.g. "yt-dlp: TransportError"
+  instead of "yt-dlp: ") and logs the full traceback to the
+  Space logs. Next evidence needed: an Instagram/Reddit link
+  on the live bot (decides YouTube-only vs every-site) plus
+  the typed error on the next YouTube retry.
+- v1.51.0 (2026-11-23) below.
+
+## Previous status (2026-11-23) — v1.51.0
 
 - v1.51.0 (moon's YouTube reports, same day): every YouTube link
   failed from the HF Space with yt-dlp SSL EOF on the API page —

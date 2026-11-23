@@ -6,6 +6,7 @@ small shared dict, and an async poller turns it into throttled edits.
 """
 
 import asyncio
+import logging
 import os
 
 import config
@@ -13,6 +14,8 @@ from core import stats
 from core.cookies import jar_for_url
 from core.jobs import JobCancelled
 from core.utils import VIDEO_EXTS, list_files
+
+log = logging.getLogger(__name__)
 
 #: Audio extensions, for ordering downloads video/audio-first.
 _AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".wav", ".opus", ".ogg"}
@@ -70,15 +73,31 @@ def _base_opts(dest_dir: str, url: str | None = None,
     return opts
 
 
+def _wrap_error(exc: Exception) -> YtdlpError:
+    """YtdlpError carrying the exception TYPE, not just its message.
+
+    yt-dlp sometimes fails with an empty message (v1.51.0: every
+    YouTube call on HF died with a blank "yt-dlp: " line), and the
+    type is the only clue then. The full traceback goes to the
+    Space logs too, so the real cause is findable afterwards.
+    """
+    log.exception("yt-dlp call failed: %s", type(exc).__name__)
+    msg = str(exc)[:500]
+    if msg:
+        return YtdlpError(f"{type(exc).__name__}: {msg}")
+    return YtdlpError(type(exc).__name__)
+
+
 def _extract_sync(url: str, opts: dict) -> dict:
     from yt_dlp import YoutubeDL
-    from yt_dlp.utils import DownloadError
 
     try:
         with YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
-    except DownloadError as exc:
-        raise YtdlpError(str(exc)[:500]) from exc
+    except Exception as exc:
+        # JobCancelled is a BaseException, so this never swallows a
+        # user cancel; everything else becomes a typed YtdlpError.
+        raise _wrap_error(exc) from exc
 
 
 async def extract_info(url: str, ignore_no_formats: bool = False) -> dict:
@@ -197,13 +216,13 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
 
     def _download_sync():
         from yt_dlp import YoutubeDL
-        from yt_dlp.utils import DownloadError
 
         try:
             with YoutubeDL(opts) as ydl:
                 ydl.download([url])
-        except DownloadError as exc:
-            raise YtdlpError(str(exc)[:500]) from exc
+        except Exception as exc:
+            # JobCancelled is a BaseException: never swallowed here.
+            raise _wrap_error(exc) from exc
 
     poll_task = asyncio.create_task(poll())
     loop = asyncio.get_running_loop()
