@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.50.0** (2026-11-20).
+- **Current version: v1.51.0** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,30 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-20) — v1.50.0
+## Current status (2026-11-23) — v1.51.0
+
+- v1.51.0 (moon's YouTube reports, same day): every YouTube link
+  failed from the HF Space with yt-dlp SSL EOF on the API page —
+  the TLS handshake itself was killed, before cookies or login
+  could matter (both failing videos extract fine from the sandbox
+  with no cookies at all). Fix: ytdlp_engine now sets
+  impersonate=chrome on EVERY yt-dlp call (moon's call: all
+  cookie sites plus normal sites, not YouTube-only), so the
+  handshake looks like real Chrome; guarded by a curl_cffi
+  import check so a missing dep never breaks downloads.
+  Same version: the cookie parser skipped every line starting
+  with #, so all #HttpOnly_ login cookies (SID, HSID, ...) were
+  invisible — a 5-cookie YouTube file counted 2 and looked
+  logged-out. parse_cookies and cookie_names now strip the
+  prefix first via a shared _cookie_lines helper. Verified by
+  unit checks (parser counts 5, SID found, looks_logged_in
+  true; _base_opts sets impersonate for YouTube/Instagram/
+  Reddit/generic URLs) plus a yt-dlp impersonate smoke test.
+  Live-bot retest still needed: the same two YouTube links,
+  then Instagram/Reddit.
+- v1.50.0 (2026-11-20) below.
+
+## Previous status (2026-11-20) — v1.50.0
 
 - v1.50.0 (moon's pack link, same day): gdflix works again, plus
   a Telegram-link choice. The site changed since the extractor

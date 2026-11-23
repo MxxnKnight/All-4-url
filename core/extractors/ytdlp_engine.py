@@ -46,6 +46,17 @@ def _base_opts(dest_dir: str, url: str | None = None,
     cookies = jar_for_url(url) if url else config.cookies_path()
     if cookies:
         opts["cookiefile"] = cookies
+    # Chrome impersonation for every site (v1.51.0): YouTube, Instagram,
+    # Reddit and friends drop plain-Python TLS handshakes from datacenter
+    # IPs — YouTube died on every call from HF with SSL EOF. curl-cffi
+    # makes the handshake look like real Chrome. Guarded: yt-dlp refuses
+    # to start when impersonation is requested but curl-cffi is missing,
+    # so the option is only set when the import works.
+    try:
+        import curl_cffi  # noqa: F401
+        opts["impersonate"] = "chrome"
+    except ImportError:
+        pass
     if state is not None:
         def hook(d):
             state.update(d)

@@ -69,13 +69,28 @@ def jar_path(platform: str) -> str:
     return os.path.join(COOKIES_DIR, f"{safe}.txt")
 
 
+def _cookie_lines(text: str):
+    """Netscape cookie lines, with the #HttpOnly_ prefix removed.
+
+    HttpOnly cookies are written as `#HttpOnly_.domain ...` — the
+    prefix is part of the cookie line, not a comment. Without
+    stripping it first, every login cookie (SID, HSID, ...) is
+    invisible to the parser: a 5-cookie YouTube file counted 2 and
+    looked logged-out (2026-11-23).
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        if not line or line.startswith("#"):
+            continue
+        yield line
+
+
 def parse_cookies(text: str) -> tuple:
     """(cookie_count, sorted domains) for Netscape-format text."""
     domains, count = set(), 0
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in _cookie_lines(text):
         parts = line.split("\t")
         if len(parts) >= 7:
             count += 1
@@ -86,10 +101,7 @@ def parse_cookies(text: str) -> tuple:
 def cookie_names(text: str) -> set:
     """Cookie names present in Netscape-format text."""
     names = set()
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in _cookie_lines(text):
         parts = line.split("\t")
         if len(parts) >= 7:
             names.add(parts[5])
