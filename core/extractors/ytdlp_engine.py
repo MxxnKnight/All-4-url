@@ -65,6 +65,18 @@ def _base_opts(dest_dir: str, url: str | None = None,
         opts["impersonate"] = ImpersonateTarget.from_str("chrome")
     except ImportError:
         pass
+
+    # YouTube player clients (v1.51.3): with a logged-in session yt-dlp
+    # defaults to web-family clients (web_embedded, tv_samsung, web),
+    # which need a JavaScript runtime to unscramble video URLs — and the
+    # Space has no JS runtime, so every format was dropped and the
+    # trailer failed with "Requested format is not available". These
+    # clients return plain URLs that need no JS; web stays last as a
+    # fallback. Keyed to the youtube extractor only — other sites are
+    # unaffected.
+    opts["extractor_args"] = {
+        "youtube": {"player_client": ["visionos", "android", "ios", "tv", "web"]},
+    }
     if state is not None:
         def hook(d):
             state.update(d)

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.2** (2026-11-23).
+- **Current version: v1.51.3** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,34 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-23) — v1.51.2
+## Current status (2026-11-23) — v1.51.3
+
+- v1.51.3 (same night): v1.51.2 got further — impersonation
+  works, the extractor now reaches YouTube — but the Avengers
+  trailer failed with "Requested format is not available".
+  Mechanism (read from yt-dlp 2026.10.26 source): with a
+  logged-in session yt-dlp picks _DEFAULT_AUTHED_CLIENTS
+  (web_embedded, tv_samsung, web) BEFORE the JS-less
+  fallback, and web-family clients need a JS runtime to
+  unscramble video URLs. The Space has no JS runtime, so
+  every format was dropped and the selector matched nothing.
+  Fix: extractor_args forces player_client to
+  [visionos, android, ios, tv, web] — the first four return
+  plain URLs needing no JS; web stays last as fallback.
+  Keyed to the youtube extractor only. Verified end-to-end
+  through the real engine module (opts + Shorts extraction);
+  the trailer itself cannot be tested from the sandbox (the
+  proxy stalls on its API page), so the live retest is the
+  real verdict. Side findings, not fixed here: (1) every
+  YoutubeDL close() SAVES the cookiejar back to the
+  cookiefile, so installed jars mutate on every run —
+  YouTube expires invalid auth cookies and the save drops
+  them; (2) a fake-jar test expiry (1790000000 = Sep 2026)
+  was already past, which silently disabled the authed path
+  until fixed to 1890000000.
+- v1.51.2 (2026-11-23) below.
+
+## Previous status (2026-11-23) — v1.51.2
 
 - v1.51.2 (same night): the v1.51.1 diagnostics paid off
   immediately — the YouTube retry showed "yt-dlp:
