@@ -52,12 +52,17 @@ def _base_opts(dest_dir: str, url: str | None = None,
     # Chrome impersonation for every site (v1.51.0): YouTube, Instagram,
     # Reddit and friends drop plain-Python TLS handshakes from datacenter
     # IPs — YouTube died on every call from HF with SSL EOF. curl-cffi
-    # makes the handshake look like real Chrome. Guarded: yt-dlp refuses
-    # to start when impersonation is requested but curl-cffi is missing,
-    # so the option is only set when the import works.
+    # makes the handshake look like real Chrome.
+    # The value MUST be an ImpersonateTarget object, not the string
+    # "chrome": the CLI converts the string, the Python API does not,
+    # and a raw string dies in YoutubeDL.__init__ with a bare
+    # AssertionError (v1.51.0 broke every yt-dlp download this way).
+    # Guarded: without curl-cffi, or on a yt-dlp too old to have the
+    # impersonate module, the option is simply not set.
     try:
         import curl_cffi  # noqa: F401
-        opts["impersonate"] = "chrome"
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts["impersonate"] = ImpersonateTarget.from_str("chrome")
     except ImportError:
         pass
     if state is not None:

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.1** (2026-11-23).
+- **Current version: v1.51.2** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,31 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-23) — v1.51.1
+## Current status (2026-11-23) — v1.51.2
+
+- v1.51.2 (same night): the v1.51.1 diagnostics paid off
+  immediately — the YouTube retry showed "yt-dlp:
+  AssertionError", and the cause was MY bug in v1.51.0, not
+  the server: the yt-dlp Python API expects an
+  ImpersonateTarget OBJECT for the impersonate option, but I
+  passed the raw string "chrome". The CLI converts the string
+  first; the API does not — YoutubeDL.__init__ calls
+  is_supported_target("chrome"), whose bare assert fails with
+  an empty AssertionError before any request goes out. So
+  v1.51.0/1.51.1 broke EVERY yt-dlp download, all sites, not
+  just YouTube. Reproduced exactly in the sandbox (string ->
+  AssertionError '', object -> extracts fine). Fix: _base_opts
+  now passes ImpersonateTarget.from_str("chrome"), still
+  guarded by the curl_cffi + module imports. Verified
+  end-to-end through the real engine module: opts carry the
+  ImpersonateTarget object and _extract_sync pulls the
+  fQfOJRhmDEc Short. The original SSL EOF question is still
+  open — impersonation has never actually run on the Space
+  yet, so the live retest decides whether it fixes the
+  handshake kill.
+- v1.51.1 (2026-11-23) below.
+
+## Previous status (2026-11-23) — v1.51.1
 
 - v1.51.1 (same night): v1.51.0's retest failed with a BLANK
   yt-dlp error line — the SSL EOF was gone, but the failure
