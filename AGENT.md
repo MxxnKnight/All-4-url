@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.4** (2026-11-23).
+- **Current version: v1.51.5** (2026-11-23).
 
 ## How moon works — the contract
 
@@ -287,7 +287,28 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-23) — v1.51.4
+## Current status (2026-11-23) — v1.51.5
+
+- v1.51.5 (same night): v1.51.4's probe WORKS — the
+  resolution picker appeared (first time tonight) — but the
+  download then failed "unable to download video data: HTTP
+  Error 403: Forbidden" after a long delay (retries: 10
+  stretches any failure out). The same download works from
+  the sandbox with BOTH node and Deno v2.9.8 + yt-dlp-ejs,
+  so the 403 is Space-specific (logged-in session tokens
+  vs the Space IP — undetermined). Two changes: (1) a
+  _CollectingLogger on every yt-dlp call captures warnings
+  (PO-token / n-sig / cookie warnings) and _wrap_error
+  appends the newest 3 to the failure message, so the next
+  failure explains itself; (2) download() retries ONCE
+  without the cookiefile on a 403 — the cookieless clients
+  need no PO tokens. Unit-tested (warning capture, dedup,
+  retry only on 403-with-cookies, no retry otherwise).
+  Still open: why the Space 403s while the sandbox does
+  not; the next failure's attached warnings should say.
+- v1.51.4 (2026-11-23) below.
+
+## Previous status (2026-11-23) — v1.51.4
 
 - v1.51.4 (same night): v1.51.3's retest failed with "The
   page needs to be reloaded" — YouTube's own player-response

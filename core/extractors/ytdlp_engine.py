@@ -86,22 +86,55 @@ def _base_opts(dest_dir: str, url: str | None = None,
     return opts
 
 
-def _wrap_error(exc: Exception) -> YtdlpError:
+class _CollectingLogger:
+    """Captures yt-dlp's warnings so a failure message can say WHY,
+    not just what (v1.51.5: the Space's first post-JS download 403'd
+    and nothing in the error said whether PO-token generation, n-sig
+    solving, or the IP was at fault). Only warnings are kept: the
+    final error line arrives via error() and would duplicate the
+    exception message, and debug() is just progress noise. One
+    collector per call — never shared between jobs."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        self.messages.append(str(msg))
+
+    def error(self, msg):
+        pass
+
+
+def _wrap_error(exc: Exception, notes: list[str] | None = None) -> YtdlpError:
     """YtdlpError carrying the exception TYPE, not just its message.
 
     yt-dlp sometimes fails with an empty message (v1.51.0: every
     YouTube call on HF died with a blank "yt-dlp: " line), and the
     type is the only clue then. The full traceback goes to the
     Space logs too, so the real cause is findable afterwards.
+    `notes` (the collector's warnings, newest first) are appended
+    briefly — the message goes to Telegram, so keep it readable.
     """
     log.exception("yt-dlp call failed: %s", type(exc).__name__)
     msg = str(exc)[:500]
-    if msg:
-        return YtdlpError(f"{type(exc).__name__}: {msg}")
-    return YtdlpError(type(exc).__name__)
+    base = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+    if notes:
+        seen: list[str] = []
+        for note in reversed(notes):
+            note = " ".join(str(note).split())[:150]
+            if note and note not in seen:
+                seen.append(note)
+            if len(seen) >= 3:
+                break
+        if seen:
+            base += " | yt-dlp said: " + " / ".join(reversed(seen))
+    return YtdlpError(base)
 
 
-def _extract_sync(url: str, opts: dict) -> dict:
+def _extract_sync(url: str, opts: dict, collector: _CollectingLogger | None = None) -> dict:
     from yt_dlp import YoutubeDL
 
     try:
@@ -110,7 +143,7 @@ def _extract_sync(url: str, opts: dict) -> dict:
     except Exception as exc:
         # JobCancelled is a BaseException, so this never swallows a
         # user cancel; everything else becomes a typed YtdlpError.
-        raise _wrap_error(exc) from exc
+        raise _wrap_error(exc, collector.messages if collector else None) from exc
 
 
 async def extract_info(url: str, ignore_no_formats: bool = False) -> dict:
@@ -121,8 +154,10 @@ async def extract_info(url: str, ignore_no_formats: bool = False) -> dict:
     opts.pop("outtmpl", None)
     if ignore_no_formats:
         opts["ignore_no_formats_error"] = True
+    collector = _CollectingLogger()
+    opts["logger"] = collector
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _extract_sync, url, opts)
+    return await loop.run_in_executor(None, _extract_sync, url, opts, collector)
 
 
 def carousel_image_urls(info: dict) -> list[str]:
@@ -213,6 +248,9 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
         opts["subtitleslangs"] = ["ml", "en.*"]
         opts["subtitlesformat"] = "srt/best"
 
+    collector = _CollectingLogger()
+    opts["logger"] = collector
+
     before = set(list_files(dest_dir))
     stop_polling = asyncio.Event()
 
@@ -235,7 +273,23 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
                 ydl.download([url])
         except Exception as exc:
             # JobCancelled is a BaseException: never swallowed here.
-            raise _wrap_error(exc) from exc
+            # A 403 on the video bytes can mean the logged-in
+            # session's tokens are the problem (v1.51.5: the Space's
+            # first post-JS download 403'd with cookies, while the
+            # same download worked anonymously from the sandbox).
+            # Retry once without the cookiefile — the cookieless
+            # clients need no PO tokens. Only on 403, only once.
+            if "403" in str(exc) and opts.get("cookiefile"):
+                log.warning("yt-dlp download 403 with cookies; retrying without them")
+                retry_opts = dict(opts)
+                retry_opts.pop("cookiefile", None)
+                try:
+                    with YoutubeDL(retry_opts) as ydl:
+                        ydl.download([url])
+                    return
+                except Exception as retry_exc:
+                    raise _wrap_error(retry_exc, collector.messages) from retry_exc
+            raise _wrap_error(exc, collector.messages) from exc
 
     poll_task = asyncio.create_task(poll())
     loop = asyncio.get_running_loop()
