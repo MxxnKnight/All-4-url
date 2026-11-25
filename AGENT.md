@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.7** (2026-11-25).
+- **Current version: v1.51.8** (2026-11-26).
 
 ## How moon works — the contract
 
@@ -287,7 +287,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-25) — v1.51.7
+## Current status (2026-11-26) — v1.51.8
+
+- v1.51.8 (moon, 2026-11-26): /live arguments, moon's syntax.
+  `/live -t 30 <link>` — each part is 30 minutes (5–60, default
+  15); `/live -s 20 <link>` — the whole recording stops after 20
+  minutes; both combine (`/live -t 10 -s 30 <link>`). Flags may
+  sit before or after the link; a bad value answers with the
+  usage instead of starting. The part length rides on the job
+  (LiveJob.segment_min) into ffmpeg's -segment_time and the
+  status line; the total limit is a deadline the watcher checks
+  each poll, ending with a "⏱ Time limit reached" summary (the
+  partial last part is finished and sent, like a Stop tap). The
+  status line also shows "stops after N min" while a limit is
+  set. Tests: test_v1518.py 24/24 (parser incl. edges and
+  errors, ffmpeg segment time, status text, deadline watch,
+  time-up summary). test_v1453 17/17, test_v1452 19/19; v1517
+  22/23 fails only its pinned version check (expected).
 
 - v1.51.7 (moon, 2026-11-25): /live stopping you can actually
   reach. His Kick recording worked (2x 15-min parts) but he saw no

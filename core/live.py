@@ -99,6 +99,14 @@ class LiveJob:
         self.bytes_sent = 0
         self.failed_parts = 0
         self.sent_names: set[str] = set()
+        #: Per-recording arguments (v1.51.8, /live -t / -s): how
+        #: long each part is, and an optional total time limit.
+        #: Defaults are the config values / no limit.
+        self.segment_min = config.LIVE_SEGMENT_MIN
+        self.stop_after_min: int | None = None
+        #: Epoch when the total limit runs out; set when the
+        #: recording starts (0 = no limit).
+        self.stop_deadline = 0.0
         #: The last part message sent, so the Stop button can ride on
         #: it (v1.51.7) and be cleared when the recording ends.
         self.last_part_msg = None
@@ -259,7 +267,7 @@ async def probe_live(url: str) -> dict:
 
 
 def ffmpeg_cmd(stream_urls: list[str], headers: dict,
-               out_pattern: str) -> list[str]:
+               out_pattern: str, segment_seconds: int | None = None) -> list[str]:
     """ffmpeg: live stream -> timed MP4 segments, stream-copy.
 
     -nostdin: ffmpeg must never read the terminal (it would take
@@ -269,6 +277,8 @@ def ffmpeg_cmd(stream_urls: list[str], headers: dict,
     seconds long; -reset_timestamps makes each part start at 0, so
     every part plays standalone. Input options repeat before each
     -i: they apply to the following input only.
+    `segment_seconds` overrides the config default (v1.51.8:
+    /live -t sets it per recording).
     """
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error"]
     header_str = "".join(f"{k}: {v}\r\n"
@@ -284,7 +294,9 @@ def ffmpeg_cmd(stream_urls: list[str], headers: dict,
             "-map", f"{len(stream_urls) - 1}:a:0?",
             "-c", "copy",
             "-f", "segment",
-            "-segment_time", str(config.LIVE_SEGMENT_SECONDS),
+            "-segment_time", str(segment_seconds
+                                if segment_seconds is not None
+                                else config.LIVE_SEGMENT_SECONDS),
             "-reset_timestamps", "1",
             "-segment_format", "mp4",
             out_pattern]
@@ -328,11 +340,13 @@ def _ready_segments(job_dir: str, sent: set, recorder_done: bool) -> list[str]:
 
 def _status_text(job: LiveJob, prefix: str) -> str:
     elapsed = human_time(time.time() - job.started) if job.started else "0:00"
+    stop_note = (f" · stops after {job.stop_after_min} min"
+                 if job.stop_after_min else "")
     return (f"{prefix} — {job.title}\n"
             f"⏱ {elapsed} · 📦 {job.parts_sent} part(s) sent · "
-            f"{human_bytes(job.bytes_sent)}\n"
+            f"{human_bytes(job.bytes_sent)}{stop_note}\n"
             f"Parts arrive as they finish "
-            f"({config.LIVE_SEGMENT_MIN} min each). "
+            f"({job.segment_min} min each). "
             f"Tap ⏹ Stop to end the recording.")
 
 
@@ -439,11 +453,17 @@ def _ffmpeg_tail(job: LiveJob) -> str:
 
 async def _watch(job: LiveJob) -> str:
     """Poll until the recording must end. Returns the end reason:
-    "stopped" | "ended" | "bandwidth" | "failed"."""
+    "stopped" | "ended" | "bandwidth" | "failed" | "timeup"."""
     proc = job.proc
     while True:
         if job.stop_requested.is_set():
             return "stopped"
+        if (job.stop_deadline
+                and time.time() >= job.stop_deadline):
+            # /live -s: the total time ran out — end it the same
+            # clean way as a Stop tap (ffmpeg gets SIGTERM, the
+            # partial last part is finished and sent by _finish).
+            return "timeup"
         if stats.bandwidth_blocked():
             return "bandwidth"
         done = proc.returncode is not None
@@ -459,9 +479,10 @@ async def _finish(job: LiveJob, reason: str) -> None:
     """Stop ffmpeg, send what's left, write the final summary.
 
     reason: "stopped" (Stop button) | "ended" (stream over) |
-    "bandwidth" (monthly cap) | "failed" (ffmpeg died).
+    "bandwidth" (monthly cap) | "failed" (ffmpeg died) |
+    "timeup" (/live -s total time ran out).
     """
-    if reason in ("stopped", "bandwidth"):
+    if reason in ("stopped", "bandwidth", "timeup"):
         await _terminate(job)
     # ffmpeg is gone now (or died on its own) — every remaining
     # segment is complete, including the partial last one.
@@ -486,6 +507,7 @@ async def _finish(job: LiveJob, reason: str) -> None:
             "ended": "✅ Stream ended — recording complete",
             "bandwidth": ("⛔ Recording stopped — the monthly "
                           "bandwidth cap was reached"),
+            "timeup": "⏱ Time limit reached — recording stopped",
             "failed": "❌ Recording failed",
         }[reason]
     elapsed = human_time(time.time() - job.started) if job.started else "0:00"
@@ -507,17 +529,24 @@ async def _finish(job: LiveJob, reason: str) -> None:
                      ok=not (reason == "failed" and job.parts_sent == 0))
 
 
-async def run_live_job(client, message, url: str, status) -> None:
-    """Record `url` until Stop / stream end / bandwidth cap.
+async def run_live_job(client, message, url: str, status,
+                       segment_min: int | None = None,
+                       stop_after_min: int | None = None) -> None:
+    """Record `url` until Stop / stream end / bandwidth cap / -s limit.
 
     The caller (plugins/live.py) already claimed the slot with
     acquire_slot(); this releases it in `finally`, and cleans
-    the job dir up either way.
+    the job dir up either way. `segment_min` overrides the
+    config part length for this recording (/live -t);
+    `stop_after_min` ends it after that many minutes (/live -s).
     """
     job_id = secrets.token_hex(4)
     job = LiveJob(job_id, client, message.chat.id, status,
                   message.from_user.id if message.from_user else None)
     job.url = url
+    if segment_min is not None:
+        job.segment_min = segment_min
+    job.stop_after_min = stop_after_min
     recorded = False
     try:
         await job.editor.edit("🔍 Checking the link…", force=True)
@@ -532,9 +561,13 @@ async def run_live_job(client, message, url: str, status) -> None:
         job.job_dir = make_job_dir()
         ACTIVE[job_id] = job
         job.started = time.time()
+        if job.stop_after_min:
+            job.stop_deadline = (job.started
+                                 + job.stop_after_min * 60)
         pattern = os.path.join(job.job_dir, _SEGMENT_PATTERN)
         cmd = ffmpeg_cmd(probed["stream_urls"], probed["headers"],
-                         pattern)
+                         pattern,
+                         segment_seconds=job.segment_min * 60)
         # ffmpeg's stderr goes to a file, not a pipe: a pipe nobody
         # drains would fill up and block ffmpeg mid-recording, and
         # -v error keeps the file to error lines only.
