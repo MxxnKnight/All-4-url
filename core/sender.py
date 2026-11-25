@@ -361,7 +361,8 @@ def _split_run(paths: list[str], start: int) -> list[str] | None:
 async def send_file(client, chat_id: int, path: str, caption: str = "",
                     status_msg=None, progress_cb=None,
                     force_document: bool = False, job=None,
-                    progress_label: str | None = None):
+                    progress_label: str | None = None,
+                    reply_markup=None):
     """Send one local file as video / photo / audio / document.
 
     Returns the sent Message (or None if the client returned nothing).
@@ -371,6 +372,10 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
     `progress_label`, when given, replaces the generic "Uploading…"
     line on the bar — the unzip flow passes "Uploading 2 of 5:
     name…" so the bar keeps saying which file it is (v1.48.0).
+    `reply_markup`, when given, rides on the sent message from the
+    start (v1.51.10: /live parts carry their Stop button this way —
+    attaching markup with a separate edit after the send never
+    showed up on moon's phone).
     `force_document` sends a video as a plain file instead (the
     /destination "Send URL uploads as" setting); photos, audio and
     split parts are unaffected.
@@ -448,7 +453,8 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
                 chat_id, path, caption=caption, supports_streaming=True,
                 duration=meta.get("duration", 0),
                 width=meta.get("width", 0), height=meta.get("height", 0),
-                thumb=thumb, progress=progress),
+                thumb=thumb, progress=progress,
+                reply_markup=reply_markup),
             editor)
         if thumb:
             try:
@@ -458,17 +464,20 @@ async def send_file(client, chat_id: int, path: str, caption: str = "",
     elif kind == "photo":
         sent = await _with_flood_retry(
             lambda: client.send_photo(chat_id, path, caption=caption,
-                                      progress=progress),
+                                      progress=progress,
+                                      reply_markup=reply_markup),
             editor)
     elif kind == "audio":
         sent = await _with_flood_retry(
             lambda: client.send_audio(chat_id, path, caption=caption,
-                                      progress=progress),
+                                      progress=progress,
+                                      reply_markup=reply_markup),
             editor)
     else:
         sent = await _with_flood_retry(
             lambda: client.send_document(chat_id, path, caption=caption,
-                                         progress=progress),
+                                         progress=progress,
+                                         reply_markup=reply_markup),
             editor)
     # None + a cancelled job means the Stop tap cut this upload
     # short (StopTransmission) — unwind the flow as cancelled, not
@@ -501,7 +510,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                      status_msg=None, mediainfo_button: bool = False,
                      progress_cb=None,
                      force_document: bool = False, job=None,
-                     progress_label: str | None = None) -> list:
+                     progress_label: str | None = None,
+                     reply_markup=None) -> list:
     """Send a job's resulting files; returns the sent Messages.
 
     `force_document` sends videos as plain files instead (the
@@ -539,6 +549,10 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     `progress_label`, when given, replaces the generic "Uploading…"
     line on the bar for every file in the run (see send_file).
+    `reply_markup`, when given, rides on a SINGLE file's send only
+    (multi-file runs ignore it — a button on every card would be
+    noise); the "saved" destination drops it too, since a message
+    sent by the user account can't carry a bot callback.
     `job`, when given (a core.jobs.Job), replaces the status message
     as the progress target and makes the run cancellable between
     files/groups (a media group already sending can't be cut).
@@ -574,7 +588,8 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                                progress_cb=_per_file(0)
                                if progress_cb is not None else None,
                                force_document=force_document, job=job,
-                               progress_label=progress_label)
+                               progress_label=progress_label,
+                               reply_markup=reply_markup)
         if sent is not None:
             sent_all.append(sent)
         if mediainfo_button and len(sent_all) == 1:
@@ -748,7 +763,8 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                             mediainfo_button: bool = False,
                             force_document: bool | None = None,
                             job=None, user_id=None,
-                            progress_label: str | None = None) -> list:
+                            progress_label: str | None = None,
+                            reply_markup=None) -> list:
     """send_files() to the destination chosen for `feature`.
 
     Destinations (core/settings.py, /destination command):
@@ -796,4 +812,5 @@ async def send_files_routed(bot_client, chat_id: int, paths: list[str],
                             mediainfo_button=mediainfo_button,
                             force_document=force_document,
                             job=job,
-                            progress_label=progress_label)
+                            progress_label=progress_label,
+                            reply_markup=reply_markup)

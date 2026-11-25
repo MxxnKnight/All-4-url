@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.9** (2026-11-26).
+- **Current version: v1.51.10** (2026-11-26).
 
 ## How moon works — the contract
 
@@ -287,7 +287,37 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-26) — v1.51.9
+## Current status (2026-11-26) — v1.51.10
+
+- v1.51.10 (moon, 2026-11-26): three things off one screenshot
+  of a /live -s 10 recording. (1) The Stop button was missing
+  under the status message — the post-send edit_reply_markup
+  attach never rendered, twice, on two sites (Kick, Stripchat),
+  while buttons attached AT SEND time (job Stop rows, picker
+  buttons) always show. Diagnosis: the library path checks out
+  (the edit_text sentinel preserves markup; the raw EditMessage
+  carries the markup), so the separate attach edit is the
+  suspect — it is gone now. The button rides on the send itself:
+  live_cmd claims the slot first, makes the job id, and sends
+  the status WITH its markup; _send_segment passes the markup
+  into send_files_routed → send_files → send_file (new optional
+  reply_markup, single-file sends only; the "saved" destination
+  drops it since a user-sent message can't carry a bot
+  callback). _finish still clears both buttons at the end.
+  (2) "-s 10 but it says 15 min!": when the stop time is shorter
+  than a part, the status now says what actually arrives
+  ("(15 min each, but this recording stops after 10 min — so
+  you'll get one part of about 10 min)"). (3) The timer: the
+  status ticked every second, so the watcher edited the message
+  every ~5 s for a whole recording just for a clock — moon asked
+  if it is heavy (yes, it was: ~720 edits/hour). Elapsed now
+  counts in 10-minute steps ("<10 min", "~10 min", "~20 min"),
+  so edits drop to a handful an hour plus part arrivals.
+  Tests: test_v1520.py 14/14 (status sent with button, same id
+  into run_live_job, coarse timer, short-stop wording, part
+  markup at send, sender threading); test_v1517 updated to the
+  new mechanism, 24/24. test_v1453 17/17; v1480/v1490/v1500 and
+  v1518/v1519 fail ONLY their pinned version checks (expected).
 
 - v1.51.9 (moon, 2026-11-26): stripchatlive.com is a Stripchat
   domain too. His link was https://stripchatlive.com/Mohni_love

@@ -117,17 +117,26 @@ async def live_cmd(client: Client, message: Message):
         await message.reply_text(_BUSY_TEXT)
         return
     await react(message, "🔴")
-    status = await message.reply_text("🔍 Checking the link…")
     # The real gate: atomic — a second /live landing between the
-    # busy() check above and this line still loses here.
+    # busy() check above and this line still loses here. The slot
+    # is claimed BEFORE the status message is sent, so the Stop
+    # button can ride on the send itself (v1.51.10): the button's
+    # job id is made here, and the send carries its markup — no
+    # separate attach edit afterwards, which never showed up on
+    # moon's phone.
     if not await live.acquire_slot():
-        await status.edit_text(_BUSY_TEXT)
+        await message.reply_text(_BUSY_TEXT)
         return
+    job_id = live.new_job_id()
+    status = await message.reply_text(
+        "🔍 Checking the link…",
+        reply_markup=live._stop_markup(job_id))
     # Fire and forget: the recording runs for hours; the job
     # releases the slot and cleans up when it ends.
     asyncio.create_task(live.run_live_job(client, message, url, status,
                                           segment_min=part,
-                                          stop_after_min=total))
+                                          stop_after_min=total,
+                                          job_id=job_id))
 
 
 @Client.on_callback_query(filters.regex(r"^lv:"))

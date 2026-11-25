@@ -116,8 +116,13 @@ class LiveJob:
         self.stop_requested.set()
 
 
-#: Live jobs by id, so the Stop button callback can find them.
-ACTIVE: dict[str, LiveJob] = {}
+def new_job_id() -> str:
+    """An id for a recording, made BEFORE the status message is
+    sent so the Stop button can ride on it from birth (v1.51.10):
+    attaching markup with a separate edit after the send never
+    showed up on moon's phone, twice, on two sites — so the
+    button is now part of the send itself, not an edit after it."""
+    return secrets.token_hex(4)
 
 
 def busy() -> bool:
@@ -338,15 +343,43 @@ def _ready_segments(job_dir: str, sent: set, recorder_done: bool) -> list[str]:
     return [p for p in complete if p not in sent]
 
 
+#: Live jobs by id, so the Stop button callback can find them.
+ACTIVE: dict[str, LiveJob] = {}
+
+
+def _coarse_elapsed(job: LiveJob) -> str:
+    """Elapsed time in 10-minute steps ("<10 min", "~10 min",
+    "~20 min" ...). The status used to tick every second, which
+    made the watcher edit the message every few seconds for a
+    whole recording — an edit every 5 s, hours on end, just for a
+    clock. Coarse steps mean the text only changes when the
+    bucket flips or a part arrives, so the edits drop to a
+    handful an hour (v1.51.10, moon: "no need for timer")."""
+    if not job.started:
+        return "<10 min"
+    mins = int((time.time() - job.started) // 60)
+    bucket = (mins // 10) * 10
+    return f"~{bucket} min" if bucket else "<10 min"
+
+
 def _status_text(job: LiveJob, prefix: str) -> str:
-    elapsed = human_time(time.time() - job.started) if job.started else "0:00"
     stop_note = (f" · stops after {job.stop_after_min} min"
                  if job.stop_after_min else "")
+    if job.stop_after_min and job.stop_after_min < job.segment_min:
+        # -s 10 with 15-minute parts: no 15-minute part will ever
+        # exist, so saying "(15 min each)" reads as "ends in 15
+        # min" — say what actually arrives (v1.51.10, moon's
+        # screenshot: "-s 10 but it says 15 min!").
+        parts_note = (f"({job.segment_min} min each, but this recording "
+                      f"stops after {job.stop_after_min} min — so you'll "
+                      f"get one part of about {job.stop_after_min} min)")
+    else:
+        parts_note = f"({job.segment_min} min each)"
     return (f"{prefix} — {job.title}\n"
-            f"⏱ {elapsed} · 📦 {job.parts_sent} part(s) sent · "
+            f"⏱ {_coarse_elapsed(job)} · 📦 {job.parts_sent} part(s) sent · "
             f"{human_bytes(job.bytes_sent)}{stop_note}\n"
             f"Parts arrive as they finish "
-            f"({job.segment_min} min each). "
+            f"{parts_note}. "
             f"Tap ⏹ Stop to end the recording.")
 
 
@@ -387,21 +420,18 @@ async def _send_segment(job: LiveJob, path: str) -> None:
                                        "uploader", caption=caption,
                                        status_msg=job.status,
                                        user_id=job.user_id,
-                                       force_document=False)  # live parts
-        # are always videos — they are meant to be watched as they
-        # arrive, whatever the URL-upload "Send as" setting says.
+                                       force_document=False,  # live parts
+                                       # are always videos — they are meant
+                                       # to be watched as they arrive,
+                                       # whatever the URL-upload "Send as"
+                                       # setting says.
+                                       reply_markup=_stop_markup(job.job_id))
+        # The Stop button rides on the part itself, attached at send
+        # time (v1.51.10): the v1.51.7 post-send edit never showed
+        # up on moon's phone, same as the status button — so it is
+        # part of the send now, not an edit after it.
         if sent:
-            # The Stop button rides on the part itself (v1.51.7):
-            # the status message scrolls away under the videos, so
-            # the newest part is where the owner is looking. A part
-            # sent to Saved Messages isn't the bot's to edit — the
-            # attach just fails quietly there.
             job.last_part_msg = sent[-1]
-            try:
-                await job.last_part_msg.edit_reply_markup(
-                    _stop_markup(job.job_id))
-            except Exception:
-                pass
         job.parts_sent += 1
         job.bytes_sent += size
     except Exception:
@@ -531,7 +561,8 @@ async def _finish(job: LiveJob, reason: str) -> None:
 
 async def run_live_job(client, message, url: str, status,
                        segment_min: int | None = None,
-                       stop_after_min: int | None = None) -> None:
+                       stop_after_min: int | None = None,
+                       job_id: str | None = None) -> None:
     """Record `url` until Stop / stream end / bandwidth cap / -s limit.
 
     The caller (plugins/live.py) already claimed the slot with
@@ -539,8 +570,11 @@ async def run_live_job(client, message, url: str, status,
     the job dir up either way. `segment_min` overrides the
     config part length for this recording (/live -t);
     `stop_after_min` ends it after that many minutes (/live -s).
+    `job_id` is the id the caller already put on the status
+    message's Stop button (v1.51.10); a fresh one is made when
+    the caller didn't (tests).
     """
-    job_id = secrets.token_hex(4)
+    job_id = job_id or new_job_id()
     job = LiveJob(job_id, client, message.chat.id, status,
                   message.from_user.id if message.from_user else None)
     job.url = url
@@ -574,10 +608,10 @@ async def run_live_job(client, message, url: str, status,
         job.log_handle = open(os.path.join(job.job_dir, "ffmpeg.log"),
                               "ab")
         job.proc = await _spawn_ffmpeg(cmd, job.log_handle)
-        try:
-            await status.edit_reply_markup(_stop_markup(job_id))
-        except Exception:
-            pass
+        # The Stop button is already on the status message — the
+        # caller sent it with the markup (v1.51.10). No separate
+        # attach edit here: that edit never showed up on moon's
+        # phone, twice.
         await job.editor.edit(_status_text(job, "🔴 Recording"),
                               force=True)
         reason = await _watch(job)
