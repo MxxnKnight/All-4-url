@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.5** (2026-11-23).
+- **Current version: v1.51.6** (2026-11-25).
 
 ## How moon works — the contract
 
@@ -286,6 +286,32 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-25) — v1.51.6
+
+- v1.51.6 (moon, 2026-11-25): the multi-link progress bar's two
+  flaws, from his screenshots of other bots. (1) Stop buttons are
+  Telegram's NEW in-message buttons (Bot API 10.3, Aug 2026):
+  each job gets its own small red (DANGER) Stop button right under
+  its progress bar, via send_rich_message + RichMessageButton +
+  InputRichBlockButtons — verified present in the installed WzGram
+  3.1.5, and the raw serialisation carries
+  InlineButtonTypeCallback(data=b'jb:stop:<id>'), so the existing
+  stop handler needs no change. The old long "Stop <label>" rows
+  are gone (they truncated to 22 chars, so two same-link jobs had
+  identical buttons). If the rich send/edit fails, the plain text
+  + old keyboard is the fallback and the job keeps running.
+  (2) The shared message re-posts: a new link, and a finished job
+  once its file + notice are out, delete the old message and send
+  a fresh one at the bottom (send-first, so a failed send keeps
+  the old message). Progress edits between events still edit in
+  place. Re-posts are spaced >= 2 s so a 10-link burst can't flood
+  Telegram — inside the spacing it edits in place. Tests:
+  test_v1516.py 44/44 (blocks shape, raw button bytes, re-post
+  order + spacing, finish re-post, both fallbacks, failed re-post
+  keeps the old message). Device proof still needed: the render
+  on his phone + a tap coming back as a callback query can only
+  be proven live — he was told that before building.
 
 ## Current status (2026-11-23) — v1.51.5
 

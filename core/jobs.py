@@ -24,6 +24,26 @@ dispatch loop catches it explicitly.
 
 The registry is in-memory only: a Space restart wipes it, same as the
 in-flight jobs themselves.
+
+v1.51.6 — rich in-message Stop buttons + re-posting. Telegram's
+Bot API 10.3 (Aug 2026) lets a button live INSIDE the message text
+(`RichMessageButton` + `InputRichBlockButtons`), so each job now gets
+its own small red Stop button right under its progress bar instead of
+one long "Stop <label>" row under the whole message. The shared
+message is therefore sent as a rich message
+(`send_rich_message` / `edit_message_text(rich_text=...)`); if the
+rich send fails (old client, server refusal) it falls back to the
+plain text + inline keyboard from before, and the edit path falls
+back the same way — the job keeps running either way. The tap still
+carries `jb:stop:<id>`, so the existing stop handler needs no change.
+
+v1.51.6 also moves the message: it no longer sits at the top of the
+chat while files land below it. A new link re-posts it (delete the
+old one, send a fresh one at the bottom), and so does a finished
+job once its file + final notice are out. Progress updates between
+those events still edit in place. Re-posts are spaced at least
+2 s apart so a 10-link burst can't flood Telegram — a re-post that
+lands inside the spacing just edits in place instead.
 """
 
 import asyncio
@@ -32,6 +52,13 @@ import time
 #: Minimum seconds between edits of the shared message (Telegram
 #: punishes rapid edits; same 3.5 s as ThrottledEditor).
 _INTERVAL = 3.5
+
+#: Minimum seconds between re-posts of the shared message (v1.51.6):
+#: a multi-link burst registers jobs back to back, and a re-post is
+#: a send + a delete, so spacing them keeps Telegram from treating
+#: the burst as a flood. A re-post inside the spacing edits in
+#: place instead — the message still moves on the next event.
+_REPOST_MIN_INTERVAL = 2.0
 
 #: A job id is 8 hex chars: short enough for callback data
 #: ("jb:stop:<id>" is 16 bytes) and unique enough for a handful of
@@ -80,25 +107,32 @@ class Job:
     async def fail(self, text: str) -> None:
         """End the job with an error: drop it from the shared message
         and send the error as its own message."""
-        await self._remove()
+        await self._remove(repost=True)
         try:
             await self._state.client.send_message(self._state.chat_id,
                                                   text)
         except Exception:
             pass
+        if self._state.jobs:
+            # The error is out; move the shared message below it.
+            await _repost(self._state)
 
     async def finish(self, text: str | None = None) -> None:
         """End the job quietly (or with a final notice as its own
         message when `text` is given). Idempotent."""
-        await self._remove()
+        await self._remove(repost=True)
         if text:
             try:
                 await self._state.client.send_message(self._state.chat_id,
                                                       text)
             except Exception:
                 pass
+        if self._state.jobs:
+            # The file (sent by the flow before finish) and the
+            # notice are out; move the shared message below them.
+            await _repost(self._state)
 
-    async def _remove(self) -> None:
+    async def _remove(self, repost: bool = False) -> None:
         if self._gone:
             return
         self._gone = True
@@ -107,6 +141,11 @@ class Job:
         if not state.jobs:
             # Last job gone: the shared message has nothing to show.
             await _delete_shared(state)
+        elif repost:
+            # The caller re-posts after its own message (fail/finish
+            # text) so the shared message lands below it; skip the
+            # in-place refresh — it would be deleted a moment later.
+            pass
         else:
             await _refresh(state, force=True)
 
@@ -119,9 +158,13 @@ class _ChatState:
         self.chat_id = chat_id
         self.jobs: dict[str, Job] = {}
         self.message = None
+        #: True when the shared message is a rich message (v1.51.6):
+        #: edits must go through edit_message_text(rich_text=...).
+        self.rich = False
         self.lock = asyncio.Lock()
         self._last_edit = 0.0
         self._last_text = ""
+        self._last_send = 0.0
         self._refresh_task: asyncio.Task | None = None
         self._broken_until = 0.0
 
@@ -145,6 +188,40 @@ def _render(state: _ChatState) -> str:
     return "\n".join(blocks)
 
 
+def _render_blocks(state: _ChatState) -> list:
+    """The shared message as rich-message blocks (v1.51.6): a heading
+    paragraph, then per job a paragraph (label + progress line) and
+    right under it a button row with that job's own small red Stop
+    button. The button carries the same `jb:stop:<id>` callback the
+    old keyboard did, so the stop handler needs no change."""
+    from pyrogram import raw
+    from pyrogram.types import (
+        InputRichBlockButtons,
+        InputRichBlockParagraph,
+        RichMessageButton,
+    )
+    from pyrogram.enums import BlockAlignment, RichButtonStyle
+
+    blocks = [InputRichBlockParagraph(text=raw.types.TextBold(
+        text=raw.types.TextPlain(text="⏳ Active downloads")))]
+    for job in state.jobs.values():
+        label = job.label if len(job.label) <= 40 else job.label[:39] + "…"
+        blocks.append(InputRichBlockParagraph(
+            text=f"📥 {label}\n{job.line}"))
+        blocks.append(InputRichBlockButtons(
+            buttons=[RichMessageButton(
+                "⏹ Stop", style=RichButtonStyle.DANGER,
+                callback_data=f"jb:stop:{job.id}")],
+            align=BlockAlignment.LEFT))
+    return blocks
+
+
+def _rich_message(state: _ChatState):
+    """Wrap the current blocks in an InputRichMessage for send/edit."""
+    from pyrogram.types import InputRichMessage
+    return InputRichMessage(blocks=_render_blocks(state))
+
+
 def _markup(state: _ChatState):
     from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -154,6 +231,38 @@ def _markup(state: _ChatState):
         rows.append([InlineKeyboardButton(
             f"⏹ Stop {label}", callback_data=f"jb:stop:{job.id}")])
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def _send_shared(state: _ChatState, reply_to=None):
+    """Send a fresh shared message for the state's current jobs.
+    Rich first (v1.51.6, buttons inside the message); plain text +
+    the old keyboard when the rich send fails, so a job never loses
+    its progress display. Returns the sent message, or None when
+    nothing could be sent (retry is blocked for 60 s)."""
+    from pyrogram.types import ReplyParameters
+
+    reply_params = None
+    if reply_to is not None:
+        reply_params = ReplyParameters(
+            message_id=getattr(reply_to, "id", None))
+    try:
+        msg = await state.client.send_rich_message(
+            state.chat_id, _rich_message(state),
+            reply_parameters=reply_params)
+        state.rich = True
+    except Exception:
+        try:
+            msg = await state.client.send_message(
+                state.chat_id, _render(state), reply_markup=_markup(state),
+                reply_to_message_id=getattr(reply_to, "id", None))
+            state.rich = False
+        except Exception:
+            state._broken_until = time.time() + 60
+            return None
+    state._last_send = time.time()
+    state._last_edit = time.time()
+    state._last_text = _render(state)
+    return msg
 
 
 async def register(client, chat_id: int, label: str,
@@ -166,18 +275,16 @@ async def register(client, chat_id: int, label: str,
     state.jobs[job.id] = job
     async with state.lock:
         if state.message is None and time.time() >= state._broken_until:
-            try:
-                state.message = await client.send_message(
-                    chat_id, _render(state), reply_markup=_markup(state),
-                    reply_to_message_id=getattr(reply_to, "id", None))
-                state._last_edit = time.time()
-                state._last_text = _render(state)
-                return job
-            except Exception:
-                # Chat blocked / send failed: don't retry every edit.
-                state._broken_until = time.time() + 60
-                return job
-    await _refresh(state, force=True)
+            state.message = await _send_shared(state, reply_to)
+            return job
+        if state.message is None:
+            # Send blocked for now (chat blocked / send failed):
+            # don't retry on every registration.
+            return job
+    # A message already exists: the new link re-posts it (v1.51.6)
+    # so it drops to the bottom of the chat instead of sitting at
+    # the top while the files land below it.
+    await _repost(state)
     return job
 
 
@@ -206,13 +313,30 @@ async def _edit_now(state: _ChatState) -> None:
     text = _render(state)
     if text == state._last_text and state.message is not None:
         return
-    try:
-        await state.message.edit_text(text, reply_markup=_markup(state))
-    except Exception:
-        # Message deleted by the user (or flood): recreate it on the
-        # next refresh instead of crashing the transfer.
-        state.message = None
-        return
+    edited = False
+    if state.rich:
+        try:
+            # Rich message: edit its blocks (same content, buttons
+            # included).
+            await state.client.edit_message_text(
+                state.chat_id, state.message.id,
+                rich_text=_rich_message(state))
+            edited = True
+        except Exception:
+            # Rich edit refused (server, old client): fall through
+            # to the plain edit, which keeps progress visible
+            # without the in-message buttons.
+            pass
+    if not edited:
+        try:
+            await state.message.edit_text(text, reply_markup=_markup(state))
+            state.rich = False
+        except Exception:
+            # Message deleted by the user (or flood): recreate it on
+            # the next refresh instead of crashing the transfer.
+            state.message = None
+            state.rich = False
+            return
     state._last_edit = time.time()
     state._last_text = text
 
@@ -233,14 +357,7 @@ async def _refresh(state: _ChatState, force: bool = False) -> None:
         if state.message is None:
             if time.time() < state._broken_until:
                 return
-            try:
-                state.message = await state.client.send_message(
-                    state.chat_id, _render(state),
-                    reply_markup=_markup(state))
-                state._last_edit = time.time()
-                state._last_text = _render(state)
-            except Exception:
-                state._broken_until = time.time() + 60
+            state.message = await _send_shared(state)
             return
         now = time.time()
         if not force and now - state._last_edit < _INTERVAL:
@@ -253,9 +370,44 @@ async def _refresh(state: _ChatState, force: bool = False) -> None:
         await _edit_now(state)
 
 
+async def _repost(state: _ChatState) -> None:
+    """Move the shared message to the bottom of the chat (v1.51.6):
+    send a fresh one with the current jobs, then delete the old one.
+    Send-first so a failed send keeps the old message on screen.
+    A no-op when nothing is running, or when the last re-post was
+    too recent (a multi-link burst registers jobs back to back) —
+    the caller then edits in place instead."""
+    if not state.jobs:
+        return
+    async with state.lock:
+        if time.time() - state._last_send < _REPOST_MIN_INTERVAL:
+            # Too soon to send again: edit in place instead. (Direct
+            # _edit_now, not _refresh — the lock is already held here
+            # and asyncio locks are not re-entrant.)
+            await _edit_now(state)
+            return
+        task = state._refresh_task
+        state._refresh_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        old, state.message = state.message, None
+        new = await _send_shared(state)
+        if new is None:
+            # Send failed: keep the old message on screen.
+            state.message = old
+            return
+        state.message = new
+        if old is not None:
+            try:
+                await old.delete()
+            except Exception:
+                pass
+
+
 async def _delete_shared(state: _ChatState) -> None:
     async with state.lock:
         msg, state.message = state.message, None
+        state.rich = False
         task = state._refresh_task
         state._refresh_task = None
         if task is not None and not task.done():
