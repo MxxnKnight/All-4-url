@@ -563,7 +563,28 @@ async def batch_cmd(client: Client, message: Message):
 
 @Client.on_message(filters.private & admin_only & filters.command("cancel"))
 async def cancel_cmd(_client: Client, message: Message):
+    # /cancel stops whatever is running: a live recording first
+    # (v1.51.7 — the Stop button lives on the status message, which
+    # scrolls away under the parts, so the command is the fallback
+    # the owner actually reaches for), then a batch.
+    from core import live
+    stopped = []
+    job = live.active_job()
+    if job is not None and not job.stop_requested.is_set():
+        job.request_stop()
+        stopped.append("live")
     flag = _cancel_flags.get(message.from_user.id)
     if flag:
         flag.set()
-    await message.reply_text("Cancelling after the current item finishes…")
+        stopped.append("batch")
+    if not stopped:
+        await message.reply_text("Nothing running to stop.")
+    elif stopped == ["live"]:
+        await message.reply_text(
+            "Stopping the live recording — the last part will be "
+            "sent shortly.")
+    elif stopped == ["batch"]:
+        await message.reply_text("Cancelling after the current item finishes…")
+    else:
+        await message.reply_text(
+            "Stopping the live recording and cancelling the batch…")

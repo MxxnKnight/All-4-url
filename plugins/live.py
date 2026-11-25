@@ -23,7 +23,8 @@ USAGE = (
     "Usage: `/live <link to a live stream>`\n\n"
     "Records a live stream and sends it here in 15-minute video "
     "parts, as each part finishes — nothing stays on the server "
-    "disk. Tap ⏹ Stop on the status message to end the recording.\n\n"
+    "disk. Tap ⏹ Stop under the status message or under the latest "
+    "part — or send /cancel — to end the recording.\n\n"
     "• Works on live streams yt-dlp can read (YouTube Live, "
     "Twitch, Kick, Stripchat, …)\n"
     "• One recording at a time\n"
@@ -34,7 +35,7 @@ USAGE = (
 
 _BUSY_TEXT = (
     "🔴 Already recording a live stream — one at a time. "
-    "Stop it with the ⏹ Stop button on its status message first."
+    "Stop it with the ⏹ Stop button under the latest part, or /cancel."
 )
 
 

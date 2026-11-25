@@ -49,7 +49,7 @@ BOT_COMMANDS = [
     BotCommand("imghost", "Host a replied image, get a direct link"),
     BotCommand("help", "How each feature works"),
     BotCommand("batch", "Batch t.me links — or a first..last range"),
-    BotCommand("cancel", "Stop the current batch"),
+    BotCommand("cancel", "Stop the current batch or live recording"),
     BotCommand("mediainfo", "File metadata: reply, file, or link"),
     BotCommand("metadata", "Write title/artist tags into a replied file"),
     BotCommand("convert", "Convert a replied video/document to the other type"),

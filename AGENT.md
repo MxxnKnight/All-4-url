@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.6** (2026-11-25).
+- **Current version: v1.51.7** (2026-11-25).
 
 ## How moon works — the contract
 
@@ -287,7 +287,30 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-25) — v1.51.6
+## Current status (2026-11-25) — v1.51.7
+
+- v1.51.7 (moon, 2026-11-25): /live stopping you can actually
+  reach. His Kick recording worked (2x 15-min parts) but he saw no
+  Stop button, and /cancel did nothing. Root cause, verified in
+  code: the Stop button lived ONLY on the status message, which
+  scrolls away under the parts as they arrive — and /cancel only
+  knew about /batch downloads (its reply, "Cancelling after the
+  current item finishes…", was a lie when no batch was running).
+  Fix: (1) every part video now carries its own ⏹ Stop recording
+  button (lv:stop:<id>, attached in _send_segment from the
+  send_files_routed return; a part sent to Saved Messages isn't
+  the bot's to edit, so that attach fails quietly), cleared along
+  with the status button in _finish; older parts keep their
+  button, which still stops the same recording. (2) /cancel now
+  stops a live recording too (new live.active_job(), since the
+  slot allows at most one) — and answers honestly: "Nothing
+  running to stop." when idle, the batch line when only a batch
+  runs, both when both run. Help texts updated (/cancel command
+  description, /live usage, _BUSY_TEXT, /start help). Tests:
+  test_v1517.py 23/23 (markup shape, active_job, lv:stop tap /
+  double-tap / stale / non-admin, part-button attach + file
+  cleanup, _finish clears both buttons, /cancel live / idle /
+  batch / both). test_v1453 17/17, test_v1452 19/19.
 
 - v1.51.6 (moon, 2026-11-25): the multi-link progress bar's two
   flaws, from his screenshots of other bots. (1) Stop buttons are

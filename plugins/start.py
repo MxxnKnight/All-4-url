@@ -93,7 +93,7 @@ Send a `t.me/…` link to a post you can see but cannot forward or save
 here. Albums and text posts work too.
 
 Send many links at once with /batch (one link per line); /cancel stops
-a batch after the current item. Two links from the same album only send
+a batch after the current item, or a live recording. Two links from the same album only send
 it once — duplicates in a batch are skipped.
 
 Range batching: send exactly two links to the *same chat* — the first

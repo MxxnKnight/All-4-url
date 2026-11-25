@@ -8,8 +8,9 @@ muxer cuts it into standalone MP4 parts, one per
 LIVE_SEGMENT_MIN minutes. Each finished part is sent to Telegram
 the moment it closes, then deleted from disk, so disk usage stays
 at ~one part no matter how long the recording runs. The owner
-stops it with the Stop button on the status message; a stream
-ending on its own ends the recording the same way.
+stops it with the Stop button under the status message or under
+the latest part — /cancel stops it too; a stream ending on its
+own ends the recording the same way.
 
 Two facts shape the design:
   * The segment muxer cuts by TIME only — there is no size
@@ -98,6 +99,9 @@ class LiveJob:
         self.bytes_sent = 0
         self.failed_parts = 0
         self.sent_names: set[str] = set()
+        #: The last part message sent, so the Stop button can ride on
+        #: it (v1.51.7) and be cleared when the recording ends.
+        self.last_part_msg = None
 
     def request_stop(self) -> None:
         """The Stop button: the watcher ends the recording cleanly."""
@@ -114,6 +118,12 @@ def busy() -> bool:
 
 def get_job(job_id: str) -> LiveJob | None:
     return ACTIVE.get(job_id)
+
+
+def active_job() -> LiveJob | None:
+    """The recording running right now, if any (at most one — the
+    slot enforces it). /cancel uses this instead of a job id."""
+    return next(iter(ACTIVE.values()), None)
 
 
 async def acquire_slot() -> bool:
@@ -359,13 +369,25 @@ async def _send_segment(job: LiveJob, path: str) -> None:
                f"⏱ {elapsed} into the recording")
     try:
         stats.record("downloaded", size)
-        await send_files_routed(job.client, job.chat_id, [path],
-                                "uploader", caption=caption,
-                                status_msg=job.status,
-                                user_id=job.user_id,
-                                force_document=False)  # live parts
+        sent = await send_files_routed(job.client, job.chat_id, [path],
+                                       "uploader", caption=caption,
+                                       status_msg=job.status,
+                                       user_id=job.user_id,
+                                       force_document=False)  # live parts
         # are always videos — they are meant to be watched as they
         # arrive, whatever the URL-upload "Send as" setting says.
+        if sent:
+            # The Stop button rides on the part itself (v1.51.7):
+            # the status message scrolls away under the videos, so
+            # the newest part is where the owner is looking. A part
+            # sent to Saved Messages isn't the bot's to edit — the
+            # attach just fails quietly there.
+            job.last_part_msg = sent[-1]
+            try:
+                await job.last_part_msg.edit_reply_markup(
+                    _stop_markup(job.job_id))
+            except Exception:
+                pass
         job.parts_sent += 1
         job.bytes_sent += size
     except Exception:
@@ -449,6 +471,13 @@ async def _finish(job: LiveJob, reason: str) -> None:
         await job.status.edit_reply_markup(None)
     except Exception:
         pass
+    if job.last_part_msg is not None:
+        # The Stop button on the last part is dead now — clear it
+        # so a later tap doesn't promise a stop.
+        try:
+            await job.last_part_msg.edit_reply_markup(None)
+        except Exception:
+            pass
     if reason == "failed" and job.parts_sent > 0:
         head = "⚠️ Recording ended early — the stream died"
     else:
