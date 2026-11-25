@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.8** (2026-11-26).
+- **Current version: v1.51.9** (2026-11-26).
 
 ## How moon works — the contract
 
@@ -287,7 +287,23 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-26) — v1.51.8
+## Current status (2026-11-26) — v1.51.9
+
+- v1.51.9 (moon, 2026-11-26): stripchatlive.com is a Stripchat
+  domain too. His link was https://stripchatlive.com/Mohni_love
+  and the bot only knew stripchat.com, so probe_live sent it to
+  yt-dlp, which answered "Unsupported URL". Verified live:
+  stripchatlive.com serves the same model pages (same viewCam
+  state — isLive true, status public on the first fetch), so the
+  fix is just the HOSTS list (+ www variant). Second finding,
+  same night: by the time the fix was probed, Mohni_love's status
+  had flipped public → groupShow, and resolve() correctly
+  refused her as a paid group show — that refusal is the gate
+  working, not a bug. These flip fast; retry when she's back in
+  free chat. Tests: test_v1519.py 11/11 (domain list incl.
+  lookalike rejection, probe routing, public resolves,
+  group-show refused). test_v1453 17/17; v1518 23/24 fails only
+  its pinned version check (expected).
 
 - v1.51.8 (moon, 2026-11-26): /live arguments, moon's syntax.
   `/live -t 30 <link>` — each part is 30 minutes (5–60, default

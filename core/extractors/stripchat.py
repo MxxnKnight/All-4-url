@@ -1,4 +1,6 @@
-"""Custom extractor: Stripchat live cams (stripchat.com/<model>).
+"""Custom extractor: Stripchat live cams (stripchat.com/<model>,
+or stripchatlive.com/<model> — the same pages on Stripchat's
+alternate domain).
 
 Why this exists: yt-dlp's Stripchat extractor refuses every model the
 moment the page carries a ``viewCam.show`` object —
@@ -63,7 +65,13 @@ from core.extractors.direct import BROWSER_UA
 from core.extractors.player_scan import HostError, fetch_page, page_title
 
 #: Hosts that serve model pages (the www. form is what search hits).
-HOSTS = ("stripchat.com", "www.stripchat.com")
+#: Hosts a model page may live on. stripchatlive.com is Stripchat's
+#: own alternate domain (same pages, same viewCam state — verified
+#: 2026-11-26 on /Mohni_love: isLive true, status public); moon's
+#: link used it, and the old two-host list sent it to yt-dlp,
+#: which answered "Unsupported URL" (v1.51.9).
+HOSTS = ("stripchat.com", "www.stripchat.com",
+         "stripchatlive.com", "www.stripchatlive.com")
 
 #: DoppioCDN hosts a playlist or segment may legitimately live on. The
 #: proxy refuses anything else (it is an open port on the bot's box).
