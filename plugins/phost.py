@@ -7,13 +7,25 @@ an image anywhere), and deletes its temp copy.
 Two anonymous hosts are tried in order, because a free host can refuse
 the bot's datacenter IP even when it works from a home connection:
 
-  1. Catbox (files.catbox.moe) — no account, no key, 200 MB per file.
-  2. freeimage.host (iili.io links) — Chevereto API v1, same idea; its
+  1. uguu.se (d.uguu.se links) — no account, no key; verified live
+     from a datacenter egress 2026-11-26.
+  2. Catbox (files.catbox.moe) — no account, no key, 200 MB per file.
+  3. freeimage.host (iili.io links) — Chevereto API v1, same idea; its
      public API key can be overridden with the FREEIMAGE_KEY env var.
 
-When the first host refuses, the second is used and the reply says
-which one served the file; if both refuse, the message lists each
+When the first host refuses, the next is used and the reply says
+which one served the file; if all refuse, the message lists each
 host's own error instead of one vague failure.
+
+Host health, 2026-11-26 (why uguu.se is first): Catbox is UP for
+normal users but its API times out from the bot's server AND from
+here — it won't connect from a datacenter IP at all. freeimage.host
+is reachable but its public API key is dead — it answers 400
+"You have been forbidden to use this website" (Chevereto code 103)
+from anywhere, so it only works again if FREEIMAGE_KEY is set to a
+live key. 0x0.st has uploads switched off ("AI botnet spam", no
+ETA) and telegra.ph wouldn't connect either — neither is in the
+rotation.
 
 Deliberately separate from file-to-link: sending an image does NOT
 auto-produce download/stream links (see _is_image_message in
@@ -39,6 +51,10 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from core.utils import admin_only, human_bytes
+
+#: uguu.se's anonymous upload endpoint (no key, no account).
+#: Answers JSON: {success: true, files: [{url: "https://d.uguu.se/…"}]}.
+UGUU_API_URL = "https://uguu.se/upload.php"
 
 #: Catbox's anonymous upload endpoint (no key, no account).
 CATBOX_API_URL = "https://catbox.moe/user/api.php"
@@ -73,6 +89,43 @@ def _image_target(message):
     return None
 
 
+async def upload_to_uguu(path: str, filename: str,
+                         api_url: str | None = None) -> str:
+    """Upload one file to uguu.se; returns the direct URL or raises.
+
+    The file streams from disk (never loaded into RAM). The API
+    answers JSON: {success: true, files: [{url: "https://d.uguu.se/…"}]}.
+    `api_url` defaults to uguu.se at call time (not import time, so
+    tests and overrides actually take effect); pass a URL only to
+    point this at a fake server in tests.
+    """
+    if api_url is None:
+        api_url = UGUU_API_URL
+    timeout = aiohttp.ClientTimeout(total=300, connect=15, sock_read=120)
+    form = aiohttp.FormData()
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        with open(path, "rb") as fh:
+            form.add_field("files[]", fh, filename=filename)
+            async with session.post(api_url, data=form) as resp:
+                status = resp.status
+                text = (await resp.text()).strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise RuntimeError(
+            f"uguu.se answered with a non-JSON page ({status}): "
+            f"{text[:200]}")
+    files = data.get("files") or []
+    url = ((files[0].get("url") or "").strip()
+           if files and isinstance(files[0], dict) else "")
+    if not data.get("success") or not url.startswith("http"):
+        reason = (data.get("errors") or [None])[0] \
+            or data.get("description") or text[:200]
+        raise RuntimeError(
+            f"uguu.se refused the upload ({status}): {reason}")
+    return url
+
+
 async def upload_to_catbox(path: str, filename: str,
                            api_url: str | None = None) -> str:
     """Upload one file to Catbox; returns the direct URL or raises.
@@ -84,7 +137,7 @@ async def upload_to_catbox(path: str, filename: str,
     """
     if api_url is None:
         api_url = CATBOX_API_URL
-    timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=120)
+    timeout = aiohttp.ClientTimeout(total=300, connect=15, sock_read=120)
     form = aiohttp.FormData()
     form.add_field("reqtype", "fileupload")
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -112,7 +165,7 @@ async def upload_to_freeimage(path: str, filename: str,
     if key is None:
         key = (os.environ.get("FREEIMAGE_KEY") or "").strip() \
             or FREEIMAGE_PUBLIC_KEY
-    timeout = aiohttp.ClientTimeout(total=300, connect=30, sock_read=120)
+    timeout = aiohttp.ClientTimeout(total=300, connect=15, sock_read=120)
     form = aiohttp.FormData()
     form.add_field("key", key)
     form.add_field("action", "upload")
@@ -142,9 +195,17 @@ async def upload_to_freeimage(path: str, filename: str,
 
 
 async def upload_image(path: str, filename: str) -> tuple[str, str]:
-    """Upload to the first host that accepts it; returns (url, host name)."""
+    """Upload to the first host that accepts it; returns (url, host name).
+
+    Order matters: uguu.se first because it is the one that answers
+    from the bot's server (2026-11-26); Catbox times out from
+    datacenter IPs and freeimage.host's public key is dead, so they
+    are fallbacks only — a 15 s connect timeout bounds how long a
+    dead host can hold the command up.
+    """
     errors: list[str] = []
-    for label, upload in (("Catbox", upload_to_catbox),
+    for label, upload in (("uguu.se", upload_to_uguu),
+                          ("Catbox", upload_to_catbox),
                           ("freeimage.host", upload_to_freeimage)):
         try:
             return await upload(path, filename), label

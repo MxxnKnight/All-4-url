@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.10** (2026-11-26).
+- **Current version: v1.51.11** (2026-11-26).
 
 ## How moon works — the contract
 
@@ -287,7 +287,28 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-26) — v1.51.10
+## Current status (2026-11-26) — v1.51.11
+
+- v1.51.11 (moon, 2026-11-26): /imghost had no working host.
+  Both broke at once, different reasons, both verified live:
+  Catbox is UP for normal users but its API times out from the
+  bot's server AND from here — it won't connect from a datacenter
+  IP at all; freeimage.host is reachable but its public API key
+  is dead — 400 "You have been forbidden to use this website"
+  (Chevereto code 103), reproduced from here with the same key.
+  New first host: **uguu.se** — a real upload from here returned
+  a working d.uguu.se link that serves the image. Order is now
+  uguu.se → Catbox → freeimage.host (the last two stay as
+  fallbacks in case they recover; freeimage works again if
+  FREEIMAGE_KEY is set to a live key). Connect timeout tightened
+  30 s → 15 s so a dead host can't hold the command up. 0x0.st
+  has uploads switched off ("AI botnet spam", no ETA) and
+  telegra.ph wouldn't connect either — neither is in the
+  rotation. Tests: test_v1521.py 8/8 (uguu/catbox/freeimage reply
+  shapes against a fake server, fallback order, all-down error).
+  test_v1453 17/17; v1520 13/14 fails only its pinned version
+  check (expected). Device proof pending: moon replies /imghost
+  to an image → expects a d.uguu.se link.
 
 - v1.51.10 (moon, 2026-11-26): three things off one screenshot
   of a /live -s 10 recording. (1) The Stop button was missing
