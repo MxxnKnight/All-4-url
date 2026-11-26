@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.11** (2026-11-26).
+- **Current version: v1.51.12** (2026-11-27).
 
 ## How moon works — the contract
 
@@ -287,7 +287,34 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-26) — v1.51.11
+## Current status (2026-11-27) — v1.51.12
+
+- v1.51.12 (moon, 2026-11-27): YouTube bot-check fallback —
+  "add it too". When a YouTube download or extract fails with
+  the bot-check wall ("Sign in to confirm you're not a bot") or
+  a 403, the engine retries ONCE with no cookiefile and with
+  YouTube's JS-less clients only (extractor_args youtube
+  player_client ["ios", "visionos"]). This EXTENDS the v1.51.5
+  cookieless-403 retry in _download_sync (which retried with
+  default clients) and adds the same fallback to extract_info
+  (probe_live + quality picker hit the same wall). The forced
+  list lives ONLY on the retry: v1.51.3 forced JS-less clients
+  globally and v1.51.4 reverted it, because yt-dlp silently
+  drops those clients when a login session is present — the
+  retry drops the cookies AND forces the clients together.
+  The retry no longer needs cookies to have been present (the
+  forced clients are the new value). Verified: "ios" +
+  "visionos" are real clients in yt-dlp 2026.10.26 (visionos is
+  THE JS-less client); the exact retry options extract a real
+  video live (48 formats, 251 audio present); the bot's real
+  download path fetched a 5.1 MB mp3 live from the sandbox.
+  Tests: test_v1522.py 12/12 (fake YoutubeDL: retry triggers,
+  cookies dropped, clients forced, other errors don't retry,
+  extract_info same fallback, base opts force nothing).
+  test_v1453 17/17; v1521 7/8 fails only its pinned version
+  check (expected). Device proof pending: a YouTube link that
+  fails with the bot-check on the live bot, plus a normal
+  cookie-based download still working.
 
 - v1.51.11 (moon, 2026-11-26): /imghost had no working host.
   Both broke at once, different reasons, both verified live:

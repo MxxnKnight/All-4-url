@@ -134,6 +134,31 @@ def _wrap_error(exc: Exception, notes: list[str] | None = None) -> YtdlpError:
     return YtdlpError(base)
 
 
+def _is_bot_check(exc: Exception) -> bool:
+    """True when a yt-dlp failure looks like YouTube's bot-check wall
+    (or a plain 403 on the video bytes) — the cases the JS-less
+    fallback can get past. The message is the only signal yt-dlp
+    gives: "Sign in to confirm you're not a bot" for the wall,
+    "HTTP Error 403" for the bytes."""
+    msg = str(exc).lower()
+    return "403" in msg or "sign in to confirm" in msg or "not a bot" in msg
+
+
+def _fallback_opts(opts: dict) -> dict:
+    """Retry options for the bot-check fallback (v1.51.12): no
+    cookiefile, and YouTube's JS-less clients only ("ios",
+    "visionos"). JS-less clients can't carry a login session —
+    yt-dlp silently drops them when cookies are present (the
+    v1.51.3 trap) — so the retry drops the cookies AND forces the
+    clients together; either half alone doesn't get past the wall.
+    Retry-only: _base_opts still forces nothing, so normal
+    downloads keep the default client selection."""
+    retry = dict(opts)
+    retry.pop("cookiefile", None)
+    retry["extractor_args"] = {"youtube": {"player_client": ["ios", "visionos"]}}
+    return retry
+
+
 def _extract_sync(url: str, opts: dict, collector: _CollectingLogger | None = None) -> dict:
     from yt_dlp import YoutubeDL
 
@@ -143,6 +168,18 @@ def _extract_sync(url: str, opts: dict, collector: _CollectingLogger | None = No
     except Exception as exc:
         # JobCancelled is a BaseException, so this never swallows a
         # user cancel; everything else becomes a typed YtdlpError.
+        # Same bot-check fallback as _download_sync (v1.51.12):
+        # probe_live and the quality picker read through here, and
+        # they hit the same wall.
+        if _is_bot_check(exc):
+            log.warning("yt-dlp extract hit YouTube's bot-check; "
+                        "retrying with iOS/visionOS clients, no cookies")
+            try:
+                with YoutubeDL(_fallback_opts(opts)) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception as retry_exc:
+                raise _wrap_error(retry_exc,
+                                  collector.messages if collector else None) from retry_exc
         raise _wrap_error(exc, collector.messages if collector else None) from exc
 
 
@@ -273,16 +310,22 @@ async def download(url: str, dest_dir: str, format_id: str | None = None,
                 ydl.download([url])
         except Exception as exc:
             # JobCancelled is a BaseException: never swallowed here.
-            # A 403 on the video bytes can mean the logged-in
-            # session's tokens are the problem (v1.51.5: the Space's
-            # first post-JS download 403'd with cookies, while the
-            # same download worked anonymously from the sandbox).
-            # Retry once without the cookiefile — the cookieless
-            # clients need no PO tokens. Only on 403, only once.
-            if "403" in str(exc) and opts.get("cookiefile"):
-                log.warning("yt-dlp download 403 with cookies; retrying without them")
-                retry_opts = dict(opts)
-                retry_opts.pop("cookiefile", None)
+            # A bot-check wall or a 403 on the video bytes can mean
+            # the logged-in session's tokens are the problem
+            # (v1.51.5: the Space's first post-JS download 403'd with
+            # cookies, while the same download worked anonymously
+            # from the sandbox). Retry once without the cookiefile
+            # and with YouTube's JS-less clients only (v1.51.12):
+            # the wall is aimed at the JS-needing web clients, and
+            # the JS-less ones need no PO tokens. Only on a
+            # bot-check/403, only once — and unlike v1.51.5 the
+            # retry no longer needs cookies to have been present:
+            # the forced clients are the new value, so a cookieless
+            # first attempt that still hits the wall gets one too.
+            if _is_bot_check(exc):
+                log.warning("yt-dlp download hit YouTube's bot-check; "
+                            "retrying with iOS/visionOS clients, no cookies")
+                retry_opts = _fallback_opts(opts)
                 try:
                     with YoutubeDL(retry_opts) as ydl:
                         ydl.download([url])
