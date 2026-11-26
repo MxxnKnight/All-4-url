@@ -569,7 +569,14 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
 
     total_all = 0
     sizes: dict[str, int] = {}
-    if progress_cb is not None:
+    # The total is needed whenever ANYONE shows a bar — not only
+    # for a progress_cb caller. The uploader flow passes job=job
+    # (the group editor) with no progress_cb, so split-part albums
+    # used to upload with total_all == 0: progress_text fell into
+    # its no-total branch (no bar, no percent, "X downloaded"
+    # mid-upload — v1.51.13, moon's 2.62 GB screenshot). A file
+    # that can't be read still counts as 0, as before.
+    if progress_cb is not None or group_editor is not None:
         for path in paths:
             try:
                 sizes[path] = os.path.getsize(path)
@@ -638,11 +645,16 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                 sent_all.extend(group)
             # Final correction: the per-file wrapper can under-count
             # a tiny file — report the whole group as done in one
-            # jump once it is sent.
-            if progress_cb is not None:
+            # jump once it is sent. The byte count accumulates for
+            # any progress target (a job-only run needs it so the
+            # next group's bar continues where this one ended);
+            # the callback itself still only fires when one was
+            # given.
+            if progress_cb is not None or group_editor is not None:
                 sent_bytes += sum(sizes.get(p, 0) for p in chunk)
+            if progress_cb is not None:
                 await progress_cb(sent_bytes, total_all)
-        if progress_cb is not None and len(chunk) == 1:
+        if (progress_cb is not None or group_editor is not None) and len(chunk) == 1:
             sent_bytes += sizes.get(chunk[0], 0)
         first = False
         await asyncio.sleep(1)
@@ -694,8 +706,9 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                 group = await _with_flood_retry(_send_group, group_editor)
                 if group:
                     sent_all.extend(group)
-                if progress_cb is not None:
+                if progress_cb is not None or group_editor is not None:
                     sent_bytes += sum(sizes.get(p, 0) for p in chunk)
+                if progress_cb is not None:
                     await progress_cb(sent_bytes, total_all)
                 await asyncio.sleep(1)
             first = False
@@ -709,7 +722,7 @@ async def send_files(client, chat_id: int, paths: list[str], caption: str = "",
                                progress_label=progress_label)
         if sent is not None:
             sent_all.append(sent)
-        if progress_cb is not None:
+        if progress_cb is not None or group_editor is not None:
             sent_bytes += sizes.get(path, 0)
         first = False
         await asyncio.sleep(1)

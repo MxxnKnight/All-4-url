@@ -177,7 +177,7 @@ def progress_text(action: str, current: int, total: int, started: float) -> str:
         )
     return (
         f"{action}\n"
-        f"{human_bytes(current)} downloaded\n"
+        f"{human_bytes(current)} transferred\n"
         f"Speed: {human_bytes(speed)}/s"
     )
 

@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.12** (2026-11-27).
+- **Current version: v1.51.13** (2026-11-27).
 
 ## How moon works — the contract
 
@@ -287,7 +287,34 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-27) — v1.51.12
+## Current status (2026-11-27) — v1.51.13
+
+- v1.51.13 (moon, 2026-11-27): progress bar back on split-file
+  uploads — "Yes, fix it". Moon's screenshot of a 2.62 GB split
+  upload showed only "Uploading… / 2.57 GB downloaded / Speed:
+  3.53 MB/s": no bar, and "downloaded" mid-upload. Root cause
+  (core/sender.py send_files): total_all was only added up when
+  progress_cb was given; the uploader flow passes job=job with
+  no progress_cb, so the document-album branch built
+  _media_group_progress with total 0 and progress_text fell
+  into its no-total branch. Fix: sizes/total_all are computed
+  whenever there is any progress target (progress_cb or
+  group_editor), and sent_bytes keeps accumulating across
+  groups for a job-only run, so a second group's bar continues
+  instead of restarting at 0. The no-total branch of
+  progress_text (core/utils.py) now says "transferred" instead
+  of the hardcoded "downloaded" — neutral for uploads and
+  downloads alike. Verified live-scale through the real
+  send_files path with two sparse parts totalling 2.62 GB:
+  mid-upload text shows the bar + 87.2% + "2.13 GB / 2.44 GB"
+  (bot units are GiB), no "downloaded", final 100.0%. Tests:
+  test_v1523.py 12/12 (fake client + job: 2-part bar, 12-part
+  two-group cumulative, progress_cb regression, single-file
+  regression, "transferred" wording). test_v1453 17/17;
+  v1480 22/23, v1516 43/44, v1522 11/12 — each failing only
+  its pinned version check (expected). Device proof pending:
+  a real >2 GB split upload shows the bar + percent + X / Y
+  and a single-file upload bar still works.
 
 - v1.51.12 (moon, 2026-11-27): YouTube bot-check fallback —
   "add it too". When a YouTube download or extract fails with
