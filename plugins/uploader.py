@@ -27,12 +27,12 @@ from urllib.parse import unquote, urlparse
 
 from pyrogram import Client, filters
 from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
-                            InlineKeyboardMarkup, Message)
+                            InlineKeyboardMarkup, Message, WebAppInfo)
 
 import config
 from core.extractors import (browser_scan, gallery_engine, scrape,
                              site_registry, terabox)
-from core import jobs, splitter, stats, unzip, upage
+from core import jobs, splitter, stats, unpackrun, unzip, upage, zipbrowse
 from core.filename_parser import clean_display
 from core.extractors.direct import (check_direct, download_file,
                                     is_playlist_url, safe_filename)
@@ -66,6 +66,7 @@ def _prune_unzip_pending() -> None:
         if now - job.get("ts", 0) > UNZIP_TTL:
             cleanup_dir(job["job_dir"])
             PENDING_UNZIP.pop(job_id, None)
+            zipbrowse.drop(job_id)
 
 
 def _unzip_prompt_text(job: dict) -> str:
@@ -91,24 +92,10 @@ def _unzip_prompt_text(job: dict) -> str:
         + (f"\n⚠️ {len(job['encrypted'])} password-protected "
            f"file(s) will be skipped" if job["encrypted"] else "")
         + "\n\nTap a file to tick or untick it — Unpack sends only "
-          "the ticked files. Leave everything ticked to unpack it all.")
-
-
-def _unzip_summary(job: dict, sent: int, total: int,
-                   skipped: list[str], failed: list[str],
-                   stopped: bool) -> str:
-    """Final notice for an unpack run, sent as its own message
-    (v1.48.0 — the run's status message used to just vanish)."""
-    name = os.path.basename(job["path"])
-    count = f"{sent} of {total}" if total else str(sent)
-    text = f"✅ Unpacked {name}: sent {count} file(s)"
-    if stopped:
-        text += " — stopped early (bandwidth cap)"
-    if skipped:
-        text += f" · {len(skipped)} skipped"
-    if failed:
-        text += f" · {len(failed)} failed"
-    return text + "."
+          "the ticked files. Leave everything ticked to unpack it all."
+        + ("\n\nOr tap 🔍 Browse files to pick from a file-manager "
+           "page — search, thumbnails, folders."
+           if config.BASE_URL else ""))
 
 
 def _unzip_prompt_markup(job: dict) -> InlineKeyboardMarkup:
@@ -135,6 +122,16 @@ def _unzip_prompt_markup(job: dict) -> InlineKeyboardMarkup:
         InlineKeyboardButton("⬜ None",
                              callback_data=f"unzip:{job['id']}:none"),
     ])
+    # The file-manager page (v1.51.14): search, thumbnails, folders,
+    # quick-select — for archives too big to tick through in chat.
+    # Only when the server has a public URL; without one the page
+    # is unreachable and the button would be dead.
+    browse = zipbrowse.browse_url(job["id"])
+    if browse:
+        rows.append([
+            InlineKeyboardButton("🔍 Browse files",
+                                 web_app=WebAppInfo(url=browse)),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -201,8 +198,13 @@ async def _maybe_unzip_prompt(client: Client, chat_id: int, paths: list[str],
            "encrypted": info["encrypted"]}
     PENDING_UNZIP[job_id] = job
     try:
-        await client.send_message(chat_id, _unzip_prompt_text(job),
-                                  reply_markup=_unzip_prompt_markup(job))
+        prompt_msg = await client.send_message(
+            chat_id, _unzip_prompt_text(job),
+            reply_markup=_unzip_prompt_markup(job))
+        # The file-manager page needs this message id (to delete
+        # the picker once the web run starts) and the job itself.
+        job["prompt_msg_id"] = prompt_msg.id
+        zipbrowse.register(job)
     except Exception:
         PENDING_UNZIP.pop(job_id, None)
         return False
@@ -1443,6 +1445,10 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             await query.answer("This unzip job expired — send the link "
                                "again.", show_alert=True)
             return
+        if job.get("web_started"):
+            await query.answer("Already sending from the file browser.",
+                               show_alert=True)
+            return
         listed = min(len(job["entries"]), _MAX_LISTED_FILES)
         if choice == "t" and len(parts) >= 4 and parts[3].isdigit():
             idx = int(parts[3])
@@ -1474,179 +1480,48 @@ async def unzip_callback(client: Client, query: CallbackQuery):
             await query.answer("Tick at least one file first.",
                                show_alert=True)
             return
+        if job and job.get("web_started"):
+            await query.answer("Already sending from the file browser.",
+                               show_alert=True)
+            return
     job = PENDING_UNZIP.pop(job_id, None)
     if not job:
         await query.answer("This unzip job expired — send the link again.",
                            show_alert=True)
         return
+    if job.get("web_started"):
+        # The file browser already started this run — the picker
+        # message is gone (or going); refuse a second run.
+        await query.answer("Already sending from the file browser.",
+                           show_alert=True)
+        return
     user_id = query.from_user.id if query.from_user else None
     job_dir, zip_path = job["job_dir"], job["path"]
-    # The run joins the shared progress message (v1.48.0): one line
-    # with a Stop button, and the final summary as its own message.
-    # Answer the tap first (Telegram only waits so long), then
-    # register the job and delete the spent picker message.
-    sent_count = 0
-    total = 0
-    ujob = None
-    try:
-        await query.answer("Sending the archive…" if choice == "asis"
-                           else "Unpacking…")
-        label = "📦 " + (clean_display(os.path.basename(zip_path))
-                         or os.path.basename(zip_path))[:37]
-        ujob = await jobs.register(client, job["chat_id"], label,
-                                   reply_to=query.message)
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
-        if choice == "asis":
-            await ujob.edit("Uploading the archive…")
-            await send_files_split(client, job["chat_id"], [zip_path],
-                                   "uploader", caption=job["caption"],
-                                   job=ujob, user_id=user_id)
-            await ujob.finish()
-            return
-        else:
-            await ujob.edit("Unpacking…")
-            extract_dir = os.path.join(job_dir, "extracted")
-            try:
-                info = unzip.archive_info(zip_path)
-            except Exception:
-                info = {"count": 0}
-            # Tick-selected files only (v1.45.0): when the owner
-            # touched the picker, only the ticked entries come
-            # out — unlisted files beyond the first 10 are skipped
-            # too. Untouched, everything comes out as before.
-            only_names = None
-            total = info["count"]
-            if job.get("touched"):
-                only_names = {job["entries"][i][0]
-                              for i in job["selected"]}
-                total = len(only_names)
-            # One by one: extract one file, upload it, delete
-            # it, then extract the next — disk never holds
-            # more than the archive plus one file.
-            skipped: list[str] = []
-            failed: list[str] = []
-            bandwidth_stopped = False
-            gen = unzip.iter_extracted(zip_path, extract_dir, skipped,
-                                       only_names)
-            try:
-                # A manual next() loop (not `for path in gen`) so the
-                # line can say which file is being unpacked BEFORE
-                # the extraction starts — the for loop only learns
-                # the name after the file is already out.
-                while True:
-                    ujob.check_cancelled()
-                    if stats.bandwidth_blocked():
-                        bandwidth_stopped = True
-                        break
-                    await ujob.edit(
-                        f"Unpacking file {sent_count + 1} of {total}…"
-                        if total else "Unpacking…")
-                    try:
-                        path = next(gen)
-                    except StopIteration:
-                        break
-                    name = os.path.basename(path)
-                    if total:
-                        await ujob.edit(
-                            f"Uploading {sent_count + 1} of {total}: "
-                            f"{name}…")
-                        bar_label = (f"Uploading {sent_count + 1} of "
-                                     f"{total}: {name[:40]}")
-                    else:
-                        await ujob.edit(f"Uploading {name}…")
-                        bar_label = f"Uploading {name[:40]}"
-                    # Oversize files are split into .001/.002
-                    # parts before sending (v1.40.0) — a 10 GB
-                    # video inside the zip arrives as mkv.001,
-                    # mkv.002, … instead of failing the cap.
-                    sent_paths = [path]
-                    try:
-                        # Each file goes out under its OWN clean
-                        # title ("Show S01E01"), not the archive's
-                        # name (v1.44.0).
-                        file_caption = (
-                            clean_display(name) or job["caption"])
-                        sent_paths = await send_files_split(
-                            client, job["chat_id"], [path],
-                            "uploader", caption=file_caption,
-                            job=ujob, user_id=user_id,
-                            progress_label=bar_label)
-                        sent_count += 1
-                    except Exception as exc:
-                        failed.append(f"{name} ({exc})")
-                    for sent in sent_paths:
-                        try:
-                            os.unlink(sent)
-                        except OSError:
-                            pass
-                    # Pace one-by-one sends (see plugins/unzip.py).
-                    await asyncio.sleep(1)
-            finally:
-                gen.close()
-            if sent_count == 0 and not bandwidth_stopped:
-                await ujob.edit(
-                    "❌ Nothing could be unzipped from this file"
-                    + (f" (skipped: {', '.join(skipped[:5])})"
-                       if skipped else "")
-                    + ".\nSending the zip itself as-is instead.")
-                await send_files_split(client, job["chat_id"], [zip_path],
-                                       "uploader", caption=job["caption"],
-                                       job=ujob, user_id=user_id)
-                await ujob.finish(
-                    f"📦 Nothing unzipped from "
-                    f"{os.path.basename(zip_path)} — sent the archive "
-                    f"as-is.")
-                return
-            if bandwidth_stopped:
-                try:
-                    await client.send_message(
-                        job["chat_id"],
-                        "⚠️ Unzip stopped early: monthly bandwidth "
-                        "cap reached — remaining files were not sent.")
-                except Exception:
-                    pass
-            if failed:
-                try:
-                    await client.send_message(
-                        job["chat_id"],
-                        "⚠️ Failed to send while unzipping: "
-                        + ", ".join(failed[:5]))
-                except Exception:
-                    pass
-            if skipped:
-                try:
-                    await client.send_message(
-                        job["chat_id"],
-                        "⚠️ Skipped while unzipping: "
-                        + ", ".join(skipped[:10]))
-                except Exception:
-                    pass
-            await ujob.finish(_unzip_summary(job, sent_count, total,
-                                             skipped, failed,
-                                             bandwidth_stopped))
-    except JobCancelled:
-        # Stopped by the owner (Stop button or the run's own check):
-        # the shared line clears and a short note says how far it
-        # got. fail() sends the note as its own message.
-        if ujob is not None:
-            count = f" — sent {sent_count} of {total} files." \
-                if total else f" — sent {sent_count} file(s)."
-            await ujob.fail(f"⏹ Unzip cancelled{count}")
-    except Exception as exc:
-        if ujob is not None:
-            await ujob.fail(f"Unzip failed: {exc}")
-        else:
-            # The job never registered (answer/registration failed):
-            # the picker message is still there — say so on it.
-            try:
-                await query.message.edit_text(f"Unzip failed: {exc}")
-            except Exception:
-                pass
-    finally:
-        cleanup_dir(job_dir)
+    # Answer the tap first (Telegram only waits so long); the run
+    # itself lives in core/unpackrun.py now (v1.51.14) so the web
+    # page can start the exact same run.
+    await query.answer("Sending the archive…" if choice == "asis"
+                       else "Unpacking…")
+    label = "📦 " + (clean_display(os.path.basename(zip_path))
+                     or os.path.basename(zip_path))[:37]
+    if choice == "asis":
+        mode = "asis"
+        names = None
+    else:
+        mode = "send"
+        # Tick-selected files only (v1.45.0): when the owner
+        # touched the picker, only the ticked entries come out —
+        # unlisted files beyond the first 10 are skipped too.
+        # Untouched, everything comes out as before.
+        names = None
+        if job.get("touched"):
+            names = {job["entries"][i][0]
+                     for i in job["selected"]}
+    await unpackrun.run_unpack(
+        client, chat_id=job["chat_id"], zip_path=zip_path,
+        job_dir=job_dir, caption=job["caption"], names=names,
+        user_id=user_id, mode=mode, label=label,
+        reply_to=query.message, prompt_message=query.message)
 
 
 @Client.on_callback_query(filters.regex(r"^(fmt|tera):"))

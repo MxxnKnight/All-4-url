@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.13** (2026-11-27).
+- **Current version: v1.51.14** (2026-11-28).
 
 ## How moon works — the contract
 
@@ -287,7 +287,72 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-27) — v1.51.13
+## Current status (2026-11-28) — v1.51.14
+
+- v1.51.14 (moon, 2026-11-28): zip file-manager page — "Yeah and
+  i liked all your suggestions too". Moon's idea: the chat picker
+  is fine for a few files, but tapping through 100+ zip entries
+  one by one is painful. A "🔍 Browse files" web_app button on
+  the picker opens a temporary page inside Telegram that shows
+  the archive like a file manager — thumbnail, name with
+  extension, size — with search, sort (name/size), collapsible
+  folder tree, quick-select (Images/Videos/Subtitles), Select
+  all shown / None, a live "N files · X total" line, a warning
+  when a picked file is over Telegram's split cap, tap-an-image
+  full preview, and two ways out: "Send selected" (the usual
+  one-by-one unpack) and "Send as new zip" (re-pack just the
+  picks into one stored zip, folders kept).
+  - core/zipbrowse.py: HMAC-signed 1-hour token carrying the
+    PENDING_UNZIP job id (same shape as core/linktoken.py);
+    routes GET /zip/{token} (page), POST /api/zip/{token}/entries
+    (initData + owner), GET thumb/{i} and file/{i} (the token
+    itself is the bearer — img tags can't carry initData),
+    POST send {indices, mode} (initData + owner). The record IS
+    the PENDING_UNZIP job dict (same object, no second copy):
+    the picker registers it, the page reads it, the run drops
+    it. The send endpoint marks web_started, deletes the picker
+    message, and schedules the run — a later chat tap is
+    refused ("Already sending from the file browser.").
+    Thumbnails are Pillow-downscaled JPEGs (320 px; the original
+    is served when Pillow is missing — the Space has it via
+    requirements.txt). The page is Telegram-theme styled like
+    the panel. The Browse button only appears when BASE_URL is
+    set; without a public URL the page is unreachable.
+  - core/unpackrun.py: the picker's go/asis run body moved here
+    unchanged (register, per-file sends, summary, fallbacks,
+    cleanup) so the page starts the exact same run; the callback
+    is now a thin wrapper. New mode "rezip": extract the picks,
+    pack them into "<stem>-selection.zip" (ZIP_STORED — the
+    files are media, deflate would only burn CPU), send it via
+    send_files_split (so an oversize selection still splits).
+    Gotcha found while testing: iter_extracted deletes the file
+    it yielded on the next extraction AND on close — so the
+    rezip stages each file (move to a stage dir, arcname kept
+    from the entry's own folder path) before closing its
+    generator, and _extract_one copies the bytes to a stable
+    path before closing. The rezip checks disk room for twice
+    the selection (extracted files + the new zip) and refuses
+    with a plain message when it doesn't fit.
+  - Tests: test_v1524.py 34/34 (token round-trip/tamper/expiry,
+    browse URL, picker button + prompt text, page 200/410,
+    entries payload incl. kinds/folders, 401/403, thumbnail
+    JPEG magic, file serve, web send end-to-end with only the
+    picked files + summary + picker deleted + token dead after,
+    chat-tap-after-web-run refused, rezip end-to-end with the
+    selection zip's contents verified). test_v1480's summary
+    checks updated to unpackrun._summary (same text, new home);
+    its go/asis end-to-end runs still pass through the moved
+    code. Live-scale check: 61 entries across 12 folders,
+    poster thumbnail a real 1749-byte JPEG, 10-file rezip kept
+    folder paths. Regression: v1453 17/17; v1480 22/23, v1490
+    19/20, v1500 37/38, v1516 43/44, v1517 23/24, v1518 23/24,
+    v1519 10/11, v1520 13/14, v1521 7/8, v1522 11/12, v1523
+    11/12 — each failing only its pinned version check
+    (expected). (v1521 needed /tmp/test1.png re-created — the
+    file was made in the v1.51.11 session and /tmp was wiped
+    since; not a code failure.) Device proof pending: moon
+    sends a zip, taps Browse files, picks from the page, and
+    sends — both modes.
 
 - v1.51.13 (moon, 2026-11-27): progress bar back on split-file
   uploads — "Yes, fix it". Moon's screenshot of a 2.62 GB split

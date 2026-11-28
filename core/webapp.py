@@ -268,6 +268,11 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post("/api/state", api_state)
     app.router.add_post("/api/cookies", api_cookies)
     app.router.add_post("/api/destination", api_destination)
+    # Zip file-manager page (v1.51.14). Deferred import: zipbrowse
+    # needs validate_init_data from this module, so it can't be
+    # imported at the top.
+    from core import zipbrowse
+    zipbrowse.add_routes(app)
 
 
 PAGE_HTML = r"""<!DOCTYPE html>
