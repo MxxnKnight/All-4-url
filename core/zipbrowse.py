@@ -41,7 +41,7 @@ from aiohttp import web
 import config
 from core import unzip, webserver
 from core.unpackrun import run_unpack
-from core.utils import human_bytes
+from core.utils import human_bytes, run_blocking
 from core.webapp import validate_init_data
 
 log = logging.getLogger("all4url")
@@ -296,6 +296,83 @@ async def api_thumb(request: web.Request) -> web.Response:
         return web.Response(body=fh.read(), content_type="image/jpeg")
 
 
+async def api_vthumb(request: web.Request) -> web.Response:
+    """One frame of a video entry, on demand (v1.51.15).
+
+    Video thumbnails are NOT made up front — a season zip would
+    make the page sit there extracting and frame-grabbing every
+    video before it shows anything. The page shows 🎬 and only
+    taps a frame when the owner taps that video's icon. The
+    frame is made with the sender's own _make_thumb (ffmpeg,
+    ~1s in), downscaled with Pillow into a disk cache, and
+    served from the cache on repeat taps. The video itself is
+    extracted only while ffmpeg runs and deleted right after —
+    the generator would delete it on close anyway, so the frame
+    is made before the generator is closed."""
+    try:
+        job = _record(request.match_info["token"])
+    except BrowseError as exc:
+        return web.Response(text=str(exc), status=410)
+    try:
+        idx = int(request.match_info["idx"])
+    except ValueError:
+        return web.Response(text="bad index", status=400)
+    entries = job.get("entries") or []
+    if idx < 0 or idx >= len(entries):
+        return web.Response(text="bad index", status=400)
+    name, _size = entries[idx]
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in _VIDEO_EXTS:
+        return web.Response(text="not a video", status=404)
+    vthumb_dir = os.path.join(job["job_dir"], ".vthumbs")
+    cached = os.path.join(vthumb_dir, f"{idx}.jpg")
+    if os.path.isfile(cached):
+        with open(cached, "rb") as fh:
+            return web.Response(body=fh.read(),
+                                content_type="image/jpeg")
+    src_dir = os.path.join(job["job_dir"], ".vthumb_src")
+    os.makedirs(src_dir, exist_ok=True)
+    skipped: list[str] = []
+    gen = unzip.iter_extracted(job["path"], src_dir, skipped, {name})
+    try:
+        src = next(gen)
+    except StopIteration:
+        gen.close()
+        return web.Response(text="could not extract", status=404)
+    try:
+        from core.sender import _make_thumb
+        frame = await run_blocking(_make_thumb, src)
+        if frame is None or not os.path.isfile(frame):
+            return web.Response(text="no frame in this video",
+                                status=404)
+        os.makedirs(vthumb_dir, exist_ok=True)
+        try:
+            from PIL import Image
+        except ImportError:
+            Image = None
+        if Image is None:
+            os.rename(frame, cached)
+        else:
+            try:
+                with Image.open(frame) as im:
+                    im.thumbnail((THUMB_SIZE, THUMB_SIZE))
+                    im.convert("RGB").save(cached, "JPEG", quality=70)
+            except Exception:
+                return web.Response(text="could not thumbnail",
+                                    status=404)
+            finally:
+                try:
+                    os.unlink(frame)
+                except OSError:
+                    pass
+    finally:
+        # Closes the generator, which deletes the extracted
+        # video — the frame (a separate file) is already cached.
+        gen.close()
+    with open(cached, "rb") as fh:
+        return web.Response(body=fh.read(), content_type="image/jpeg")
+
+
 async def api_file(request: web.Request) -> web.Response:
     """The extracted file itself — image preview, or a per-file
     download from the page. Served from a disk cache so a second
@@ -392,6 +469,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/zip/{token}", page)
     app.router.add_post("/api/zip/{token}/entries", api_entries)
     app.router.add_get("/api/zip/{token}/thumb/{idx}", api_thumb)
+    app.router.add_get("/api/zip/{token}/vthumb/{idx}", api_vthumb)
     app.router.add_get("/api/zip/{token}/file/{idx}", api_file)
     app.router.add_post("/api/zip/{token}/send", api_send)
 
@@ -438,6 +516,7 @@ select{margin-top:8px}
   background:var(--secondary)}
 .row .ic{width:44px;height:44px;flex:none;border-radius:8px;background:var(--secondary);
   display:flex;align-items:center;justify-content:center;font-size:20px}
+.row .ic.vthumb{cursor:pointer}
 .row .nm{flex:1;min-width:0}
 .row .nm b{display:block;font-size:14px;font-weight:500;word-break:break-all}
 .row .nm span{font-size:12.5px;color:var(--hint)}
@@ -510,6 +589,8 @@ const KIND_ICON = {video: "🎬", audio: "🎵", sub: "💬", other: "📄"};
 let DATA = null;          // entries payload from the server
 let sel = new Set();      // selected entry indices
 let openFolders = new Set([""]);  // "" = root, always open
+let vloaded = new Set();  // video indices whose frame thumb loaded
+let vfailed = new Set();  // video indices with no frame (don't retry)
 
 function fmt(n) {
   if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
@@ -549,9 +630,18 @@ function render() {
     }
     if (open) {
       for (const e of rows) {
-        const thumb = e.kind === "image"
-          ? `<img class="thumb" loading="lazy" src="/api/zip/${token}/thumb/${e.i}" data-prev="${e.i}" alt="">`
-          : `<span class="ic">${KIND_ICON[e.kind] || "📄"}</span>`;
+        let thumb;
+        if (e.kind === "image") {
+          thumb = `<img class="thumb" loading="lazy" src="/api/zip/${token}/thumb/${e.i}" data-full="/api/zip/${token}/file/${e.i}" alt="">`;
+        } else if (e.kind === "video") {
+          // Frames are made on demand, one tap at a time — never
+          // up front for the whole zip (v1.51.15).
+          thumb = vloaded.has(e.i)
+            ? `<img class="thumb" src="/api/zip/${token}/vthumb/${e.i}" data-full="/api/zip/${token}/vthumb/${e.i}" alt="">`
+            : `<span class="ic vthumb" data-vt="${e.i}" title="Tap for a preview frame">🎬</span>`;
+        } else {
+          thumb = `<span class="ic">${KIND_ICON[e.kind] || "📄"}</span>`;
+        }
         html += `<div class="row${e.enc ? " enc" : ""}">
           <input type="checkbox" data-i="${e.i}" ${sel.has(e.i) ? "checked" : ""} ${e.enc ? "disabled" : ""}>
           ${thumb}
@@ -587,9 +677,30 @@ $("list").addEventListener("click", e => {
     render();
     return;
   }
-  const p = e.target.closest("[data-prev]");
+  const vt = e.target.closest("[data-vt]");
+  if (vt) {
+    const i = +vt.dataset.vt;
+    if (vfailed.has(i)) return;
+    const img = document.createElement("img");
+    img.className = "thumb";
+    img.src = `/api/zip/${token}/vthumb/${i}`;
+    img.setAttribute("data-full", img.src);
+    img.alt = "";
+    img.onload = () => vloaded.add(i);
+    img.onerror = () => {
+      vfailed.add(i);
+      const s = document.createElement("span");
+      s.className = "ic vthumb"; s.dataset.vt = i;
+      s.title = "No preview for this video";
+      s.textContent = "🎬";
+      img.replaceWith(s);
+    };
+    vt.replaceWith(img);
+    return;
+  }
+  const p = e.target.closest("[data-full]");
   if (p) {
-    $("prevImg").src = `/api/zip/${token}/file/${p.dataset.prev}`;
+    $("prevImg").src = p.dataset.full;
     $("preview").style.display = "flex";
     return;
   }
@@ -642,7 +753,8 @@ async function load() {
   if (!d.ok) { $("title").textContent = d.error || "Could not load."; return; }
   DATA = d;
   $("title").textContent = "📦 " + d.archive;
-  $("sub").textContent = `${d.count} file(s) · unpacks to ${d.total_h}`;
+  $("sub").textContent = `${d.count} file(s) · unpacks to ${d.total_h}`
+    + (d.entries.some(e => e.kind === "video") ? " · tap 🎬 for a video frame" : "");
   render();
 }
 load();

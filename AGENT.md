@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.14** (2026-11-28).
+- **Current version: v1.51.15** (2026-11-28).
 
 ## How moon works — the contract
 
@@ -287,7 +287,41 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-28) — v1.51.14
+## Current status (2026-11-28) — v1.51.15
+
+- v1.51.15 (moon, 2026-11-28): on-demand video thumbnails in
+  the zip browser — "Yeah add it!". Videos showed only 🎬 in
+  v1.51.14; now tapping a video's 🎬 grabs one frame with
+  ffmpeg (~1s in, the sender's own _make_thumb) and shows it
+  in place, and tapping the frame opens it full-size like an
+  image preview. Frames are made ONLY on tap — never up front
+  for the whole zip, which would make the page sit there
+  extracting and frame-grabbing every video before showing
+  anything. The frame is Pillow-downscaled to 320 px and cached
+  on disk (job_dir/.vthumbs), so a second tap serves the cache.
+  The video itself is extracted only while ffmpeg runs and
+  deleted right after (the generator deletes its yield on
+  close anyway — the frame is made before the generator is
+  closed). A video with no frame (corrupt, audio-only) keeps
+  its 🎬 and never retries. Route: GET
+  /api/zip/{token}/vthumb/{idx} (token bearer, like the image
+  thumb). Link lifetime, confirmed in code for moon's question:
+  the page dies the moment he hits Send (the send endpoint
+  drops the record first, so entries/thumbs/files/send all
+  answer 410 from then on) and at most 1 hour after the picker
+  appeared (token expiry + UNZIP_TTL prune) — exactly what he
+  asked for, no change needed.
+  - Tests: test_v1525.py 9/9 (real 2s mp4 via ffmpeg: frame is
+    a JPEG, second tap serves the cached bytes, extracted video
+    gone after the frame; fake mp4 -> 404, non-video -> 404,
+    bad token -> 410, page carries the tap hook). Regression:
+    v1524 33/34, v1480 22/23, v1523 11/12 — each failing only
+    its pinned version check (expected); v1453 17/17. Caught
+    while testing: the first edit swallowed api_file's def line
+    (its body sat as dead code inside api_vthumb) — restored,
+    and v1524's file-serve check proves it. Device proof
+    pending: tap a video's 🎬 on the browser page, the frame
+    appears; tap the frame, it opens full-size.
 
 - v1.51.14 (moon, 2026-11-28): zip file-manager page — "Yeah and
   i liked all your suggestions too". Moon's idea: the chat picker
