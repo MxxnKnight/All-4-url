@@ -287,6 +287,59 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
+## Current status (2026-11-28) — v1.51.18
+
+- v1.51.18 (moon, 2026-11-28): OnlyFans + Fansly post links via
+  OF-Scraper, and the RedGifs verdict. Moon asked for extractors for
+  onlyfans / darkfans / fansly / redgifs.
+  - **RedGifs: no new code.** yt-dlp 2026.11.23 already ships a
+    RedGifs extractor, and gallery-dl has one too — both sit in the
+    existing chain (steps 4–5), so a RedGifs link already flows
+    through them. Proven in the sandbox: gallery-dl downloaded a
+    real 26 MB .m4v from a watch URL. (yt-dlp's own attempt failed
+    here only on the sandbox proxy's MITM cert — not a RedGifs
+    problem.) Per site_registry's rule, a custom RedGifs extractor
+    would only shadow maintained ones. Live proof is moon sending
+    a RedGifs link to the bot; if it fails live, a custom extractor
+    becomes justified.
+  - **DarkFans: honest no.** No userscript, yt-dlp, gallery-dl or
+    OF-Scraper extractor exists — only paid desktop tools that
+    capture the stream inside a browser, or manual DevTools
+    capture. HLS with per-fragment tokens + DRM on some videos.
+    Not built.
+  - **OnlyFans + Fansly: new `core/extractors/ofscraper.py`.**
+    Neither yt-dlp nor gallery-dl understands OnlyFans at all, and
+    gallery-dl's Fansly is cookie-only with no DRM. The module runs
+    OF-Scraper 3.18.2 (`ofscraper manual --url <post>`) as a
+    subprocess per job, with a throwaway config dir seeded from
+    Space secrets (OF: OF_SESS/OF_AUTH_ID/OF_USER_AGENT/OF_X_BC;
+    Fansly: FANSLY_AUTH_TOKEN/FANSLY_USER_AGENT) and the download
+    root set to the job dir. Auth-gated like reddit_oauth: it only
+    matches when that site's secrets are set, so without them the
+    chain is unchanged. Single-post URLs only
+    (onlyfans.com/<id>/<user>, fansly.com/post/<id>); profile links
+    are refused, no timeline scraping. DRM videos without a CDM
+    leave .part files and fail with a plain message. Progress polls
+    the job-dir size (total unknown); cancel kills the subprocess.
+  - Traps found while verifying: OF-Scraper's startup builds an
+    httpx client from the proxy env and the sandbox's no_proxy
+    (`[::1]`) crashes it ("Invalid port: ':1]'") — the wrapper
+    strips every *proxy* variable from the child's env (a no-op on
+    the Space). A minimal config.json (only
+    file_options.save_location) + fake auth reaches the auth check,
+    proving the plumbing; the sandbox has no direct egress, so a
+    real post download can only be proven on the Space with real
+    auth. `ofscraper` pinned 3.18.2 in requirements.txt.
+  - Tests: test_v1528.py 27/27 (matching + auth gate, resolve
+    shape, config seeding, command, fake-ofscraper download,
+    DRM .part, auth-failure wording, no-auth, cancel, proxy
+    strip). Registry check: OF url → ofscraper module with auth,
+    None without; Fansly url → None with OF auth only; RedGifs /
+    YouTube → None (not shadowed).
+  - Deploy order: the code ships first (dormant without secrets);
+    moon adds the 6 secrets in Space Settings, then the Space is
+    pushed — the live test is a real OF/Fansly post link.
+
 ## Current status (2026-11-28) — v1.51.17
 
 - v1.51.17 (moon, 2026-11-28): MongoDB is gone — the bot's database

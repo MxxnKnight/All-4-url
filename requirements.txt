@@ -14,6 +14,13 @@ yt-dlp[default,curl-cffi]
 # challenge solving failed" and drops formats.
 yt-dlp-ejs
 gallery-dl
+# OF-Scraper (v1.51.18): the OnlyFans + Fansly engine behind
+# core/extractors/ofscraper.py. Neither yt-dlp nor gallery-dl
+# understands OnlyFans, and only OF-Scraper decrypts DRM videos
+# (with a CDM — not configured here). Pinned to the version verified
+# in the sandbox (3.18.2); OF changes its API often, so bump with
+# care and re-run the manual-mode probe before shipping.
+ofscraper==3.18.2
 aiohttp
 curl-cffi
 python-dotenv

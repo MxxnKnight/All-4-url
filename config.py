@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.51.17"
+BOT_VERSION = "1.51.18"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -136,6 +136,23 @@ TERABOX_BDUSS = (os.environ.get("TERABOX_BDUSS") or "").strip()
 # the extractor stays off and Reddit flows through gallery-dl as
 # before. Both are secrets: Space Secrets, never the repo.
 REDDIT_CLIENT_ID = (os.environ.get("REDDIT_CLIENT_ID") or "").strip()
+
+# --- OnlyFans / Fansly via OF-Scraper (v1.51.18, optional) ------------------
+# The OF-Scraper extractor (core/extractors/ofscraper.py) only matches
+# a post link when that site's secrets below are all set; without
+# them the links fall through to yt-dlp / gallery-dl as before.
+# OnlyFans: sess + auth_id + x-bc + user_agent, copied from the
+# logged-in browser (OF-Scraper's README: they stop working on
+# logout; auth_uid is optional). Fansly: authorization_token from
+# localStorage `session_active_session` -> `token`, plus the browser's
+# user agent. All are secrets: Space Secrets, never the repo.
+OF_SESS = (os.environ.get("OF_SESS") or "").strip()
+OF_AUTH_ID = (os.environ.get("OF_AUTH_ID") or "").strip()
+OF_AUTH_UID = (os.environ.get("OF_AUTH_UID") or "").strip()
+OF_USER_AGENT = (os.environ.get("OF_USER_AGENT") or "").strip()
+OF_X_BC = (os.environ.get("OF_X_BC") or "").strip()
+FANSLY_AUTH_TOKEN = (os.environ.get("FANSLY_AUTH_TOKEN") or "").strip()
+FANSLY_USER_AGENT = (os.environ.get("FANSLY_USER_AGENT") or "").strip()
 
 # TMDB (v1.44.0): optional, for real movie/show posters as video
 # thumbnails. Either a v3 API key or a v4 read-access token works;

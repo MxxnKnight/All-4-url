@@ -56,7 +56,9 @@ link ─┬─ Terabox domain ──────────────► Tera
 Engines: **yt-dlp** (1000+ video/audio sites), **gallery-dl** (Instagram
 images/carousels, X image posts, Reddit galleries, Pinterest, Pixiv…),
 a hand-written **Terabox** extractor (yt-dlp refuses Terabox upstream),
+**OF-Scraper** (OnlyFans + Fansly post links, needs the secrets below),
 a **direct-file** streamer, and an OpenGraph **scraper** as last resort.
+RedGifs needs nothing special — yt-dlp and gallery-dl already handle it.
 
 ---
 
@@ -171,6 +173,26 @@ desktop Chrome extensions.
 Manual alternative: drop per-site files into `cookies/` yourself
 (`<site>.txt`, git-ignored — never commit them), or keep one legacy
 `cookies.txt` / `COOKIES_FILE` as a fallback for every site.
+
+### OnlyFans / Fansly (Space secrets, not cookies)
+
+These two do **not** go through `/setcookies` — OF-Scraper needs
+session values a cookies.txt doesn't carry, so they live as Space
+secrets and the extractor only activates when they're set. Without
+them the links just fall through the normal chain (and fail there —
+neither yt-dlp nor gallery-dl understands OnlyFans).
+
+| Secret | Where it comes from |
+|---|---|
+| `OF_SESS`, `OF_AUTH_ID`, `OF_X_BC`, `OF_USER_AGENT` | Logged into onlyfans.com in your browser: copy `sess` and `auth_id` (cookies), `x-bc` (a request header) and the browser's `user_agent`. They die when you log out — re-copy them then. `OF_AUTH_UID` is optional. |
+| `FANSLY_AUTH_TOKEN`, `FANSLY_USER_AGENT` | Logged into fansly.com: the `token` inside localStorage `session_active_session`, plus the browser's `user_agent`. |
+
+Rules: paste a **single post link** (`onlyfans.com/<post-id>/<user>`,
+`fansly.com/post/<id>`) — profile/creator links are refused, the bot
+won't scrape a whole timeline. Only what your account can already see
+downloads (no paywall bypass). DRM-protected videos can't be decrypted
+without a CDM, which isn't configured — those fail with a plain
+message instead of a broken file.
 
 Cookies expire eventually, so when sites start failing again, just
 re-send a fresh file — treat cookies as refreshable, not permanent. A
