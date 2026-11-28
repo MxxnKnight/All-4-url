@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.15** (2026-11-28).
+- **Current version: v1.51.16** (2026-11-28).
 
 ## How moon works — the contract
 
@@ -287,7 +287,66 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
-## Current status (2026-11-28) — v1.51.15
+## Current status (2026-11-28) — v1.51.16
+
+- v1.51.16 (moon, 2026-11-28): /upzip — collect links into one
+  zip (his 2nd idea). `/upzip` opens a session: every link he
+  sends afterwards is downloaded through the normal chain and
+  appended to one zip instead of being sent to him. A status
+  message in the chat shows what was added (name, type, size),
+  the file count and the total size, with 🌐 View files (the
+  temporary page), 📦 Send as zip and 🗑 Discard buttons. The
+  page lists the live contents with totals, a Refresh button,
+  and the same Send/Discard. Send as zip sends the zip (split
+  into parts past the 2 GB cap, like any big file) and ends the
+  session — the page dies with it. Discard throws it away.
+  Sending /upzip again re-shows the session (fresh status
+  message + fresh page link). One session per user; a failed
+  link is named on the status and the rest keeps going; a file
+  that would push the zip past 19 GB (just under the splitter's
+  20 GB cap) or that the disk can't hold is refused, not added.
+  - Implementation: core/collect.py (session, ZIP_STORED appends
+    with duplicate-basename dedupe, status text/markup, HMAC
+    token with a 24 h expiry, page + entries/send/discard
+    routes; the page reads the live zip's central directory on
+    every load so it is never stale). plugins/upzip.py (the
+    command + the collect: callback). The choke point is
+    uploader._deliver(): every download flow's unpack-prompt +
+    send pair now runs through it — with a session active it
+    appends the paths to the zip and returns, skipping the
+    prompt and the send; without one it behaves exactly as
+    before (prompt/announce flags keep the gallery/carousel
+    flows' old silence). Picker skips while collecting: the
+    yt-dlp quality picker (best goes straight in) and the
+    gdflix Telegram-link choice (download straight in) — the
+    Terabox multi-file picker is a real file choice, so it
+    still asks and the pick is collected. Picker callbacks
+    (format/gdflix) flow through _deliver, so a pick made
+    mid-session is collected too. Own /u/ links sent during a
+    session are also collected (the single-use token is only
+    consumed once the file lands in the zip). The page's
+    Send/Discard need the session owner's Telegram signature
+    (validate_init_data, user_id == session user — not
+    OWNER_ID, so a sudo user's own session works). A session
+    survives nothing: a restart wipes it and the zip, like a
+    pending unpack picker.
+  - Tests: test_v1526.py 38/38 (token round-trip/tamper/expiry,
+    start + reshow, appends + dedupe + totals + refusals, page
+    200/410, entries 403 for a non-owner, page send end-to-end
+    with a fake sender, discard, chat buttons, _deliver divert
+    vs normal send vs archive prompt, yt-dlp divert + picker,
+    _dispatch ask_format flag both ways). Page JS passes
+    node --check. Regression: v1453 17/17 (now pins upzip_cmd +
+    collect_callback), v1480 22/23, v1490 19/20, v1500 37/38,
+    v1516 43/44, v1517 23/24, v1518 23/24, v1520 13/14,
+    v1522 11/12, v1523 11/12, v1524 33/34, v1525 8/9 — each
+    failing only its pinned version check (expected). Two bugs
+    caught in testing: the page auth checked fields["id"] where
+    validate_init_data returns "user_id" (403s), and reshow
+    passed a bare id to delete_messages where the fake (and
+    zipbrowse) takes a list. Device proof pending: /upzip, send
+    2-3 links, watch the status update, open the page, Send as
+    zip — the zip arrives and the page dies.
 
 - v1.51.15 (moon, 2026-11-28): on-demand video thumbnails in
   the zip browser — "Yeah add it!". Videos showed only 🎬 in

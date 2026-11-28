@@ -273,6 +273,9 @@ def add_routes(app: web.Application) -> None:
     # imported at the top.
     from core import zipbrowse
     zipbrowse.add_routes(app)
+    # /upzip collection page (v1.51.16). Same deferred-import shape.
+    from core import collect
+    collect.add_routes(app)
 
 
 PAGE_HTML = r"""<!DOCTYPE html>

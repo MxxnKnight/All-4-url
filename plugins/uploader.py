@@ -32,7 +32,8 @@ from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
 import config
 from core.extractors import (browser_scan, gallery_engine, scrape,
                              site_registry, terabox)
-from core import jobs, splitter, stats, unpackrun, unzip, upage, zipbrowse
+from core import (collect, jobs, splitter, stats, unpackrun, unzip,
+                  upage, zipbrowse)
 from core.filename_parser import clean_display
 from core.extractors.direct import (check_direct, download_file,
                                     is_playlist_url, safe_filename)
@@ -234,6 +235,40 @@ async def _prompt_or_split(client, chat_id, paths, caption,
         return True, []
     return False, await splitter.maybe_split(
         paths, editor=job, status_msg=None)
+
+
+async def _deliver(client, message, paths, caption, job_dir, job,
+                   user_id, prompt=True, announce=True) -> bool:
+    """The last step of every download flow: unpack prompt or send.
+
+    Returns True when a prompt is on screen (pending). When a
+    /upzip collection is running for this user, the files go into
+    the collection zip instead — no unpack prompt, no send — and
+    the collection status message says what was added. The
+    caller's `finally: cleanup_dir(job_dir)` still deletes the
+    originals afterwards; add_files only reads them.
+    `prompt=False` keeps the carousel's old direct-send path (no
+    unpack prompt for a set of images); `announce=False` keeps
+    the gallery/carousel flows' old silence before sending (the
+    other flows say "Uploading…" first). Both only shape the
+    normal path — collection mode ignores them.
+    """
+    session = collect.active(user_id)
+    if session is not None:
+        await collect.add_files(session, client, paths)
+        return False
+    if prompt:
+        prompted, paths = await _prompt_or_split(
+            client, message.chat.id, paths, caption, job_dir, job=job)
+    else:
+        prompted, paths = False, paths
+    if not prompted:
+        if announce:
+            await job.edit("Uploading…", force=True)
+        await send_files_routed(client, message.chat.id, paths,
+                                "uploader", caption=caption,
+                                job=job, user_id=user_id)
+    return prompted
 
 
 def _next_job_id() -> str:
@@ -579,16 +614,10 @@ async def _terabox_download(client, message, url, index, info, job,
             async with splitter.big_file_guard(big_file):
                 path = await terabox.download(url, job_dir, index=index,
                                               progress_cb=progress)
-                prompted, paths = await _prompt_or_split(
-                    client, message.chat.id, [path],
+                prompted = await _deliver(
+                    client, message, [path],
                     f"Terabox · {info['name'] if info else ''}",
-                    job_dir, job=job)
-            if not prompted:
-                await job.edit("Uploading…", force=True)
-                await send_files_routed(
-                    client, message.chat.id, paths, "uploader",
-                    caption=f"Terabox · {info['name'] if info else ''}",
-                    job=job, user_id=user_id)
+                    job_dir, job, user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -641,6 +670,11 @@ async def _custom_flow(client: Client, message: Message, url: str,
 
         if user_id is None:
             user_id = message.from_user.id if message.from_user else None
+
+        # A running collection takes the download, not the
+        # Telegram-link choice — a link can't be zipped.
+        if collect.active(user_id) is not None:
+            offer_telegram = False
 
         async def progress(done, total):
             job.check_cancelled()
@@ -722,15 +756,9 @@ async def _custom_flow(client: Client, message: Message, url: str,
                 paths = await site.download(
                     url, job_dir, progress_cb=progress,
                     cancel_check=lambda: job.cancelled)
-                prompted, paths = await _prompt_or_split(
-                    client, message.chat.id, paths,
-                    info.get("title", "")[:200], job_dir, job=job)
-            if not prompted:
-                await job.edit("Uploading…", force=True)
-                await send_files_routed(client, message.chat.id, paths,
-                                        "uploader",
-                                        caption=info.get("title", "")[:200],
-                                        job=job, user_id=user_id)
+                prompted = await _deliver(
+                    client, message, paths,
+                    info.get("title", "")[:200], job_dir, job, user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -805,14 +833,9 @@ async def _ytdlp_download(client, message, url, title, job,
                                        audio_only=audio_only,
                                        progress_cb=progress,
                                        cancel_check=lambda: job.cancelled)
-                prompted, paths = await _prompt_or_split(
-                    client, message.chat.id, paths, title[:200],
-                    job_dir, job=job)
-            if not prompted:
-                await job.edit("Uploading…", force=True)
-                await send_files_routed(client, message.chat.id, paths,
-                                        "uploader", caption=title[:200],
-                                        job=job, user_id=user_id)
+                prompted = await _deliver(
+                    client, message, paths, title[:200],
+                    job_dir, job, user_id)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -832,14 +855,10 @@ async def _gallery_flow(client, message, url, job):
             # gallery-dl never tells us the size up front, so a big
             # file only shows itself here — maybe_split's own disk
             # check is what keeps the split safe.
-            prompted, paths = await _prompt_or_split(
-                client, message.chat.id, paths, url, job_dir, job=job)
-            if not prompted:
-                await send_files_routed(
-                    client, message.chat.id, paths, "uploader",
-                    caption=url, job=job,
-                    user_id=message.from_user.id
-                    if message.from_user else None)
+            prompted = await _deliver(
+                client, message, paths, url, job_dir, job,
+                message.from_user.id if message.from_user else None,
+                announce=False)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -862,17 +881,10 @@ async def _direct_flow(client, message, url, info, job):
                 path = await download_file(info.get("final_url") or url, job_dir,
                                            progress_cb=progress,
                                            filename=info.get("filename"))
-                prompted, paths = await _prompt_or_split(
-                    client, message.chat.id, [path],
-                    info.get("filename", ""), job_dir, job=job)
-            if not prompted:
-                await job.edit("Uploading…", force=True)
-                await send_files_routed(client, message.chat.id, paths,
-                                        "uploader",
-                                        caption=info.get("filename", ""),
-                                        job=job,
-                                        user_id=message.from_user.id
-                                        if message.from_user else None)
+                prompted = await _deliver(
+                    client, message, [path],
+                    info.get("filename", ""), job_dir, job,
+                    message.from_user.id if message.from_user else None)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -977,14 +989,9 @@ async def _scrape_flow(client, message, url, job,
                             playlist=found.get("playlist"))
                     else:
                         paths = await _download_media(media_url)
-            prompted, paths = await _prompt_or_split(
-                client, message.chat.id, paths, url, job_dir, job=job)
-            if not prompted:
-                await job.edit("Uploading…", force=True)
-                await send_files_routed(client, message.chat.id, paths, "uploader",
-                                 caption=url, job=job,
-                                 user_id=message.from_user.id
-                                 if message.from_user else None)
+            prompted = await _deliver(
+                client, message, paths, url, job_dir, job,
+                message.from_user.id if message.from_user else None)
         finally:
             if not prompted:
                 cleanup_dir(job_dir)
@@ -1009,10 +1016,10 @@ async def _instagram_carousel(client, message, url, job) -> bool:
                 job.check_cancelled()
                 paths.append(await download_file(
                     img_url, job_dir, filename=f"instagram_{i + 1}.jpg"))
-            await send_files_routed(client, message.chat.id, paths, "uploader",
-                             caption=url, job=job,
-                             user_id=message.from_user.id
-                             if message.from_user else None)
+            await _deliver(client, message, paths, url, job_dir, job,
+                           message.from_user.id
+                           if message.from_user else None,
+                           prompt=False, announce=False)
             return True
         finally:
             cleanup_dir(job_dir)
@@ -1144,7 +1151,7 @@ async def _run_links(client: Client, message: Message,
                    & ~filters.command(["start", "help", "batch", "cancel",
                                        "mediainfo", "live", "pipe",
                                        "vidsplit", "browser", "gallery",
-                                       "joinzip"]))
+                                       "joinzip", "upzip"]))
 async def url_handler(client: Client, message: Message):
     urls = _extract_urls(message)
     if not urls:
@@ -1187,6 +1194,21 @@ async def _upage_local_flow(client: Client, message: Message, url: str,
         await job.fail(
             "❌ The file is no longer on the server. Upload it again "
             "with /fileuploadpage.")
+        return "failed"
+    # A running collection takes the file, not the chat.
+    sender_id = message.from_user.id if message.from_user else None
+    session = collect.active(sender_id)
+    if session is not None:
+        results = await collect.add_files(session, client, [path])
+        if results and results[0]["ok"]:
+            upage.consume(fid)
+            await job.finish(
+                f"✅ {name} ({human_bytes(size)}) added to the zip.")
+            return "done"
+        await job.fail(
+            "❌ Couldn't add that to the zip: "
+            f"{results[0]['reason'] if results else 'unknown'}\n"
+            "The upload link is still good — try again.")
         return "failed"
     # Admin delivery (v1.24.0): no matter WHO uploads via /fileuploadpage,
     # the file lands in the OWNER's bot PM — not in the uploader's
@@ -1332,9 +1354,14 @@ async def _dispatch(client: Client, message: Message, url: str,
                 errors.append(f"direct: {exc}")
 
         # 4) yt-dlp — reels and every other video/audio site.
+        # While a collection runs, no quality picker: the best
+        # format goes straight into the zip.
         try:
-            picker = await _ytdlp_flow(client, message, url, job,
-                                        ask_format=not is_reel)
+            picker = await _ytdlp_flow(
+                client, message, url, job,
+                ask_format=not is_reel and collect.active(
+                    message.from_user.id
+                    if message.from_user else None) is None)
             return "pending" if picker else "done"
         except SizeBlocked as exc:
             await job.fail(f"❌ {exc}")

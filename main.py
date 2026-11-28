@@ -59,6 +59,7 @@ BOT_COMMANDS = [
     BotCommand("browser", "Force the browser: open a page, get its video"),
     BotCommand("gallery", "Force gallery-dl: galleries and image posts"),
     BotCommand("joinzip", "Join split .001/.002 links, unzip, send the video"),
+    BotCommand("upzip", "Collect links into one zip, then send it"),
     BotCommand("fileuploadpage", "Private web upload link (owner only)"),
     BotCommand("linkuploadpage", "Permanent private link-upload page"),
     BotCommand("destination", "Upload destination: Bot PM / Saved Messages"),

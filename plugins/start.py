@@ -46,6 +46,7 @@ This bot only answers its owner and sudo users. Strangers get nothing.
 >**Unzip**: archives get an unpack question; or reply `/unzip`.
 >**Clean names**: messy release names tidied before sending.
 >**Join split**: `/joinzip <links…>` — join .001/.002 parts.
+>**Collect**: `/upzip` — gather links into one zip, then send it.
 >**Custom sites**: own extractors for sites yt-dlp misses.
 >**Pipe**: `/pipe <link>` — straight to Telegram, nothing on disk.
 >**Live**: `/live <link>` — live streams in 15-minute parts.
