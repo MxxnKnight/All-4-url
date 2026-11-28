@@ -13,8 +13,8 @@ event), and a message on every restart would be spam. A
 deployment always bumps BOT_VERSION in config.py, so a
 version change IS a deployment, as far as the bot can tell.
 
-Where the last-notified version lives: the Mongo `settings`
-document when DB_URI is set (survives redeploys, which is
+Where the last-notified version lives: the Upstash `settings`
+key when the REST env vars are set (survives redeploys, which is
 exactly when this matters), otherwise a small local file in
 data/ (which survives restarts within one instance, and is
 wiped on redeploy — which also correctly triggers a notice

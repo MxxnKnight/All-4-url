@@ -180,8 +180,8 @@ def _write_jar(platform: str, text: str) -> None:
 def install_jar(platform: str, text: str) -> tuple:
     """Atomically (re)write a jar. Returns (cookie_count, domains).
 
-    Also schedules a Mongo save (when DB_URI is set) so the jar
-    survives redeploys — see init_from_db().
+    Also schedules an Upstash save (when the REST env vars are set)
+    so the jar survives redeploys — see init_from_db().
     """
     count, domains = parse_cookies(text)
     if count == 0:
@@ -192,10 +192,10 @@ def install_jar(platform: str, text: str) -> tuple:
 
 
 async def init_from_db() -> None:
-    """At startup: sync jars with Mongo (when enabled).
+    """At startup: sync jars with Redis (when enabled).
 
-    Jars stored in Mongo overwrite the local files (Mongo is the
-    truth once in use); local jars Mongo doesn't have yet are
+    Jars stored in Redis overwrite the local files (Redis is the
+    truth once in use); local jars Redis doesn't have yet are
     migrated up, so switching loses nothing.
     """
     stored = await db.load_cookies()

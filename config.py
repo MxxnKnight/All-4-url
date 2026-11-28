@@ -44,7 +44,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Telegram credentials (required) -------------------------------------
 #: Release version (shown in /start and the control panel).
-BOT_VERSION = "1.51.16"
+BOT_VERSION = "1.51.17"
 API_ID = _int("API_ID")
 API_HASH = (os.environ.get("API_HASH") or "").strip()
 BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
@@ -67,13 +67,17 @@ SUDO_USERS = _int_set("SUDO_USERS")
 SESSION_STRING = (os.environ.get("SESSION_STRING") or "").strip()
 
 # --- Database (optional, recommended) -------------------------------------
-# MongoDB for the bot's durable data (runtime sudo users + usage stats),
-# so they survive redeploys on hosts with ephemeral disks. DB_NAME picks
-# THIS bot's own database on the cluster — the same DB_URI may be shared
-# with other bots, each keeps its own DB_NAME. Leave DB_URI empty to
-# keep using the local JSON files instead.
-DB_URI = (os.environ.get("DB_URI") or "").strip()
-DB_NAME = (os.environ.get("DB_NAME") or "all4url").strip() or "all4url"
+# Upstash Redis for the bot's durable data (runtime sudo users, usage
+# stats, cookie jars, bot settings), so they survive redeploys on hosts
+# with ephemeral disks. It talks over the REST API (plain HTTPS, port
+# 443) — the only thing that works from HF, where MongoDB's port 27017
+# is blocked (v1.51.17 replaces the old MongoDB backend, which could
+# never connect from the Space). Leave both empty to keep using the
+# local JSON files instead.
+UPSTASH_REDIS_REST_URL = (os.environ.get("UPSTASH_REDIS_REST_URL")
+                          or "").strip()
+UPSTASH_REDIS_REST_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+                            or "").strip()
 
 # --- Bandwidth guard --------------------------------------------------------
 # Monthly outbound (uploads to Telegram + file-to-link serves) is what

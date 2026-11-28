@@ -51,7 +51,7 @@ discontinued), aiohttp, yt-dlp, gallery-dl, ffmpeg, MongoDB (motor) when
   Docs-only commits do NOT bump the version. On startup the bot sends a
   "Bot updated to vX.Y.Z" notice to the owner + sudo users once per version
   (`core/version_notify.py`) — so a version bump is also a user notification.
-- **Current version: v1.51.16** (2026-11-28).
+- **Current version: v1.51.17** (2026-11-28).
 
 ## How moon works — the contract
 
@@ -286,6 +286,53 @@ returns `"done" | "pending" | "failed" | "blocked"`.
   on _run_links, then _job_label, instead of url_handler).
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
+
+## Current status (2026-11-28) — v1.51.17
+
+- v1.51.17 (moon, 2026-11-28): MongoDB is gone — the bot's database
+  is now Upstash Redis. Moon asked for a working DB after MongoDB
+  kept failing; the root cause (found 2026-11-18) is HF's egress,
+  which allows only ports 80/443/8080 while Atlas needs 27017, so
+  Mongo could never connect from the Space. Upstash talks over its
+  REST API (plain HTTPS, port 443), so it works from HF.
+  - Account + database: Upstash account moonagent2@botsinbox.com
+    (the agent's inbox; moon set the password on the secure card,
+    the verification code came from that inbox via the BotsInbox
+    reset dance). Database `all4url`, region us-east-1, Free plan
+    (500K commands/month, 250 MB, 10 GB bandwidth, $0, no card).
+    The bot reads UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
+    from the Space secrets — moon adds both (values in the file
+    handed to him; the token never goes in chat or the repo).
+  - Implementation: core/db.py rewritten on the REST API (aiohttp,
+    GET/SET, 10 s timeout, never raises — any failure falls back
+    to the local files). Same public function signatures, so no
+    caller changed: init() PINGs, enabled(), schedule(), close(),
+    load/save sudo ids, load_usage()/inc_usage() (dotted paths,
+    read-modify-write — the REST API has no $inc), load/save
+    cookies, load/save settings. Four JSON keys: a4u:sudo,
+    a4u:usage, a4u:cookies, a4u:settings (one GET/SET each, values
+    POSTed as the body so big cookie jars never travel in the URL).
+    motor dropped from requirements.txt. Storage labels in
+    webapp.py + start.py now say "Upstash Redis". Stale Mongo
+    comments in stats/sudo/cookies/backup/settings/destination/
+    main updated to Redis.
+  - Verified: test_v1527.py 39/39 (fake REST transport: init,
+    sudo/usage/cookies/settings round-trips, dotted increments,
+    transport-error and disabled-backend behaviour, real _http
+    against a dead loopback port). Live end-to-end against the
+    real database from the sandbox (init + all four round-trips,
+    then all four keys deleted, dbsize 0). Regression: v1453 17/17;
+    older suites fail only their version checks.
+  - Traps: the first token the browser copied had one extra `A`
+    (gQ + 8 As instead of 7) and the database answered WRONGPASS —
+    always verify a copied token with a real PING before trusting
+    it. The sandbox egress proxy breaks aiohttp TLS unless the
+    session passes trust_env=True (curl works without it); the bot
+    on HF needs no proxy, so db.py passes none.
+  - Device proof pending: after moon adds the two secrets and this
+    deploys, /status should show "Upstash Redis", and sudo/usage
+    should survive a redeploy. The Atlas M0 cluster is still
+    auto-paused (data retained) — irrelevant now, leave it.
 
 ## Current status (2026-11-28) — v1.51.16
 

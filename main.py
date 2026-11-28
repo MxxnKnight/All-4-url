@@ -183,9 +183,10 @@ async def run() -> None:
     restored = await backup.restore_missing(app)
     if restored:
         log.info("restored from vault chat: %s", ", ".join(restored))
-    # Durable storage: Mongo when DB_URI is set (sudo, usage, cookie
-    # jars), else the local files. Runs after the vault restore so file
-    # data the vault brought back can migrate up into a fresh database.
+    # Durable storage: Upstash Redis when UPSTASH_REDIS_REST_URL/TOKEN
+    # are set (sudo, usage, cookie jars), else the local files. Runs
+    # after the vault restore so file data the vault brought back can
+    # migrate up into a fresh database.
     await db.init()
     await sudo.init_from_db()
     await stats.init_from_db()

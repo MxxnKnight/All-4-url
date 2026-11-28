@@ -17,8 +17,8 @@ someone who never opened /destination follows the shared values.
 Saved Messages is owner-only: the vault belongs to the single user
 session (the owner's account), so sudo users only ever see Bot PM.
 
-Stored via core/settings.py (Mongo when DB_URI is set, else
-data/settings.json) — survives redeploys either way.
+Stored via core/settings.py (Upstash Redis when the REST env vars are
+set, else data/settings.json) — survives redeploys either way.
 """
 
 from pyrogram import Client, filters

@@ -25,9 +25,10 @@ nothing changes for anyone until they open /destination themselves.
              downloads always use "video" — the setting is URL uploads
              only, by the owner's choice.
 
-Storage mirrors sudo/stats: Mongo `settings` collection when DB_URI
-is set, data/settings.json otherwise; values cached in memory. Both
-stores hold one flat dict — global keys as before ("dest_uploader")
+Storage mirrors sudo/stats: the Upstash `settings` key when the REST
+env vars are set, data/settings.json otherwise; values cached in
+memory. Both stores hold one flat dict — global keys as before
+("dest_uploader")
 and per-user keys suffixed with the Telegram id
 ("dest_uploader:123456") — so no migration is needed.
 """
@@ -122,7 +123,7 @@ def _memory() -> dict:
 
 
 async def init_from_db() -> None:
-    """At startup: Mongo (when enabled) is the settings truth; local
+    """At startup: Redis (when enabled) is the settings truth; local
     values migrate up on first run."""
     global _mem
     stored = await db.load_settings()

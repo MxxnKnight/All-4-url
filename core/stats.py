@@ -1,11 +1,11 @@
 """Usage stats: bandwidth + job counters — daily, monthly, all-time.
 
 Storage:
-  * MongoDB when DB_URI is set (core/db.py, `usage` collection) —
+  * Redis when DB_URI is set (core/db.py, `usage` collection) —
     survives redeploys on any host. Counters live in memory; deltas
-    flush to Mongo every 30 s and on shutdown.
+    flush to Redis every 30 s and on shutdown.
   * data/stats.json otherwise (gitignored). The file is also refreshed
-    on every Mongo flush, as a local fallback copy.
+    on every Redis flush, as a local fallback copy.
 
 Kinds:
   downloaded — bytes pulled from the internet (all engines + restricted)
@@ -25,7 +25,7 @@ from core import db
 DATA_FILE = os.path.join(config.BASE_DIR, "data", "stats.json")
 
 _started_at = time.time()
-_KEEP_DAYS = 62  # daily buckets kept in memory/file (Mongo keeps all)
+_KEEP_DAYS = 62  # daily buckets kept in memory/file (Redis keeps all)
 
 
 def _blank_period() -> dict:
@@ -45,7 +45,7 @@ def _day_key() -> str:
 
 
 def _clean_period(raw) -> dict:
-    """Coerce a stored period (file or Mongo doc) into the known shape."""
+    """Coerce a stored period (file or Redis doc) into the known shape."""
     period = _blank_period()
     if isinstance(raw, dict):
         for kind in ("downloaded", "uploaded", "served"):
@@ -100,7 +100,7 @@ def _save_file(data: dict) -> None:
 
 
 _mem = None        # the live counters, loaded once
-_pending = {}      # bucket -> {field_path: delta} awaiting Mongo flush
+_pending = {}      # bucket -> {field_path: delta} awaiting Redis flush
 
 
 def _memory() -> dict:
@@ -244,9 +244,9 @@ def _deltas_of(data: dict) -> dict:
 
 
 async def init_from_db() -> None:
-    """At startup: Mongo (when enabled) is the usage truth.
+    """At startup: Redis (when enabled) is the usage truth.
 
-    Mongo docs win; when Mongo is empty but the local file has data,
+    Redis docs win; when Redis is empty but the local file has data,
     the file state is migrated up so nothing is lost in the switch.
     """
     global _mem
@@ -274,7 +274,7 @@ async def init_from_db() -> None:
 
 
 async def flush() -> None:
-    """Push pending deltas to Mongo; refresh the local file copy."""
+    """Push pending deltas to Redis; refresh the local file copy."""
     if not db.enabled():
         return
     if _pending:

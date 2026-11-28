@@ -145,7 +145,7 @@ def _state_payload() -> dict:
     return {
         "ok": True,
         "version": config.BOT_VERSION,
-        "storage": (f"MongoDB ({config.DB_NAME})" if db.enabled()
+        "storage": ("Upstash Redis" if db.enabled()
                     else "local files — no database"),
         "uptime": int(snap["uptime"]),
         "session": bool(config.SESSION_STRING),

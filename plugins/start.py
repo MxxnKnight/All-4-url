@@ -157,7 +157,7 @@ def _usage_text() -> str:
     outbound = month["uploaded"] + month["served"]
     pct = min(100.0, outbound / FREE_OUTBOUND_BYTES * 100)
 
-    storage = (f"MongoDB ({config.DB_NAME})"
+    storage = ("Upstash Redis"
                if db.enabled() else "local files — no database!")
     lines = [f"📊 **Usage** — {snap['month_key']}",
              "",

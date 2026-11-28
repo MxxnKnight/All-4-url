@@ -1,83 +1,139 @@
-"""MongoDB storage (optional, recommended).
+"""Upstash Redis storage (optional, recommended).
 
-Enabled when DB_URI is set. DB_NAME chooses the database on that
-cluster — the same URI is shared with the owner's other bots, so this
-bot keeps its own database (DB_NAME) and, inside it, its own
-collections:
+Enabled when UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are
+both set. The bot talks to Redis over Upstash's REST API — plain
+HTTPS on port 443 — which is why this works from HF at all: the old
+MongoDB backend (removed in v1.51.17) needed port 27017, which HF's
+egress blocks, so it could never connect from the Space.
 
-    sudo    {_id: "runtime", ids: [123, 456]}          — /addsudo users
-    usage   {_id: "total" | "2026-10" | "2026-10-21",  — bandwidth + jobs
-             downloaded, uploaded, served,
-             jobs: {feature: {ok, failed}}}
-    cookies {_id: <platform>, text: <netscape file>}   — cookie jars
+Everything lives under four JSON keys (one GET/SET each, no KEYS or
+SCAN — the whole database is a handful of keys):
+
+    a4u:sudo     [123, 456]                    — /addsudo users
+    a4u:usage    {"total": {...}, "2026-11": {...}, "2026-11-28": {...}}
+                                               — bandwidth + jobs
+    a4u:cookies  {"youtube": "<netscape file>", ...} — cookie jars
+    a4u:settings {"send_as": ..., ...}          — bot settings
 
 The owner knowingly stores cookie jars here (throwaway accounts only,
 never main accounts) so they survive redeploys; the backup vault
-(core/backup.py) keeps a second copy. Anyone with the DB_URI could
-use those sessions — treat the URI like a password.
+(core/backup.py) keeps a second copy. Anyone with the REST token
+could use those sessions — treat the token like a password.
 
-If DB_URI is unset or Mongo is unreachable, the bot falls back to the
-local JSON files exactly as before — Mongo is an upgrade, never a
-single point of failure.
+If the env vars are unset or Redis is unreachable, the bot falls
+back to the local JSON files exactly as before — the database is an
+upgrade, never a single point of failure. Usage increments are
+read-modify-write (the REST API has no $inc); the bot is a single
+process and a lost racing increment on a counter is harmless.
+
+Free-tier headroom: the bot uses ~4 keys and a few hundred commands
+a day at most, against 500K commands/month and 250 MB.
 """
 
 import asyncio
+import json
 import logging
+
+import aiohttp
 
 import config
 
 log = logging.getLogger("all4url")
 
-_client = None
-_db = None
+_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+_MISSING = object()
+_enabled = False
+
+# Key layout (see module docstring).
+_K_SUDO = "a4u:sudo"
+_K_USAGE = "a4u:usage"
+_K_COOKIES = "a4u:cookies"
+_K_SETTINGS = "a4u:settings"
 
 
 def enabled() -> bool:
-    return _db is not None
+    return _enabled
 
 
-def _uri_host(uri: str) -> str:
-    """Host part of a Mongo URI for logs — never the credentials."""
+def _rest_host() -> str:
+    """Host part of the REST URL for logs — never the token."""
     try:
-        rest = uri.split("://", 1)[-1]      # user:pass@host/db?opts
-        rest = rest.rsplit("@", 1)[-1]      # host/db?opts
-        host = rest.split("/")[0].split("?")[0]
-        return host or "?"
+        rest = config.UPSTASH_REDIS_REST_URL.split("://", 1)[-1]
+        return rest.split("/")[0] or "?"
     except Exception:
         return "?"
 
 
-async def init() -> bool:
-    """Connect + ping. Returns True when Mongo is usable."""
-    global _client, _db
-    if not config.DB_URI:
-        log.info("DB_URI not set — local JSON storage "
-                 "(Telegram backups ON)")
-        return False
-    log.info("DB_URI set (host: %s, database: %s) — connecting…",
-             _uri_host(config.DB_URI), config.DB_NAME)
+async def _http(method: str, path: str, body: str | None = None):
+    """One REST call. Returns (True, result) or (False, None).
+
+    Never raises: any network error, timeout, non-200 status or
+    Upstash {"error": ...} body is a plain failure, and the callers
+    fall back to the local files.
+    """
+    url = config.UPSTASH_REDIS_REST_URL.rstrip("/") + path
+    headers = {"Authorization": "Bearer " + config.UPSTASH_REDIS_REST_TOKEN}
     try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-    except ImportError:
-        log.warning("⚠️ motor not installed — local JSON storage "
-                    "(Telegram backups ON)")
-        return False
-    try:
-        _client = AsyncIOMotorClient(config.DB_URI,
-                                     serverSelectionTimeoutMS=5000)
-        await _client.admin.command("ping")
-        _db = _client[config.DB_NAME]
-        log.info("✅ MongoDB connected (database: %s) — sudo/usage/"
-                 "cookies/settings live in MongoDB; Telegram backups OFF",
-                 config.DB_NAME)
-        return True
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            async with session.request(method, url, headers=headers,
+                                       data=body) as resp:
+                if resp.status != 200:
+                    return False, None
+                data = await resp.json()
     except Exception as exc:
-        log.warning("⚠️ MongoDB NOT connected (%s) — falling back to "
-                    "local files; Telegram backups ON. If this is "
-                    "Atlas: Network Access must allow the host's IPs "
-                    "(0.0.0.0/0 for dynamic hosts like Koyeb).", exc)
-        _client, _db = None, None
+        log.warning("upstash %s %s failed: %s", method, path, exc)
+        return False, None
+    if isinstance(data, dict) and "error" in data:
+        log.warning("upstash %s %s refused: %s", method, path,
+                    data.get("error"))
+        return False, None
+    if not isinstance(data, dict) or "result" not in data:
+        return False, None
+    return True, data["result"]
+
+
+async def _get_json(key: str):
+    """Parsed JSON at `key`: _MISSING when the key is absent,
+    None on transport error, else the value."""
+    ok, result = await _http("GET", "/get/" + key)
+    if not ok:
+        return None
+    if result is None:
+        return _MISSING
+    try:
+        return json.loads(result)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _set_json(key: str, value) -> bool:
+    """SET `key` to the JSON encoding of `value` (POST body, so big
+    values like cookie jars never travel in the URL)."""
+    ok, result = await _http("POST", "/set/" + key,
+                             body=json.dumps(value))
+    return bool(ok and result == "OK")
+
+
+async def init() -> bool:
+    """Ping the database. Returns True when Redis is usable."""
+    global _enabled
+    if not config.UPSTASH_REDIS_REST_URL or not config.UPSTASH_REDIS_REST_TOKEN:
+        log.info("UPSTASH_REDIS_REST_URL/TOKEN not set — local JSON "
+                 "storage (Telegram backups ON)")
         return False
+    log.info("Upstash Redis set (host: %s) — connecting…",
+             _rest_host())
+    ok, result = await _http("GET", "/ping")
+    if ok and result == "PONG":
+        _enabled = True
+        log.info("✅ Upstash Redis connected — sudo/usage/cookies/"
+                 "settings live in Redis; Telegram backups OFF")
+        return True
+    log.warning("⚠️ Upstash Redis NOT connected — falling back to "
+                "local files; Telegram backups ON.")
+    _enabled = False
+    return False
 
 
 def schedule(coro) -> None:
@@ -99,120 +155,148 @@ def _swallow(task) -> None:
 # --- sudo ---------------------------------------------------------------
 
 async def load_sudo_ids():
-    """Runtime sudo ids from Mongo, or None when unavailable."""
-    if _db is None:
+    """Runtime sudo ids from Redis, or None when unavailable."""
+    if not _enabled:
         return None
-    try:
-        doc = await _db["sudo"].find_one({"_id": "runtime"})
-        if doc and isinstance(doc.get("ids"), list):
-            return {int(x) for x in doc["ids"]}
+    value = await _get_json(_K_SUDO)
+    if value is None:
+        return None
+    if value is _MISSING:
         return set()
-    except Exception as exc:
-        log.warning("mongo sudo load failed: %s", exc)
-    return None
+    try:
+        return {int(x) for x in value}
+    except (TypeError, ValueError):
+        return set()
 
 
 async def save_sudo_ids(ids) -> None:
-    if _db is None:
+    if not _enabled:
         return
     try:
-        await _db["sudo"].replace_one(
-            {"_id": "runtime"},
-            {"_id": "runtime", "ids": sorted(int(x) for x in ids)},
-            upsert=True)
+        await _set_json(_K_SUDO, sorted(int(x) for x in ids))
     except Exception as exc:
-        log.warning("mongo sudo save failed: %s", exc)
+        log.warning("upstash sudo save failed: %s", exc)
 
 
 # --- usage ---------------------------------------------------------------
 
 async def load_usage():
-    """All usage docs as {bucket_id: doc}, or None when unavailable."""
-    if _db is None:
+    """All usage buckets as {bucket_id: doc}, or None when unavailable.
+    An empty database returns {} (the caller migrates the local file
+    up, exactly like the old Mongo backend did)."""
+    if not _enabled:
         return None
+    value = await _get_json(_K_USAGE)
+    if value is None:
+        return None
+    if value is _MISSING:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _inc_path(doc: dict, path: str, n) -> None:
+    """Add `n` at a dotted field path, creating parents as needed."""
+    parts = path.split(".")
+    cur = doc
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
     try:
-        out = {}
-        async for doc in _db["usage"].find({}):
-            out[doc["_id"]] = doc
-        return out
-    except Exception as exc:
-        log.warning("mongo usage load failed: %s", exc)
-    return None
+        cur[parts[-1]] = int(cur.get(parts[-1]) or 0) + int(n)
+    except (TypeError, ValueError):
+        pass
 
 
 async def inc_usage(buckets: dict) -> bool:
-    """$inc several usage buckets. buckets maps bucket id -> flat field
-    paths ({"downloaded": n, "jobs.uploader.ok": n}). True if written."""
-    if _db is None or not buckets:
+    """Add several usage increments. buckets maps bucket id -> flat
+    field paths ({"downloaded": n, "jobs.uploader.ok": n}).
+    True if written."""
+    if not _enabled or not buckets:
         return False
     try:
+        value = await _get_json(_K_USAGE)
+        if value is None:
+            return False
+        data = value if isinstance(value, dict) else {}
         for bucket, fields in buckets.items():
-            if fields:
-                await _db["usage"].update_one(
-                    {"_id": bucket}, {"$inc": fields}, upsert=True)
-        return True
+            if not fields:
+                continue
+            period = data.get(bucket)
+            if not isinstance(period, dict):
+                period = {}
+                data[bucket] = period
+            for path, n in fields.items():
+                _inc_path(period, path, n)
+        return await _set_json(_K_USAGE, data)
     except Exception as exc:
-        log.warning("mongo usage write failed: %s", exc)
+        log.warning("upstash usage write failed: %s", exc)
         return False
 
 
 # --- cookie jars -----------------------------------------------------------
 
 async def load_cookies():
-    """{platform: netscape_text} from Mongo, or None when unavailable."""
-    if _db is None:
+    """{platform: netscape_text} from Redis, or None when unavailable."""
+    if not _enabled:
         return None
-    try:
-        out = {}
-        async for doc in _db["cookies"].find({}):
-            text = doc.get("text")
-            if isinstance(text, str) and text:
-                out[str(doc["_id"])] = text
-        return out
-    except Exception as exc:
-        log.warning("mongo cookies load failed: %s", exc)
-    return None
+    value = await _get_json(_K_COOKIES)
+    if value is None:
+        return None
+    if value is _MISSING:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): v for k, v in value.items()
+            if isinstance(v, str) and v}
 
 
 async def save_cookie(platform: str, text: str) -> None:
-    if _db is None:
+    if not _enabled:
         return
     try:
-        await _db["cookies"].replace_one(
-            {"_id": platform}, {"_id": platform, "text": text},
-            upsert=True)
+        value = await _get_json(_K_COOKIES)
+        if value is None:
+            return
+        data = value if isinstance(value, dict) else {}
+        data[platform] = text
+        await _set_json(_K_COOKIES, data)
     except Exception as exc:
-        log.warning("mongo cookie save failed: %s", exc)
+        log.warning("upstash cookie save failed: %s", exc)
 
 
 # --- bot settings ----------------------------------------------------------
 
 async def load_settings():
     """Bot settings dict (upload destinations, ...) or None."""
-    if _db is None:
+    if not _enabled:
         return None
-    try:
-        doc = await _db["settings"].find_one({"_id": "bot"})
-        if doc:
-            return {k: v for k, v in doc.items() if k != "_id"}
+    value = await _get_json(_K_SETTINGS)
+    if value is None:
+        return None
+    if value is _MISSING:
         return {}
-    except Exception as exc:
-        log.warning("mongo settings load failed: %s", exc)
-    return None
+    return value if isinstance(value, dict) else {}
 
 
 async def save_setting(key: str, value) -> None:
-    if _db is None:
+    if not _enabled:
         return
     try:
-        await _db["settings"].update_one(
-            {"_id": "bot"}, {"$set": {key: value}}, upsert=True)
+        current = await _get_json(_K_SETTINGS)
+        if current is None:
+            return
+        data = current if isinstance(current, dict) else {}
+        data[key] = value
+        await _set_json(_K_SETTINGS, data)
     except Exception as exc:
-        log.warning("mongo setting save failed: %s", exc)
+        log.warning("upstash setting save failed: %s", exc)
 
 
 async def close() -> None:
-    global _client, _db
-    if _client is not None:
-        _client.close()
-    _client, _db = None, None
+    """Mark the backend down (REST calls are per-request; there is no
+    connection to close)."""
+    global _enabled
+    _enabled = False

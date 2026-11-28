@@ -3,7 +3,7 @@
 Sources, in the order is_admin() checks them:
   * the SUDO_USERS env var (config.py) — permanent, survives everything.
   * runtime ids added via /addsudo (owner only), stored in:
-      - MongoDB when DB_URI is set (core/db.py) — survives redeploys;
+      - Redis when DB_URI is set (core/db.py) — survives redeploys;
       - data/sudo.json otherwise — on hosts with ephemeral disks
         (Render/Koyeb free restarts) the file alone is not durable.
 
@@ -60,9 +60,9 @@ def _runtime_ids() -> set:
 
 
 async def init_from_db() -> None:
-    """At startup: Mongo (when enabled) is the runtime-sudo truth.
+    """At startup: Redis (when enabled) is the runtime-sudo truth.
 
-    Mongo ids win; when Mongo is empty but the local file has ids,
+    Redis ids win; when Redis is empty but the local file has ids,
     they are migrated up so nothing is lost in the switch.
     """
     global _cache
