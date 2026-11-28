@@ -35,7 +35,7 @@ instead of failing the job.
 from core.extractors import (buzzheavier, fichier, filehosts, firestream,
                              fuckingfast, github, gofile, hubcloud,
                              krakenfiles, lulacloud, luluvido, mediafire,
-                             missav, ofscraper, pixeldrain, reddit_oauth,
+                             missav, onlyfans, pixeldrain, reddit_oauth,
                              solidfiles, sourceforge, streamtape,
                              transferit, uploadhaven, uploadee, vidara)
 
@@ -67,12 +67,14 @@ SITES = [
     # when REDDIT_CLIENT_ID/SECRET are set; otherwise gallery-dl
     # handles Reddit exactly as before.
     reddit_oauth,
-    # OnlyFans + Fansly posts via OF-Scraper (v1.51.18). yt-dlp and
-    # gallery-dl understand neither OnlyFans post (gallery-dl has
-    # Fansly, but no DRM and cookie-only auth), so this is not
-    # shadowing a maintained extractor. Auth-gated like reddit_oauth:
-    # it only matches when the site's Space secrets are set.
-    ofscraper,
+    # OnlyFans posts via the headless browser + the owner's cookies
+    # (v1.51.19). yt-dlp and gallery-dl understand no OnlyFans post,
+    # so this is not shadowing a maintained extractor. Cookie-gated
+    # like reddit_oauth is secret-gated: it only matches when the
+    # onlyfans.com cookies are installed. (Fansly is NOT here —
+    # gallery-dl already handles it, with the token passed by
+    # gallery_engine; see there.)
+    onlyfans,
     # WZML-X round-3 hosts (review 2026-11-18): public-API hosts first
     # (pixeldrain file API, GitHub releases API, SourceForge mirror
     # picker), then the page-scrape hosts whose flow the generic gate

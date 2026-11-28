@@ -287,58 +287,63 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
+## Current status (2026-11-28) — v1.51.19
+
+- v1.51.19 (moon, 2026-11-28): OnlyFans + Fansly the SIMPLE way —
+  cookies, not DevTools secrets. Moon pushed back on v1.51.18
+  ("why you build something like it! build something simple, like
+  work with cookies?") and he was right: the OF-Scraper route needed
+  four values out of DevTools. It was reverted before it ever
+  deployed (never ran live on the Space).
+  - **OnlyFans: new `core/extractors/onlyfans.py`.** The bot opens
+    the post in its headless browser with the owner's cookies.txt
+    (installed with /setcookies, auto-detect files it as the
+    onlyfans.com jar) and downloads the photos/videos the page
+    loads. The page's own JavaScript does the API signing, so the
+    bot never has to — no x-bc, no user_agent, no secrets at all.
+    Single post links only (onlyfans.com/<id>/<user>); profiles
+    refused. Network log first (content-type + size, avatars and
+    icons filtered out under 30 KB), DOM as fallback; direct files
+    via download_file, HLS/DASH via yt-dlp. A human check fails
+    fast with that message; DRM videos fail plainly (the browser
+    plays them encrypted).
+  - **Fansly: no new extractor.** gallery-dl already handles it —
+    but its Fansly needs the API token (localStorage, not a
+    cookie), so no cookies.txt can carry it. gallery_engine now
+    passes it as `-o extractor.fansly.token=...` when
+    FANSLY_AUTH_TOKEN is set. Verified: a fake token reaches the
+    API (401 from apiv3.fansly.com) and without one gallery-dl
+    only warns "No 'token' provided". One secret, no UA needed.
+  - **Cookie-jar bug found and fixed** (`core/cookies.py`):
+    auto-detect filed a custom jar under the registrable part
+    ("onlyfans") but platform_for_url() matches by domain — so an
+    OnlyFans cookies.txt would have been installed yet silently
+    unreachable. fallback_platform() now returns the full base
+    domain ("onlyfans.com"), so the jar is keyed by domain as the
+    code always intended (cookies/onlyfans.com.txt).
+  - **RedGifs + DarkFans verdicts from v1.51.18 stand:** RedGifs
+    needs no new code (yt-dlp + gallery-dl already handle it;
+    gallery-dl pulled a real 26 MB file in the sandbox). DarkFans
+    has no open extractor — honest no, not built.
+  - Tests: test_v1529.py (matching + cookie gate, jar install
+    round-trip, Netscape -> Playwright cookie parse, media filter,
+    gallery-dl Fansly command, full browser run against a local
+    test page with real Chromium). Registry check: OF url ->
+    onlyfans module with the jar, None without; Fansly/RedGifs/
+    YouTube -> None (not shadowed).
+  - Deploy order: the code ships first (dormant without the jar /
+    token); moon installs the OnlyFans cookies with /setcookies
+    and adds the one FANSLY_AUTH_TOKEN secret, then the Space is
+    pushed — the live test is a real OF post link + a Fansly post.
+
 ## Current status (2026-11-28) — v1.51.18
 
-- v1.51.18 (moon, 2026-11-28): OnlyFans + Fansly post links via
-  OF-Scraper, and the RedGifs verdict. Moon asked for extractors for
-  onlyfans / darkfans / fansly / redgifs.
-  - **RedGifs: no new code.** yt-dlp 2026.11.23 already ships a
-    RedGifs extractor, and gallery-dl has one too — both sit in the
-    existing chain (steps 4–5), so a RedGifs link already flows
-    through them. Proven in the sandbox: gallery-dl downloaded a
-    real 26 MB .m4v from a watch URL. (yt-dlp's own attempt failed
-    here only on the sandbox proxy's MITM cert — not a RedGifs
-    problem.) Per site_registry's rule, a custom RedGifs extractor
-    would only shadow maintained ones. Live proof is moon sending
-    a RedGifs link to the bot; if it fails live, a custom extractor
-    becomes justified.
-  - **DarkFans: honest no.** No userscript, yt-dlp, gallery-dl or
-    OF-Scraper extractor exists — only paid desktop tools that
-    capture the stream inside a browser, or manual DevTools
-    capture. HLS with per-fragment tokens + DRM on some videos.
-    Not built.
-  - **OnlyFans + Fansly: new `core/extractors/ofscraper.py`.**
-    Neither yt-dlp nor gallery-dl understands OnlyFans at all, and
-    gallery-dl's Fansly is cookie-only with no DRM. The module runs
-    OF-Scraper 3.18.2 (`ofscraper manual --url <post>`) as a
-    subprocess per job, with a throwaway config dir seeded from
-    Space secrets (OF: OF_SESS/OF_AUTH_ID/OF_USER_AGENT/OF_X_BC;
-    Fansly: FANSLY_AUTH_TOKEN/FANSLY_USER_AGENT) and the download
-    root set to the job dir. Auth-gated like reddit_oauth: it only
-    matches when that site's secrets are set, so without them the
-    chain is unchanged. Single-post URLs only
-    (onlyfans.com/<id>/<user>, fansly.com/post/<id>); profile links
-    are refused, no timeline scraping. DRM videos without a CDM
-    leave .part files and fail with a plain message. Progress polls
-    the job-dir size (total unknown); cancel kills the subprocess.
-  - Traps found while verifying: OF-Scraper's startup builds an
-    httpx client from the proxy env and the sandbox's no_proxy
-    (`[::1]`) crashes it ("Invalid port: ':1]'") — the wrapper
-    strips every *proxy* variable from the child's env (a no-op on
-    the Space). A minimal config.json (only
-    file_options.save_location) + fake auth reaches the auth check,
-    proving the plumbing; the sandbox has no direct egress, so a
-    real post download can only be proven on the Space with real
-    auth. `ofscraper` pinned 3.18.2 in requirements.txt.
-  - Tests: test_v1528.py 27/27 (matching + auth gate, resolve
-    shape, config seeding, command, fake-ofscraper download,
-    DRM .part, auth-failure wording, no-auth, cancel, proxy
-    strip). Registry check: OF url → ofscraper module with auth,
-    None without; Fansly url → None with OF auth only; RedGifs /
-    YouTube → None (not shadowed).
-  - Deploy order: the code ships first (dormant without secrets);
-    moon adds the 6 secrets in Space Settings, then the Space is
-    pushed — the live test is a real OF/Fansly post link.
+- v1.51.18 (moon, 2026-11-28): OnlyFans + Fansly via OF-Scraper —
+  BUILT, TESTED, PUSHED, NEVER DEPLOYED, REVERTED in v1.51.19.
+  Moon's call: the four DevTools secrets were too much work; the
+  cookie route replaced it. The code lives in git history
+  (26cd3bb) if it is ever needed again. RedGifs/DarkFans findings
+  from that round are kept in the v1.51.19 entry above.
 
 ## Current status (2026-11-28) — v1.51.17
 

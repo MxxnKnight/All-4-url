@@ -272,12 +272,17 @@ def clear_pending(owner_id: int) -> None:
 def fallback_platform(domains: list) -> str:
     """Jar id for cookie domains we have no button for.
 
-    Uses the registrable part of the first domain, e.g.
-    ["sub.example.com"] -> "example".
+    The full base domain, e.g. ["www.onlyfans.com", "onlyfans.com"]
+    -> "onlyfans.com", so the jar is keyed by domain
+    (cookies/onlyfans.com.txt) and platform_for_url() can match it.
+    The old registrable-part form ("onlyfans") never matched a host
+    — a jar installed that way was silently unreachable, which is
+    exactly how an OnlyFans cookies.txt would have been lost.
     """
     if not domains:
         return "other"
-    parts = domains[0].split(".")
-    base = parts[-2] if len(parts) >= 2 else parts[0]
-    safe = "".join(c for c in base if c.isalnum() or c in "-_")
+    # Base domain = the fewest labels; ties -> first sorted.
+    base = min((d.lstrip(".").lower() for d in domains),
+               key=lambda d: (d.count("."), d))
+    safe = "".join(c for c in base if c.isalnum() or c in "-_.")
     return safe or "other"
