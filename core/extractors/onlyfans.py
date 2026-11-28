@@ -23,9 +23,11 @@ Limits, stated plainly: a page that answers with a human check
 (Cloudflare) fails fast with that message instead of pretending
 (/browser is the fallback then). DRM-protected videos cannot be
 captured — the browser plays them encrypted, and the segments stay
-encrypted without a CDM, so those fail with a plain message. Only
-single post links (onlyfans.com/<id>/<user>); profile pages are
-refused — the bot is a paste-one-link tool, not a timeline scraper.
+encrypted without a CDM, so those fail with a plain message (and
+the encrypted segments are never delivered as files — see
+_without_segments). Only single post links
+(onlyfans.com/<id>/<user>); profile pages are refused — the bot is
+a paste-one-link tool, not a timeline scraper.
 
 Verified 2026-11-28: URL matching + cookie gate, the Netscape ->
 Playwright cookie parse, the media filter, and a full browser run
@@ -43,7 +45,7 @@ from core.cookies import jar_for_url
 from core.extractors import browser_scan
 from core.extractors.browser_scan import (
     BROWSER_LOCK, BROWSER_TIMEOUT, BROWSER_UA, PAGE_TIMEOUT,
-    _SETTLE_MS, _has_captcha, _is_manifest, _is_media_url,
+    _SEGMENT_RE, _SETTLE_MS, _has_captcha, _is_manifest, _is_media_url,
     _session_handoff, async_playwright)
 from core.extractors.direct import download_file
 from core.extractors.ytdlp_engine import download as ytdlp_download
@@ -174,6 +176,10 @@ def _is_post_media(url: str, ctype: str, size: int) -> bool:
     """A fetched URL that is post media (not chrome around it)."""
     if not _is_of_media_url(url, ctype):
         return False
+    # A playlist is tiny by nature (a few hundred bytes of text) —
+    # it is the key to a streamed video, so it is never size-filtered.
+    if _is_manifest(url, ctype):
+        return True
     # Images/videos the page fetched for the post are large; the
     # avatar, header and icons are small. Size 0 means the size is
     # unknown (a request seen without its response) — keep those;
@@ -222,6 +228,43 @@ async def _collect(page, network: dict) -> list[dict]:
                 found[src] = {"url": src, "playlist": _is_manifest(src),
                               "size": 0}
     return sorted(found.values(), key=lambda c: -c["size"])
+
+
+def _without_segments(media: list[dict]) -> list[dict]:
+    """Drop stream segments when a manifest is present.
+
+    A streamed video (HLS/DASH) is fetched as its manifest PLUS its
+    segments (.ts/.m4s, or .mp4 fragments under the manifest's
+    directory). The segments belong to the manifest — downloading
+    them as files gives a pile of few-second clips, and for a DRM
+    stream they are encrypted garbage. Only the manifest is kept
+    (it goes to yt-dlp, which downloads a clean stream — or fails
+    plainly on DRM). Photos and standalone videos live elsewhere,
+    so they are kept: an image is never a segment, and a video
+    outside every manifest's directory is its own file.
+    """
+    playlist_dirs = {
+        item["url"].rsplit("/", 1)[0] + "/"
+        for item in media if item.get("playlist")
+    }
+    if not playlist_dirs:
+        return media
+    kept = []
+    for item in media:
+        url = item["url"]
+        if item.get("playlist"):
+            kept.append(item)
+            continue
+        path = urlparse(url).path
+        if path.endswith(_IMAGE_EXTS):
+            kept.append(item)  # a photo, not a segment
+            continue
+        if _SEGMENT_RE.search(path):
+            continue  # .ts/.m4s — always a segment
+        if any(url.startswith(d) for d in playlist_dirs):
+            continue  # a fragment under the manifest's directory
+        kept.append(item)
+    return kept
 
 
 async def _visit(url: str, cookies: list[dict],
@@ -362,6 +405,8 @@ async def download(url: str, job_dir: str, progress_cb=None,
     visit = await _visit(url, cookies, cancel_check)
     headers = visit["headers"]
     session_cookies = visit["cookies"]
+    # A stream's segments are not files — see _without_segments.
+    media = _without_segments(visit["media"])
     before = set(list_files(job_dir))
     errors: list[str] = []
 
@@ -369,7 +414,7 @@ async def download(url: str, job_dir: str, progress_cb=None,
         if progress_cb is not None:
             await progress_cb(done, total)
 
-    for item in visit["media"]:
+    for item in media:
         if cancel_check is not None and cancel_check():
             raise JobCancelled()
         media_url = item["url"]

@@ -287,6 +287,26 @@ returns `"done" | "pending" | "failed" | "blocked"`.
 - Check `git status` before committing; never commit secrets, `data/`
   runtime files, or `__pycache__`.
 
+## Current status (2026-11-28) — v1.51.20
+
+- v1.51.20 (moon, 2026-11-28): DRM answer + a segment fix in the
+  OnlyFans extractor. Moon asked "does it download free drm
+  videos?" — no: a DRM video is locked even when it is free to
+  watch, the browser plays it encrypted and the bot has no key
+  (no CDM). But his question caught a real flaw: the collector
+  kept a streamed video's segments (.ts/.m4s), so a non-DRM HLS
+  video would have arrived as the clean file PLUS a pile of clips,
+  and a DRM one as encrypted garbage while yt-dlp failed on the
+  manifest. Now `_without_segments` drops every segment when a
+  manifest is present (same-directory fragments, plus any .ts/.m4s
+  anywhere) and only the manifest goes to yt-dlp — which fails
+  plainly on DRM. A second bug in the same pass: the 30 KB size
+  filter dropped the manifest itself (a playlist is a few hundred
+  bytes of text), so a streamed video would never have reached
+  yt-dlp at all — manifests are now exempt from the size filter.
+  Tests: test_v1520.py 5/5 (DRM post, cross-domain HLS segments,
+  direct video untouched, collect+drop), test_v1529.py still 25/25.
+
 ## Current status (2026-11-28) — v1.51.19
 
 - v1.51.19 (moon, 2026-11-28): OnlyFans + Fansly the SIMPLE way —
